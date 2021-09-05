@@ -25,20 +25,20 @@ trait BinanceGateway[F[_]] {
 object BinanceGateway {
 
   def create[I[_]: Functor, F[_]: Clock: Monad: Throws](
-      apiKey: binance.ApiKey,
-      secretKey: binance.SecretKey,
-      crypto: Crypto[F],
-      backend: SttpBackend[F, Any]
+    apiKey: binance.ApiKey,
+    secretKey: binance.SecretKey,
+    crypto: Crypto[F],
+    backend: SttpBackend[F, Any]
   )(implicit logs: Logs[I, F]): I[BinanceGateway[F]] =
     logs
       .forService[BinanceGateway[F]]
       .map(implicit log => new Impl[F](apiKey, secretKey, crypto, backend))
 
   private final class Impl[F[_]: Logging](
-      apiKey: binance.ApiKey,
-      secretKey: binance.SecretKey,
-      crypto: Crypto[F],
-      backend: SttpBackend[F, Any]
+    apiKey: binance.ApiKey,
+    secretKey: binance.SecretKey,
+    crypto: Crypto[F],
+    backend: SttpBackend[F, Any]
   )(implicit F: Monad[F], R: Throws[F], clock: Clock[F])
       extends BinanceGateway[F]
       with GatewayLogging {
@@ -51,13 +51,7 @@ object BinanceGateway {
         queryString = s"symbol=BTCUSDT&timestamp=$now"
         signature <- crypto.calcHmacSha256(queryString, secretKey.show)
         req = basicRequest
-          .get(
-            Uri(
-              URI.create(
-                s"$endpoint/allOrders?$queryString&signature=$signature"
-              )
-            )
-          )
+          .get(Uri(URI.create(s"$endpoint/allOrders?$queryString&signature=$signature")))
           .headers(Header("X-MBX-APIKEY", apiKey.show))
         _ <- debug"${requestToString(req)}"
         resp <- req.send(backend)
@@ -65,20 +59,19 @@ object BinanceGateway {
         result <- parseResponse[Json](resp)
       } yield result
 
-    private def parseResponse[A: Decoder](
-        response: Response[Either[String, String]]): F[A] = {
-      def parseContent(content: String): F[A] = {
+    private[gateways] def parseResponse[A: Decoder](
+      response: Response[Either[String, String]]
+    ): F[A] = {
+      def parseContent(content: String): F[A] =
         decode[A](content).fold(
-          err =>
-            R.raise(
-              new Exception(s"Failed to parse response: ${err.getMessage}")),
-          F.pure)
-      }
+          err => R.raise(new Exception(s"Failed to parse response: ${err.getMessage}")),
+          F.pure
+        )
 
       if (response.isSuccess) {
         response.body match {
           case Right(content) => parseContent(content)
-          case Left(_)        => R.raise(new Exception("Empty response body"))
+          case Left(_) => R.raise(new Exception("Empty response body"))
         }
       } else {
         R.raise(new Exception(s"Unexpected response status: ${response.code}"))
