@@ -12,6 +12,7 @@ lazy val root = (project in file("."))
       mouse,
       sttpCore,
       newtype,
+      enumeratum,
       tofuCore,
       tofuLogging,
       circeGeneric,
