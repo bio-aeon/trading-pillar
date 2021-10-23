@@ -1,10 +1,10 @@
 package su.wps.trading.pillar.processes
 
-import cats.effect.{Clock, Timer}
+import cats.Functor
+import cats.effect.{Clock, Temporal}
 import cats.syntax.apply._
 import cats.syntax.functor._
 import cats.syntax.traverse._
-import cats.{Functor, Monad}
 import fs2.Stream
 import su.wps.trading.pillar.gateways.TgGateway
 import su.wps.trading.pillar.models.domain.Command
@@ -20,7 +20,7 @@ trait TgUpdatesProcess[F[_]] {
 }
 
 object TgUpdatesProcess {
-  def create[I[_]: Functor, F[_]: Monad: Timer](
+  def create[I[_]: Functor, F[_]: Temporal: Clock](
     tgGateway: TgGateway[F],
     commandHandleService: CommandHandleService[F]
   )(implicit logs: Logs[I, F]): I[TgUpdatesProcess[F]] =
@@ -28,10 +28,10 @@ object TgUpdatesProcess {
       .forService[TgUpdatesProcess[F]]
       .map(implicit log => new Impl[F](tgGateway, commandHandleService))
 
-  final private class Impl[F[_]: Logging: Timer](
+  final private class Impl[F[_]: Logging](
     tgGateway: TgGateway[F],
     commandHandleService: CommandHandleService[F]
-  )(implicit F: Monad[F], clock: Clock[F])
+  )(implicit F: Temporal[F], clock: Clock[F])
       extends TgUpdatesProcess[F] {
     def run: Stream[F, Unit] =
       processUpdatesLoop(0)

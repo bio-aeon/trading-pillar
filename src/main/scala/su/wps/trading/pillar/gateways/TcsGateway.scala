@@ -9,7 +9,7 @@ import io.circe.parser.decode
 import sttp.client3._
 import sttp.model.{Header, Uri}
 import su.wps.trading.pillar.models.tcs
-import tofu.Throws
+import tofu.kernel.types.Throws
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging._
 

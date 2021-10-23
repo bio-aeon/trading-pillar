@@ -13,7 +13,6 @@ lazy val root = (project in file("."))
       sttpCore,
       newtype,
       enumeratum,
-      tofuCore,
       tofuLogging,
       circeGeneric,
       circeParser,

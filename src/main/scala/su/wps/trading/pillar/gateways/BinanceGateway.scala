@@ -11,12 +11,11 @@ import sttp.client3.{Response, SttpBackend, basicRequest}
 import sttp.model.{Header, Uri}
 import su.wps.trading.pillar.models.binance
 import su.wps.trading.pillar.security.Crypto
-import tofu.Throws
+import tofu.kernel.types.Throws
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging._
 
 import java.net.URI
-import scala.concurrent.duration._
 
 trait BinanceGateway[F[_]] {
   def allOrders: F[Json]
@@ -47,8 +46,8 @@ object BinanceGateway {
 
     def allOrders: F[Json] =
       for {
-        now <- clock.realTime(MILLISECONDS)
-        queryString = s"symbol=BTCUSDT&timestamp=$now"
+        now <- clock.realTime
+        queryString = s"symbol=BTCUSDT&timestamp=${now.toMillis}"
         signature <- crypto.calcHmacSha256(queryString, secretKey.show)
         req = basicRequest
           .get(Uri(URI.create(s"$endpoint/allOrders?$queryString&signature=$signature")))

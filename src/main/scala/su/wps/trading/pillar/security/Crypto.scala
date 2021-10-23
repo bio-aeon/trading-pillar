@@ -3,7 +3,7 @@ package su.wps.trading.pillar.security
 import cats.{Applicative, Monad}
 import mouse.any._
 import tofu.Raise.ContravariantRaise
-import tofu.Throws
+import tofu.kernel.types.Throws
 
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec

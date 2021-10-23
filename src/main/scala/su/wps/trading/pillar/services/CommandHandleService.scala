@@ -11,7 +11,6 @@ import tofu.logging.Logs
 
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, ZoneId, ZonedDateTime}
-import scala.concurrent.duration._
 
 trait CommandHandleService[F[_]] {
   def handleCommand(cmd: Command): F[Unit]
@@ -41,7 +40,7 @@ object CommandHandleService {
 
     private def handlePing: F[Unit] =
       for {
-        now <- Clock[F].realTime(MILLISECONDS).map(Instant.ofEpochMilli)
+        now <- Clock[F].realTime.map(_.toMillis).map(Instant.ofEpochMilli)
         zoneId = ZoneId.systemDefault
         nowStr = ZonedDateTime
           .ofInstant(now, zoneId)
