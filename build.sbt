@@ -5,7 +5,7 @@ lazy val root = (project in file("."))
     organization := "su.wps",
     name := "trading-pillar",
     version := "0.1.0-SNAPSHOT",
-    scalaVersion := "2.13.6",
+    scalaVersion := "2.13.8",
     libraryDependencies ++= Seq(
       bcprov,
       bcpkix,
@@ -18,7 +18,7 @@ lazy val root = (project in file("."))
       circeParser,
       fs2Core
     ),
-    addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.13.0" cross CrossVersion.patch),
+    addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.13.2" cross CrossVersion.patch),
     addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1"),
   )
 

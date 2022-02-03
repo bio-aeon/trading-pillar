@@ -24,7 +24,7 @@ object Crypto {
       catchNonFatal {
         val key = new SecretKeySpec(secret.getBytes, AlgHmacSha256)
         Mac.getInstance(AlgHmacSha256) <| (_.init(key)) |> (_.doFinal(data.getBytes)
-          .map(_.formatted("%02x"))
+          .map("%02x".format(_))
           .mkString)
       }(identity)
   }
