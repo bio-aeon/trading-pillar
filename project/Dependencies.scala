@@ -4,13 +4,13 @@ object Dependencies {
 
   object Versions {
     val bouncyCastle = "1.70"
-    val mouse = "1.0.9"
+    val mouse = "1.0.10"
     val sttp = "3.3.16"
     val newtype = "0.4.4"
     val enumeratum = "1.7.0"
-    val tofu = "0.10.6"
+    val tofu = "0.10.7"
     val circe = "0.14.1"
-    val fs2 = "3.2.4"
+    val fs2 = "3.2.7"
     val scalapb = "0.11.10"
     val grpc = "1.45.1"
   }
