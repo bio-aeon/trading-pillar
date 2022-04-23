@@ -16,11 +16,14 @@ lazy val root = (project in file("."))
       tofuLogging,
       circeGeneric,
       circeParser,
-      fs2Core
+      fs2Core,
+      scalapbRuntime % "protobuf",
+      grpcNetty
     ),
     addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.13.2" cross CrossVersion.patch),
-    addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1"),
+    addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1")
   )
+  .enablePlugins(Fs2Grpc)
 
 scalacOptions ++= Seq(
   "-deprecation",

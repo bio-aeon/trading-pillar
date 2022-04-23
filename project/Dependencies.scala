@@ -11,6 +11,8 @@ object Dependencies {
     val tofu = "0.10.6"
     val circe = "0.14.1"
     val fs2 = "3.2.4"
+    val scalapb = "0.11.10"
+    val grpc = "1.45.1"
   }
 
   val bcprov = "org.bouncycastle" % "bcprov-jdk15on" % Versions.bouncyCastle
@@ -23,4 +25,6 @@ object Dependencies {
   val circeGeneric = "io.circe" %% "circe-generic" % Versions.circe
   val circeParser = "io.circe" %% "circe-parser" % Versions.circe
   val fs2Core = "co.fs2" %% "fs2-core" % Versions.fs2
+  val scalapbRuntime = "com.thesamet.scalapb" %% "scalapb-runtime" % Versions.scalapb
+  val grpcNetty = "io.grpc" % "grpc-netty-shaded" % Versions.grpc
 }
