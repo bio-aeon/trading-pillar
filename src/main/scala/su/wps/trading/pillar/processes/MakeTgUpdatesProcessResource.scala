@@ -1,6 +1,6 @@
 package su.wps.trading.pillar.processes
 
-import cats.effect.{Async, Clock, Resource, Sync}
+import cats.effect.{Async, Resource, Sync}
 import sttp.client3.SttpBackend
 import su.wps.trading.pillar.facades.TcsFacade
 import su.wps.trading.pillar.gateways.TgGateway
@@ -11,7 +11,7 @@ import tofu.lift.Lift
 import tofu.logging.Logs
 
 object MakeTgUpdatesProcessResource {
-  def apply[I[_]: Sync, F[_]: Async: Throws: Clock: Lift[*[_], I]](
+  def apply[I[_]: Sync, F[_]: Async: Throws: Lift[*[_], I]](
     privateChatId: tg.ChatId,
     tgToken: tg.Token,
     brokerAccountId: tcs.BrokerAccountId,

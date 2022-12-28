@@ -5,7 +5,7 @@ lazy val root = (project in file("."))
     organization := "su.wps",
     name := "trading-pillar",
     version := "0.1.0-SNAPSHOT",
-    scalaVersion := "2.13.8",
+    scalaVersion := "2.13.10",
     libraryDependencies ++= Seq(
       bcprov,
       bcpkix,

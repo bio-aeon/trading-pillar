@@ -4,15 +4,15 @@ object Dependencies {
 
   object Versions {
     val bouncyCastle = "1.70"
-    val mouse = "1.0.10"
-    val sttp = "3.3.16"
+    val mouse = "1.2.1"
+    val sttp = "3.8.5"
     val newtype = "0.4.4"
-    val enumeratum = "1.7.0"
-    val tofu = "0.10.7"
-    val circe = "0.14.1"
-    val fs2 = "3.2.7"
-    val scalapb = "0.11.10"
-    val grpc = "1.45.1"
+    val enumeratum = "1.7.2"
+    val tofu = "0.11.1"
+    val circe = "0.14.3"
+    val fs2 = "3.4.0"
+    val scalapb = "0.11.12"
+    val grpc = "1.51.1"
   }
 
   val bcprov = "org.bouncycastle" % "bcprov-jdk15on" % Versions.bouncyCastle

@@ -4,7 +4,9 @@ import cats.Monad
 import cats.effect.{Async, Resource, Sync}
 import cats.syntax.flatMap._
 import cats.syntax.functor._
+import cats.syntax.option._
 import cats.syntax.show._
+import com.google.protobuf.timestamp.Timestamp
 import fs2.grpc.syntax.all._
 import io.grpc.Metadata
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -13,18 +15,29 @@ import ru.tinkoff.piapi.contract.v1.instruments.{
   InstrumentsRequest,
   InstrumentsServiceFs2Grpc
 }
-import ru.tinkoff.piapi.contract.v1.operations.{OperationsServiceFs2Grpc, PortfolioRequest}
+import ru.tinkoff.piapi.contract.v1.operations.{
+  Operation,
+  OperationsRequest,
+  OperationsServiceFs2Grpc,
+  PortfolioRequest
+}
 import su.wps.trading.pillar.models.domain.Portfolio
 import su.wps.trading.pillar.models.domain.Portfolio.Position
 import su.wps.trading.pillar.models.tcs
 import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
 
+import java.time.ZonedDateTime
+
 trait TcsFacade[F[_]] {
   def portfolio: F[Portfolio]
+
+  def operations(since: ZonedDateTime, until: ZonedDateTime): F[List[Operation]]
 }
 
 object TcsFacade {
+
+  val apiVersion = "21 Apr 2022 19:44:48 +0300"
 
   private val apiHost = "invest-public-api.tinkoff.ru"
   private val apiPort = 443
@@ -91,6 +104,23 @@ object TcsFacade {
 
         Portfolio(positions.toList)
       }
+    }
+
+    def operations(since: ZonedDateTime, until: ZonedDateTime): F[List[Operation]] =
+      operationsGrpc
+        .getOperations(
+          OperationsRequest(
+            brokerAccountId.show,
+            zonedDtToTimestamp(since).some,
+            zonedDtToTimestamp(until).some
+          ),
+          metadata
+        )
+        .map(_.operations.toList)
+
+    private def zonedDtToTimestamp(dt: ZonedDateTime): Timestamp = {
+      val i = dt.toInstant
+      Timestamp.of(i.getEpochSecond, i.getNano)
     }
   }
 }

@@ -1,5 +1,6 @@
 *.class
 *.sc
 .idea
+.bsp
 target/
 logs/

@@ -28,10 +28,11 @@ object CommandHandleService {
       .forService[CommandHandleService[F]]
       .map(implicit log => new Impl[F](privateChatId, tgGateway, tcsFacade))
 
-  final private class Impl[F[_]: Monad: Clock](privateChatId: tg.ChatId,
-                                               tgGateway: TgGateway[F],
-                                               tcsFacade: TcsFacade[F])
-      extends CommandHandleService[F] {
+  final private class Impl[F[_]: Monad: Clock](
+    privateChatId: tg.ChatId,
+    tgGateway: TgGateway[F],
+    tcsFacade: TcsFacade[F]
+  ) extends CommandHandleService[F] {
     def handleCommand(cmd: Command): F[Unit] =
       cmd match {
         case Command.Ping => handlePing
