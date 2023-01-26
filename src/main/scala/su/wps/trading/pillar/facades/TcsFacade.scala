@@ -37,7 +37,7 @@ trait TcsFacade[F[_]] {
 
 object TcsFacade {
 
-  val apiVersion = "21 Apr 2022 19:44:48 +0300"
+  val apiVersion = "24 Jan 2023 00:53:14 +0300"
 
   private val apiHost = "invest-public-api.tinkoff.ru"
   private val apiPort = 443
