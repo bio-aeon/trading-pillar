@@ -2,10 +2,16 @@ package su.wps.trading.pillar.models
 
 import cats.Show
 import io.estatico.newtype.macros.newtype
+import tofu.logging.Loggable
 
 package object domain {
 
   @newtype final case class AccountId(value: Int)
+
+  object AccountId {
+    implicit val loggable: Loggable[AccountId] = deriving
+  }
+
   @newtype final case class PortfolioOperationId(value: Long)
   @newtype final case class PortfolioOperationExtId(value: String)
 
