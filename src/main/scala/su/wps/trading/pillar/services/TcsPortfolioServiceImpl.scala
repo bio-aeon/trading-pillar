@@ -31,11 +31,11 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
     lastDt: Option[ZonedDateTime] = None
   ): F[Option[ZonedDateTime]] =
     for {
-      ctx <- context
+      accountId <- context[F].map(_.accountId)
       now <- nowF
       since_? <- (lastDt match {
         case some @ Some(_) => some.pure[F]
-        case None => operationStorage.lastOperation >>= (_.map(_.createdAt).pure[F])
+        case None => operationStorage.lastOperation(accountId) >>= (_.map(_.createdAt).pure[F])
       })
       until_? = since_?
         .map(_.plusSeconds(interval.toSeconds))
@@ -46,13 +46,13 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
       tcsOperations <- tcsFacade.operations(actualSince, actualUntil)
       existingOperations <- F.ifM((since_?.isDefined && until_?.isDefined).pure[F])(
         operationStorage
-          .operationsByDtRange(actualSince, actualUntil)
+          .operationsByDtRange(accountId, actualSince, actualUntil)
           .map(_.map(x => (x.operationType.show, x.extId.show))),
         Set.empty[(String, String)].pure[F]
       )
       operationsToSave = tcsOperations
         .filter(x => !existingOperations.contains((x.operationType.name, x.id)))
-        .map(toDomainOperation(_, ctx.accountId))
+        .map(toDomainOperation(_, accountId))
         .sortBy(_.createdAt)
       _ <- info"Received ${operationsToSave.length} new tcs operations"
       _ <- operationStorage.saveOperations(operationsToSave)
