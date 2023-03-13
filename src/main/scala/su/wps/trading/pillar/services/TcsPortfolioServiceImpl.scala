@@ -2,9 +2,11 @@ package su.wps.trading.pillar.services
 
 import cats.effect.Clock
 import cats.syntax.applicative._
+import cats.syntax.apply._
 import cats.syntax.flatMap._
 import cats.syntax.functor._
 import cats.syntax.show._
+import cats.syntax.traverse._
 import cats.{Functor, Monad}
 import ru.tinkoff.piapi.contract.v1.common.MoneyValue
 import ru.tinkoff.piapi.contract.v1.operations.{Operation => TcsOperation}
@@ -13,9 +15,11 @@ import su.wps.trading.pillar.facades.TcsFacade
 import su.wps.trading.pillar.models.domain._
 import su.wps.trading.pillar.storages.TcsPortfolioOperationStorage
 import tofu.WithContext
+import tofu.kernel.types.Throws
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.context._
 import tofu.syntax.logging._
+import tofu.syntax.raise._
 
 import java.time.{Instant, ZoneId, ZonedDateTime}
 import scala.concurrent.duration.FiniteDuration
@@ -23,7 +27,7 @@ import scala.concurrent.duration.FiniteDuration
 final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessContext]] private (
   operationStorage: TcsPortfolioOperationStorage[F],
   tcsFacade: TcsFacade[F]
-)(implicit F: Monad[F], clock: Clock[F])
+)(implicit F: Monad[F], R: Throws[F], clock: Clock[F])
     extends TcsPortfolioService[F] {
   def syncOperations(
     interval: FiniteDuration,
@@ -50,10 +54,10 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
           .map(_.map(x => (x.operationType.show, x.extId.show))),
         Set.empty[(String, String)].pure[F]
       )
-      operationsToSave = tcsOperations
+      operationsToSave <- tcsOperations
         .filter(x => !existingOperations.contains((x.operationType.name, x.id)))
-        .map(toDomainOperation(_, accountId))
-        .sortBy(_.createdAt)
+        .traverse(toDomainOperation(_, accountId))
+        .map(_.sortBy(_.createdAt))
       _ <- info"Received ${operationsToSave.length} new tcs operations"
       _ <- operationStorage.saveOperations(operationsToSave)
     } yield operationsToSave.lastOption.map(_.createdAt).orElse(until_?)
@@ -61,30 +65,36 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
   private[services] def toDomainOperation(
     tcsOperation: TcsOperation,
     accountId: AccountId
-  ): TcsPortfolioOperation = {
-    val price = tcsOperation.price.getOrElse(throw new Exception("Empty price"))
-    val amount = tcsOperation.payment.getOrElse(throw new Exception("Empty amount"))
-    val date = tcsOperation.date.getOrElse(throw new Exception("Empty date"))
+  ): F[TcsPortfolioOperation] = {
     val instrumentType_? = Option(tcsOperation.instrumentType).filter(_.nonEmpty)
     val figi_? = Option(tcsOperation.figi).filter(_.nonEmpty)
 
-    TcsPortfolioOperation(
-      PortfolioOperationId(0),
-      PortfolioOperationExtId(tcsOperation.id),
-      PortfolioOperationType(tcsOperation.operationType.name),
-      instrumentType_?.map(PortfolioInstrumentType(_)),
-      PortfolioOperationStatus(tcsOperation.state.name),
-      figi_?.map(Figi(_)),
-      Currency(tcsOperation.currency),
-      moneyToBigDecimal(price),
-      tcsOperation.quantity.toInt,
-      tcsOperation.quantityRest.toInt,
-      moneyToBigDecimal(amount),
-      ProtocolVersion(TcsFacade.ApiVersion),
-      ZonedDateTime
-        .ofInstant(Instant.ofEpochSecond(date.seconds, date.nanos), ZoneId.of("UTC")),
-      accountId
-    )
+    (
+      tcsOperation.price.orRaise[F](new Exception("Empty price")),
+      tcsOperation.payment.orRaise[F](new Exception("Empty amount")),
+      tcsOperation.date.orRaise[F](new Exception("Empty date"))
+    ).flatMapN {
+      case (price, amount, date) =>
+        (moneyToBigDecimal(price), moneyToBigDecimal(amount)).mapN(
+          TcsPortfolioOperation(
+            PortfolioOperationId(0),
+            PortfolioOperationExtId(tcsOperation.id),
+            PortfolioOperationType(tcsOperation.operationType.name),
+            instrumentType_?.map(PortfolioInstrumentType(_)),
+            PortfolioOperationStatus(tcsOperation.state.name),
+            figi_?.map(Figi(_)),
+            Currency(tcsOperation.currency),
+            _,
+            tcsOperation.quantity.toInt,
+            tcsOperation.quantityRest.toInt,
+            _,
+            ProtocolVersion(TcsFacade.ApiVersion),
+            ZonedDateTime
+              .ofInstant(Instant.ofEpochSecond(date.seconds, date.nanos), ZoneId.of("UTC")),
+            accountId
+          )
+        )
+    }
   }
 
   private[services] def nowF: F[ZonedDateTime] =
@@ -93,19 +103,19 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
       .map(Instant.ofEpochMilli)
       .map(ZonedDateTime.ofInstant(_, ZoneId.systemDefault()))
 
-  private def moneyToBigDecimal(money: MoneyValue): BigDecimal = {
-    if (money.units > 0 && money.nano < 0) {
-      throw new Exception(s"Inconsistent money value $money")
-    }
-
-    BigDecimal(money.units + money.nano / 1000000000.0)
-  }
+  private def moneyToBigDecimal(money: MoneyValue): F[BigDecimal] =
+    (money.units > 0 && money.nano < 0)
+      .pure[F]
+      .ifM(
+        R.raise(new Exception(s"Inconsistent money value $money")),
+        BigDecimal(money.units + money.nano / 1000000000.0).pure[F]
+      )
 
 }
 
 object TcsPortfolioServiceImpl {
 
-  def create[I[_]: Functor, F[_]: Monad: Clock: WithContext[*[_], ProcessContext]](
+  def create[I[_]: Functor, F[_]: Monad: Clock: WithContext[*[_], ProcessContext]: Throws](
     operationStorage: TcsPortfolioOperationStorage[F],
     tcsFacade: TcsFacade[F]
   )(implicit logs: Logs[I, F]): I[TcsPortfolioService[F]] =
