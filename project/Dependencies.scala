@@ -3,16 +3,16 @@ import sbt._
 object Dependencies {
 
   object Versions {
-    val bouncyCastle = "1.72"
+    val bouncyCastle = "1.73"
     val mouse = "1.2.1"
-    val sttp = "3.8.13"
+    val sttp = "3.8.15"
     val newtype = "0.4.4"
     val enumeratum = "1.7.2"
-    val tofu = "0.11.1"
+    val tofu = "0.12.0.1"
     val circe = "0.14.5"
-    val fs2 = "3.6.1"
+    val fs2 = "3.7.0"
     val scalapb = "0.11.13"
-    val grpc = "1.53.0"
+    val grpc = "1.55.1"
   }
 
   val bcprov = "org.bouncycastle" % "bcprov-jdk18on" % Versions.bouncyCastle
