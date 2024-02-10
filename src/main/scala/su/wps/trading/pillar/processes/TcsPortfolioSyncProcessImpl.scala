@@ -60,13 +60,15 @@ object TcsPortfolioSyncProcessImpl {
   def resource[I[_]: Sync, F[_]: Async: GenUUID: Lift[*[_], I]: WithLocal[*[_], ProcessContext]](
     brokerAccountId: tcs.BrokerAccountId,
     tcsToken: tcs.Token,
+    initialYearsAgo: Int,
     accountStorage: AccountStorage[F],
     tcsPortfolioOperationStorage: TcsPortfolioOperationStorage[F]
   )(implicit logs: Logs[I, F]): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
     for {
       tcsFacade <- TcsFacadeImpl.resource[I, F](brokerAccountId, tcsToken)
       tcsPortfolioService <- Resource.eval(
-        TcsPortfolioServiceImpl.create[I, F](tcsPortfolioOperationStorage, tcsFacade)
+        TcsPortfolioServiceImpl
+          .create[I, F](initialYearsAgo, tcsPortfolioOperationStorage, tcsFacade)
       )
       tcsPortfolioSyncProcess <- Resource.eval(
         TcsPortfolioSyncProcessImpl.create[I, F](accountStorage, tcsPortfolioService)

@@ -25,6 +25,7 @@ import java.time.{Instant, ZoneId, ZonedDateTime}
 import scala.concurrent.duration.FiniteDuration
 
 final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessContext]] private (
+  initialYearsAgo: Int,
   operationStorage: TcsPortfolioOperationStorage[F],
   tcsFacade: TcsFacade[F]
 )(implicit F: Monad[F], R: Throws[F], clock: Clock[F])
@@ -44,8 +45,11 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
       until_? = since_?
         .map(_.plusSeconds(interval.toSeconds))
         .map(x => if (x.isBefore(now)) x else now)
-      actualSince = since_?.getOrElse(now.minusYears(20)).minusSeconds(overlap.toSeconds)
-      actualUntil = until_?.getOrElse(now).plusSeconds(overlap.toSeconds)
+      sinceWithoutOverlap = since_?.getOrElse(now.minusYears(initialYearsAgo))
+      actualSince = sinceWithoutOverlap.minusSeconds(overlap.toSeconds)
+      actualUntil = calcActualUntil(now, sinceWithoutOverlap, until_?).plusSeconds(
+        overlap.toSeconds
+      )
       _ <- info"Attempt to get new operations. Interval [$actualSince, $actualUntil]"
       tcsOperations <- tcsFacade.operations(actualSince, actualUntil)
       existingOperations <- F.ifM((since_?.isDefined && until_?.isDefined).pure[F])(
@@ -97,6 +101,17 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
     }
   }
 
+  private[services] def calcActualUntil(
+    now: ZonedDateTime,
+    since: ZonedDateTime,
+    `until_?`: Option[ZonedDateTime]
+  ): ZonedDateTime =
+    until_?
+      .getOrElse {
+        val monthAfterSince = since.plusMonths(1)
+        Either.cond(now.isAfter(monthAfterSince), monthAfterSince, now).merge
+      }
+
   private[services] def nowF: F[ZonedDateTime] =
     clock.realTime
       .map(_.toMillis)
@@ -116,10 +131,13 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
 object TcsPortfolioServiceImpl {
 
   def create[I[_]: Functor, F[_]: Monad: Clock: WithContext[*[_], ProcessContext]: Throws](
+    initialYearsAgo: Int,
     operationStorage: TcsPortfolioOperationStorage[F],
     tcsFacade: TcsFacade[F]
   )(implicit logs: Logs[I, F]): I[TcsPortfolioService[F]] =
     logs
       .forService[TcsPortfolioService[F]]
-      .map(implicit log => new TcsPortfolioServiceImpl[F](operationStorage, tcsFacade))
+      .map(
+        implicit log => new TcsPortfolioServiceImpl[F](initialYearsAgo, operationStorage, tcsFacade)
+      )
 }
