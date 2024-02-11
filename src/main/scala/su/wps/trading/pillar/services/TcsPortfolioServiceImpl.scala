@@ -38,21 +38,18 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
     for {
       accountId <- context[F].map(_.accountId)
       now <- nowF
-      since_? <- (lastDt match {
+      since_? <- lastDt match {
         case some @ Some(_) => some.pure[F]
         case None => operationStorage.lastOperation(accountId) >>= (_.map(_.createdAt).pure[F])
-      })
-      until_? = since_?
-        .map(_.plusSeconds(interval.toSeconds))
-        .map(x => if (x.isBefore(now)) x else now)
+      }
       sinceWithoutOverlap = since_?.getOrElse(now.minusYears(initialYearsAgo))
+      nextDt = sinceWithoutOverlap.plusSeconds(interval.toSeconds)
+      untilWithoutOverlap = Either.cond(nextDt.isBefore(now), nextDt, now).merge
       actualSince = sinceWithoutOverlap.minusSeconds(overlap.toSeconds)
-      actualUntil = calcActualUntil(now, sinceWithoutOverlap, until_?).plusSeconds(
-        overlap.toSeconds
-      )
+      actualUntil = untilWithoutOverlap.plusSeconds(overlap.toSeconds)
       _ <- info"Attempt to get new operations. Interval [$actualSince, $actualUntil]"
       tcsOperations <- tcsFacade.operations(actualSince, actualUntil)
-      existingOperations <- F.ifM((since_?.isDefined && until_?.isDefined).pure[F])(
+      existingOperations <- F.ifM(since_?.isDefined.pure[F])(
         operationStorage
           .operationsByDtRange(accountId, actualSince, actualUntil)
           .map(_.map(x => (x.operationType.show, x.extId.show))),
@@ -64,7 +61,7 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
         .map(_.sortBy(_.createdAt))
       _ <- info"Received ${operationsToSave.length} new tcs operations"
       _ <- operationStorage.saveOperations(operationsToSave)
-    } yield operationsToSave.lastOption.map(_.createdAt).orElse(until_?)
+    } yield operationsToSave.lastOption.map(_.createdAt).orElse(Some(untilWithoutOverlap))
 
   private[services] def toDomainOperation(
     tcsOperation: TcsOperation,
@@ -100,17 +97,6 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
         )
     }
   }
-
-  private[services] def calcActualUntil(
-    now: ZonedDateTime,
-    since: ZonedDateTime,
-    `until_?`: Option[ZonedDateTime]
-  ): ZonedDateTime =
-    until_?
-      .getOrElse {
-        val monthAfterSince = since.plusMonths(1)
-        Either.cond(now.isAfter(monthAfterSince), monthAfterSince, now).merge
-      }
 
   private[services] def nowF: F[ZonedDateTime] =
     clock.realTime
