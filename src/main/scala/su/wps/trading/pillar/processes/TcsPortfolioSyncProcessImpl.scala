@@ -1,7 +1,7 @@
 package su.wps.trading.pillar.processes
 
 import cats.Functor
-import cats.effect.{Async, Resource, Sync, Temporal}
+import cats.effect._
 import cats.syntax.flatMap._
 import cats.syntax.functor._
 import fs2.Stream
@@ -31,25 +31,30 @@ final class TcsPortfolioSyncProcessImpl[F[_]: Temporal: Logging: GenUUID: WithLo
     Stream
       .evals(accountStorage.allAccounts)
       .map(_.id)
-      .map(processAccountPortfolioSync(_))
+      .map { accountId =>
+        Stream
+          .eval(Ref[F].of(Option.empty[ZonedDateTime]))
+          .flatMap(processAccountPortfolioSync(accountId, _))
+      }
       .parJoinUnbounded
 
   private def processAccountPortfolioSync(
     accountId: AccountId,
-    lastDt: Option[ZonedDateTime] = None
-  ): Stream[F, Unit] =
+    lastDtRef: Ref[F, Option[ZonedDateTime]]
+  ): Stream[F, Unit] = {
+    val syncF = lastDtRef.get.flatMap(
+      tcsPortfolioService.syncOperations(1.days, 1.hours, _).flatMap(lastDtRef.set)
+    )
+
     Stream
-      .eval {
-        val syncF = tcsPortfolioService.syncOperations(1.days, 1.hours, lastDt)
-        genTraceId >>= (uuid => syncF.local(_.copy(traceId = uuid, accountId = accountId)))
-      }
-      .flatMap { lastDtNew =>
-        Stream.sleep(2.minutes) >> processAccountPortfolioSync(accountId, lastDtNew)
-      }
+      .eval(genTraceId >>= (uuid => syncF.local(_.copy(traceId = uuid, accountId = accountId))))
+      .flatMap(_ => Stream.sleep(2.minutes))
+      .repeat
       .handleErrorWith { e =>
         Stream.eval(errorCause"Tcs portfolio sync process loop failure" (e)) >>
-          Stream.sleep(2.minutes) >> processAccountPortfolioSync(accountId, lastDt)
+          Stream.sleep(2.minutes) >> processAccountPortfolioSync(accountId, lastDtRef)
       }
+  }
 
   private def genTraceId: F[String] =
     GenUUID[F].randomUUID.map(_.toString)

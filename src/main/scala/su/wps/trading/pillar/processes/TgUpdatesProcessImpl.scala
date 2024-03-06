@@ -1,8 +1,10 @@
 package su.wps.trading.pillar.processes
 
 import cats.Functor
+import cats.effect.kernel.Ref
 import cats.effect.{Async, Resource, Sync, Temporal}
 import cats.syntax.apply._
+import cats.syntax.flatMap._
 import cats.syntax.functor._
 import cats.syntax.traverse._
 import fs2.Stream
@@ -24,26 +26,26 @@ final class TgUpdatesProcessImpl[F[_]: Logging](
   commandHandleService: CommandHandleService[F]
 )(implicit F: Temporal[F])
     extends TgUpdatesProcess[F] {
-  def run: Stream[F, Unit] = processUpdatesLoop(0)
+  def run: Stream[F, Unit] = Stream.eval(Ref[F].of(0L)).flatMap(processUpdatesLoop)
 
-  private def processUpdatesLoop(offset: Long): Stream[F, Unit] =
+  private def processUpdatesLoop(offsetRef: Ref[F, Long]): Stream[F, Unit] =
     Stream
-      .eval(tgGateway.getUpdates(offset))
+      .eval(offsetRef.get.flatMap(tgGateway.getUpdates))
       .evalTap { updates =>
         F.whenA(updates.result.nonEmpty) {
           info"Received tg updates: ${updates.toString}" *>
             updates.result
               .flatMap(x => x.message.flatMap(m => m.text.map(m.chat.id -> _)))
-              .traverse((processUpdate _).tupled)
-              .void
+              .traverse((processUpdate _).tupled) >> lastOffset(updates)
+            .traverse(offsetRef.set)
+            .void
         }
       }
-      .flatMap { updates =>
-        Stream.sleep(200.milliseconds) >> processUpdatesLoop(lastOffset(updates).getOrElse(offset))
-      }
+      .flatMap(_ => Stream.sleep(200.milliseconds))
+      .repeat
       .handleErrorWith { e =>
         Stream.eval(errorCause"Tg updates process loop failure" (e)) >>
-          Stream.sleep(10.seconds) >> processUpdatesLoop(offset)
+          Stream.sleep(10.seconds) >> processUpdatesLoop(offsetRef)
       }
 
   private def lastOffset(response: tg.Result[List[tg.Update]]): Option[Long] =
