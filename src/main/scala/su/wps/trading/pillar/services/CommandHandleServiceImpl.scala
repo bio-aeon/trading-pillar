@@ -1,8 +1,8 @@
 package su.wps.trading.pillar.services
 
 import cats.effect.Clock
-import cats.syntax.flatMap._
-import cats.syntax.functor._
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
 import cats.{Functor, Monad}
 import su.wps.trading.pillar.facades.TcsFacade
 import su.wps.trading.pillar.gateways.TgGateway
@@ -35,9 +35,10 @@ final class CommandHandleServiceImpl[F[_]: Monad: Clock](
     } yield ()
 
   private def handleInfo(chatId: tg.ChatId): F[Unit] =
-    tcsFacade.portfolio.map(_.positions.map(x => s"${x.name} - ${x.balance.toInt}").mkString("\n")) >>= {
-      msg =>
-        tgGateway.sendMessage(chatId, msg)
+    tcsFacade.portfolio.map(
+      _.positions.map(x => s"${x.name} - ${x.balance.toInt}").mkString("\n")
+    ) >>= { msg =>
+      tgGateway.sendMessage(chatId, msg)
     }
 
   private def handleUnknown(chatId: tg.ChatId): F[Unit] =

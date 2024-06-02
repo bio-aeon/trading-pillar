@@ -1,7 +1,7 @@
 package su.wps.trading.pillar.security
 
 import cats.{Applicative, Monad}
-import mouse.any._
+import mouse.any.*
 import tofu.Raise.ContravariantRaise
 import tofu.kernel.types.Throws
 
@@ -20,9 +20,9 @@ final class CryptoImpl[F[_]: Monad] private (implicit R: Throws[F]) extends Cryp
         .mkString)
     }(identity)
 
-  private[security] def catchNonFatal[F[_], A, E](
-    a: => A
-  )(f: Throwable => E)(implicit A: Applicative[F], R: ContravariantRaise[F, E]): F[A] =
+  private[security] def catchNonFatal[F[_], A, E](a: => A)(
+    f: Throwable => E
+  )(implicit A: Applicative[F], R: ContravariantRaise[F, E]): F[A] =
     try A.pure(a)
     catch {
       case NonFatal(ex) => R.raise(f(ex))

@@ -1,9 +1,9 @@
 package su.wps.trading.pillar.processes
 
 import cats.Functor
-import cats.effect._
-import cats.syntax.flatMap._
-import cats.syntax.functor._
+import cats.effect.*
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
 import fs2.Stream
 import su.wps.trading.pillar.data.ProcessContext
 import su.wps.trading.pillar.facades.TcsFacadeImpl
@@ -15,16 +15,16 @@ import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
-import tofu.syntax.context._
-import tofu.syntax.logging._
+import tofu.syntax.context.*
+import tofu.syntax.logging.*
 
 import java.time.ZonedDateTime
-import scala.concurrent.duration._
+import scala.concurrent.duration.*
 
-final class TcsPortfolioSyncProcessImpl[F[_]: Temporal: Logging: GenUUID: WithLocal[
-  *[_],
-  ProcessContext
-]](accountStorage: AccountStorage[F], tcsPortfolioService: TcsPortfolioService[F])
+final class TcsPortfolioSyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
+  accountStorage: AccountStorage[F],
+  tcsPortfolioService: TcsPortfolioService[F]
+)(implicit WL: WithLocal[F, ProcessContext])
     extends TcsPortfolioSyncProcess[F] {
 
   def run: Stream[F, Unit] =

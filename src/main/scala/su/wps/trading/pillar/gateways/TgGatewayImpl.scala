@@ -1,22 +1,22 @@
 package su.wps.trading.pillar.gateways
 
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.show._
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import cats.syntax.show.*
 import cats.{Functor, Monad}
 import io.circe.Decoder
 import io.circe.parser.decode
-import sttp.client3._
+import sttp.client3.*
 import sttp.model.Uri
 import su.wps.trading.pillar.models.tg
 import tofu.kernel.types.Throws
 import tofu.logging.{Logging, Logs}
-import tofu.syntax.logging._
+import tofu.syntax.logging.*
 
 import java.net.{URI, URLEncoder}
 
-final class TgGatewayImpl[F[_]: Logging](token: tg.Token, backend: SttpBackend[F, Any])(
-  implicit F: Monad[F],
+final class TgGatewayImpl[F[_]: Logging](token: tg.Token, backend: SttpBackend[F, Any])(implicit
+  F: Monad[F],
   R: Throws[F]
 ) extends TgGateway[F]
     with GatewayLogging {

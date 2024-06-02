@@ -3,10 +3,10 @@ package su.wps.trading.pillar.processes
 import cats.Functor
 import cats.effect.kernel.Ref
 import cats.effect.{Async, Resource, Sync, Temporal}
-import cats.syntax.apply._
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.traverse._
+import cats.syntax.apply.*
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import cats.syntax.traverse.*
 import fs2.Stream
 import sttp.client3.SttpBackend
 import su.wps.trading.pillar.facades.TcsFacadeImpl
@@ -17,9 +17,9 @@ import su.wps.trading.pillar.services.{CommandHandleService, CommandHandleServic
 import tofu.kernel.types.Throws
 import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
-import tofu.syntax.logging._
+import tofu.syntax.logging.*
 
-import scala.concurrent.duration._
+import scala.concurrent.duration.*
 
 final class TgUpdatesProcessImpl[F[_]: Logging](
   tgGateway: TgGateway[F],
@@ -37,8 +37,8 @@ final class TgUpdatesProcessImpl[F[_]: Logging](
             updates.result
               .flatMap(x => x.message.flatMap(m => m.text.map(m.chat.id -> _)))
               .traverse((processUpdate _).tupled) >> lastOffset(updates)
-            .traverse(offsetRef.set)
-            .void
+              .traverse(offsetRef.set)
+              .void
         }
       }
       .flatMap(_ => Stream.sleep(200.milliseconds))

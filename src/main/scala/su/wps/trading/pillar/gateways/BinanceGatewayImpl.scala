@@ -1,9 +1,9 @@
 package su.wps.trading.pillar.gateways
 
 import cats.effect.Clock
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.show._
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import cats.syntax.show.*
 import cats.{Functor, Monad}
 import io.circe.parser.decode
 import io.circe.{Decoder, Json}
@@ -13,7 +13,7 @@ import su.wps.trading.pillar.models.binance
 import su.wps.trading.pillar.security.Crypto
 import tofu.kernel.types.Throws
 import tofu.logging.{Logging, Logs}
-import tofu.syntax.logging._
+import tofu.syntax.logging.*
 
 import java.net.URI
 

@@ -2,12 +2,12 @@ package su.wps.trading.pillar.facades
 
 import cats.Monad
 import cats.effect.{Async, Resource, Sync}
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.option._
-import cats.syntax.show._
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import cats.syntax.option.*
+import cats.syntax.show.*
 import com.google.protobuf.timestamp.Timestamp
-import fs2.grpc.syntax.all._
+import fs2.grpc.syntax.all.*
 import io.grpc.Metadata
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import ru.tinkoff.piapi.contract.v1.instruments.{
@@ -58,11 +58,11 @@ final class TcsFacadeImpl[F[_]: Monad: Logging] private (
       tcsFutures <- instrumentsGrpc
         .futures(instrumentsRequest, metadata)
         .map(_.instruments)
-      infoByFigi = (tcsCurrencies.map(x => x.figi -> (x.ticker, x.name)) ++ tcsShares.map(
-        x => x.figi -> (x.ticker, x.name)
+      infoByFigi = (tcsCurrencies.map(x => x.figi -> (x.ticker, x.name)) ++ tcsShares.map(x =>
+        x.figi -> (x.ticker, x.name)
       ) ++ tcsEtfs
-        .map(x => x.figi -> (x.ticker, x.name)) ++ tcsFutures.map(
-        x => x.figi -> (x.ticker, x.name)
+        .map(x => x.figi -> (x.ticker, x.name)) ++ tcsFutures.map(x =>
+        x.figi -> (x.ticker, x.name)
       )).toMap
       tcsPositions <- operationsGrpc
         .getPortfolio(PortfolioRequest(brokerAccountId.show), metadata)
@@ -112,7 +112,7 @@ object TcsFacadeImpl {
       channel <- channelBuilder.resource[I]
       instrumentsGrpc <- InstrumentsServiceFs2Grpc.stubResource[F](channel).mapK(liftFI.liftF)
       operationsGrpc <- OperationsServiceFs2Grpc.stubResource[F](channel).mapK(liftFI.liftF)
-      implicit0(log: Logging[F]) <- Resource.eval(logs.forService[TcsFacade[F]])
+      case implicit0(log: Logging[F]) <- Resource.eval(logs.forService[TcsFacade[F]])
     } yield new TcsFacadeImpl[F](brokerAccountId, token, instrumentsGrpc, operationsGrpc)
   }
 }

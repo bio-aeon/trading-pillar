@@ -1,6 +1,6 @@
 package su.wps.trading.pillar.models.domain
 
-import enumeratum.values._
+import enumeratum.values.*
 
 sealed abstract class Command(val value: String) extends StringEnumEntry
 

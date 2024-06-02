@@ -1,25 +1,25 @@
 package su.wps.trading.pillar.services
 
 import cats.effect.Clock
-import cats.syntax.applicative._
-import cats.syntax.apply._
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.show._
-import cats.syntax.traverse._
+import cats.syntax.applicative.*
+import cats.syntax.apply.*
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import cats.syntax.show.*
+import cats.syntax.traverse.*
 import cats.{Functor, Monad}
 import ru.tinkoff.piapi.contract.v1.common.MoneyValue
-import ru.tinkoff.piapi.contract.v1.operations.{Operation => TcsOperation}
+import ru.tinkoff.piapi.contract.v1.operations.Operation as TcsOperation
 import su.wps.trading.pillar.data.ProcessContext
 import su.wps.trading.pillar.facades.TcsFacade
-import su.wps.trading.pillar.models.domain._
+import su.wps.trading.pillar.models.domain.*
 import su.wps.trading.pillar.storages.TcsPortfolioOperationStorage
 import tofu.WithContext
 import tofu.kernel.types.Throws
 import tofu.logging.{Logging, Logs}
-import tofu.syntax.context._
-import tofu.syntax.logging._
-import tofu.syntax.raise._
+import tofu.syntax.context.*
+import tofu.syntax.logging.*
+import tofu.syntax.raise.*
 
 import java.time.{Instant, ZoneId, ZonedDateTime}
 import scala.concurrent.duration.FiniteDuration
@@ -74,27 +74,26 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
       tcsOperation.price.orRaise[F](new Exception("Empty price")),
       tcsOperation.payment.orRaise[F](new Exception("Empty amount")),
       tcsOperation.date.orRaise[F](new Exception("Empty date"))
-    ).flatMapN {
-      case (price, amount, date) =>
-        (moneyToBigDecimal(price), moneyToBigDecimal(amount)).mapN(
-          TcsPortfolioOperation(
-            PortfolioOperationId(0),
-            PortfolioOperationExtId(tcsOperation.id),
-            PortfolioOperationType(tcsOperation.operationType.name),
-            instrumentType_?.map(PortfolioInstrumentType(_)),
-            PortfolioOperationStatus(tcsOperation.state.name),
-            figi_?.map(Figi(_)),
-            Currency(tcsOperation.currency),
-            _,
-            tcsOperation.quantity.toInt,
-            tcsOperation.quantityRest.toInt,
-            _,
-            ProtocolVersion(TcsFacade.ApiVersion),
-            ZonedDateTime
-              .ofInstant(Instant.ofEpochSecond(date.seconds, date.nanos), ZoneId.of("UTC")),
-            accountId
-          )
+    ).flatMapN { case (price, amount, date) =>
+      (moneyToBigDecimal(price), moneyToBigDecimal(amount)).mapN(
+        TcsPortfolioOperation(
+          PortfolioOperationId(0),
+          PortfolioOperationExtId(tcsOperation.id),
+          PortfolioOperationType(tcsOperation.operationType.name),
+          instrumentType_?.map(PortfolioInstrumentType(_)),
+          PortfolioOperationStatus(tcsOperation.state.name),
+          figi_?.map(Figi(_)),
+          Currency(tcsOperation.currency),
+          _,
+          tcsOperation.quantity.toInt,
+          tcsOperation.quantityRest.toInt,
+          _,
+          ProtocolVersion(TcsFacade.ApiVersion),
+          ZonedDateTime
+            .ofInstant(Instant.ofEpochSecond(date.seconds, date.nanos), ZoneId.of("UTC")),
+          accountId
         )
+      )
     }
   }
 
@@ -123,7 +122,7 @@ object TcsPortfolioServiceImpl {
   )(implicit logs: Logs[I, F]): I[TcsPortfolioService[F]] =
     logs
       .forService[TcsPortfolioService[F]]
-      .map(
-        implicit log => new TcsPortfolioServiceImpl[F](initialYearsAgo, operationStorage, tcsFacade)
+      .map(implicit log =>
+        new TcsPortfolioServiceImpl[F](initialYearsAgo, operationStorage, tcsFacade)
       )
 }
