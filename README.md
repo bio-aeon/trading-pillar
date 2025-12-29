@@ -7,4 +7,4 @@ A Telegram bot that helps manage portfolio on stock and crypto exchanges.
 - [ ] Yahoo Finance API support
 - [ ] Interactive Brokers Client Portal API support
 - [ ] Binance API support
-- [ ] CI using Github Actions
+- [x] CI using Github Actions

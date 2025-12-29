@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Cache SBT
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.sbt
+            ~/.ivy2/cache
+            ~/.cache/coursier
+          key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt', '**/plugins.sbt', '**/Dependencies.scala') }}
+          restore-keys: |
+            ${{ runner.os }}-sbt-
+
+      - name: Check formatting
+        run: sbt scalafmtCheckAll
+
+      - name: Compile
+        run: sbt compile
+
+      - name: Run tests
+        run: sbt test
+
+      - name: Generate coverage report
+        run: sbt coverageReport
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Cache SBT
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.sbt
+            ~/.ivy2/cache
+            ~/.cache/coursier
+          key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt', '**/plugins.sbt', '**/Dependencies.scala') }}
+          restore-keys: |
+            ${{ runner.os }}-sbt-
+
+      - name: Check scalafmt
+        run: sbt scalafmtCheckAll
+
+      - name: Check for fatal warnings
+        run: sbt "set ThisBuild / scalacOptions += \"-Werror\"; compile"
+
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+
+      - name: Setup sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Cache SBT
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.sbt
+            ~/.ivy2/cache
+            ~/.cache/coursier
+          key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt', '**/plugins.sbt', '**/Dependencies.scala') }}
+          restore-keys: |
+            ${{ runner.os }}-sbt-
+
+      - name: Check for dependency updates
+        run: |
+          sbt "dependencyUpdates" || true
+        continue-on-error: true
