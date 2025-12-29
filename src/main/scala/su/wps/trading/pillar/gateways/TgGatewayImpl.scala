@@ -77,6 +77,12 @@ final class TgGatewayImpl[F[_]: Logging](token: tg.Token, backend: SttpBackend[F
 
 object TgGatewayImpl {
 
+  def create[F[_]: Monad: Throws: Logging](
+    token: tg.Token,
+    backend: SttpBackend[F, Any]
+  ): TgGatewayImpl[F] =
+    new TgGatewayImpl[F](token, backend)
+
   def create[I[_]: Functor, F[_]: Monad: Throws](token: tg.Token, backend: SttpBackend[F, Any])(
     implicit logs: Logs[I, F]
   ): I[TgGatewayImpl[F]] =

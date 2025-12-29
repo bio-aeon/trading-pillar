@@ -18,7 +18,11 @@ lazy val root = (project in file("."))
       circeParser,
       fs2Core,
       scalapbRuntime % "protobuf",
-      grpcNetty
+      grpcNetty,
+      specs2Core % Test,
+      specs2Scalacheck % Test,
+      catsEffectTestingSpecs2 % Test,
+      sttpCatsEffect % Test
     ),
     addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.13.3" cross CrossVersion.patch),
     addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1")
