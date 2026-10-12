@@ -344,10 +344,9 @@ paper order can be rejected instead of filled.
 - **JDK 21**
 - **Scala 2.13.18**, built with **sbt 1.9.8**
 
-[yfinance4s](https://github.com/coinductive/yfinance4s) (`io.github.coinductive %% yfinance4s %
-0.2.0`) is not published to Maven Central yet. Clone it and run `sbt publishLocal` (cross-built for
-2.13.18) **before** building trading-pillar - `sbt compile`/`sbt test` will fail to resolve the
-dependency otherwise.
+[yfinance4s](https://github.com/coinductive/yfinance4s), the Yahoo Finance client, resolves from
+Maven Central like every other dependency: `io.github.coinductive %% yfinance4s % 0.2.0`. No setup
+step is needed before `sbt compile` or `sbt test`.
 
 ```bash
 sbt test          # specs2 + cats-effect-testing; no network access required
