@@ -5,7 +5,7 @@ object Dependencies {
   object Versions {
     val bouncyCastle = "1.78.1"
     val mouse = "1.3.0"
-    val sttp = "3.9.7"
+    val sttp = "3.10.1"
     val newtype = "0.4.4"
     val enumeratum = "1.7.3"
     val tofu = "0.13.2"
@@ -15,6 +15,7 @@ object Dependencies {
     val grpc = "1.64.0"
     val specs2 = "4.20.5"
     val catsEffectTesting = "1.5.0"
+    val yfinance4s = "0.2.0"
   }
 
   val bcprov = "org.bouncycastle" % "bcprov-jdk18on" % Versions.bouncyCastle
@@ -30,6 +31,7 @@ object Dependencies {
   val fs2Core = "co.fs2" %% "fs2-core" % Versions.fs2
   val scalapbRuntime = "com.thesamet.scalapb" %% "scalapb-runtime" % Versions.scalapb
   val grpcNetty = "io.grpc" % "grpc-netty-shaded" % Versions.grpc
+  val yfinance4s = "io.github.coinductive" %% "yfinance4s" % Versions.yfinance4s
 
   // Test dependencies
   val specs2Core = "org.specs2" %% "specs2-core" % Versions.specs2

@@ -23,6 +23,16 @@ enum InstrumentType {
   INSTRUMENT_TYPE_OPTION = 7; //Опцион.
 }
 
+// Vendored from the upstream common.proto revision used for marketdata.proto: moved here
+// from instruments.proto because GetLastPricesRequest/GetClosePricesRequest (marketdata.proto)
+// reference it and marketdata.proto only imports common.proto, not instruments.proto.
+//Статус запрашиваемых инструментов.
+enum InstrumentStatus {
+  INSTRUMENT_STATUS_UNSPECIFIED = 0; //Значение не определено.
+  INSTRUMENT_STATUS_BASE = 1; //Базовый список инструментов (по умолчанию). Инструменты доступные для торговли через TINKOFF INVEST API.
+  INSTRUMENT_STATUS_ALL = 2; //Список всех инструментов.
+}
+
 //Денежная сумма в определенной валюте
 message MoneyValue {
 
@@ -65,6 +75,16 @@ enum SecurityTradingStatus {
   SECURITY_TRADING_STATUS_DEALER_NORMAL_TRADING = 14; //Доступна торговля в режиме внутренней ликвидности брокера
   SECURITY_TRADING_STATUS_DEALER_BREAK_IN_TRADING = 15; //Перерыв торговли в режиме внутренней ликвидности брокера
   SECURITY_TRADING_STATUS_DEALER_NOT_AVAILABLE_FOR_TRADING = 16; //Недоступна торговля в режиме внутренней ликвидности брокера
+}
+
+// Vendored from the upstream common.proto revision used for marketdata.proto: referenced
+// by the MarketDataRequest.payload oneof (ping / ping_settings).
+message PingRequest {
+  optional google.protobuf.Timestamp time = 1; //Время формирования запроса.
+}
+
+message PingDelaySettings {
+  optional int32 ping_delay_ms = 15; //Задержка (пинг) сообщений: 5000-180000 миллисекунд. Значение по умолчанию - 120000.
 }
 
 //Проверка активности стрима.

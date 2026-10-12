@@ -615,12 +615,9 @@ enum InstrumentIdType {
   INSTRUMENT_ID_TYPE_POSITION_UID = 4; //Идентификатор позиции.
 }
 
-//Статус запрашиваемых инструментов.
-enum InstrumentStatus {
-  INSTRUMENT_STATUS_UNSPECIFIED = 0; //Значение не определено.
-  INSTRUMENT_STATUS_BASE = 1; //Базовый список инструментов (по умолчанию). Инструменты доступные для торговли через TINKOFF INVEST API.
-  INSTRUMENT_STATUS_ALL = 2; //Список всех инструментов.
-}
+// InstrumentStatus moved to common.proto (see the note in common.proto): marketdata.proto needs it
+// and only imports common.proto. instruments.proto already imports common.proto, so the
+// unqualified reference below still resolves.
 
 //Данные по инструменту.
 message InstrumentResponse {

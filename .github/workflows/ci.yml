@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: ['**']
   pull_request:
     branches: [master]
 
@@ -23,7 +23,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 21
 
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
@@ -63,7 +63,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 21
 
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
@@ -97,7 +97,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 21
 
       - name: Setup sbt
         uses: sbt/setup-sbt@v1
