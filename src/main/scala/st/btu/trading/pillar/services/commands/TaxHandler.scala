@@ -38,7 +38,7 @@ final class TaxHandler[F[_]: Monad: Clock](
 
   private def format(r: AnnualTaxReport): String = {
     val lines = List(
-      s"Tax estimate ${r.year} (${r.currency}) - not tax advice",
+      s"Tax estimate ${r.year} (${r.currency.value}) - not tax advice",
       s"Realized gains: ${Replies.scaled(r.realizedGains)}",
       s"Long-term exempt: ${Replies.scaled(r.exemptGains)}",
       s"Taxable gains: ${Replies.scaled(r.taxableGains)}",
@@ -51,7 +51,7 @@ final class TaxHandler[F[_]: Monad: Clock](
       if (r.unconverted <= 0) Nil
       else
         List(
-          s"${r.unconverted} amount(s) could not be converted to ${r.currency} and were excluded."
+          s"${r.unconverted} amount(s) could not be converted to ${r.currency.value} and were excluded."
         )
     (lines ++ unconvertedLine).mkString("\n")
   }

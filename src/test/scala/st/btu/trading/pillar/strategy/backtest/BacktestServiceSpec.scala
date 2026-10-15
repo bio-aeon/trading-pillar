@@ -2,9 +2,10 @@ package st.btu.trading.pillar.strategy.backtest
 
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
+import cats.syntax.foldable.*
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.market.{Bar, Source, Ticker}
-import st.btu.trading.pillar.strategy.{StrategyId, StrategyRegistryImpl, StrategySignal}
+import st.btu.trading.pillar.models.market.{Bar, Source, SourcedTicker, Ticker}
+import st.btu.trading.pillar.strategy.*
 import st.btu.trading.pillar.testkit.StrategyFakes.ScriptedStrategy
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import st.btu.trading.pillar.testkit.{MarketDataFakes, StrategyFakes}
@@ -32,14 +33,15 @@ class BacktestServiceSpec extends Specification with CatsEffect {
 
   private def buildService(
     bars: List[Bar],
-    runStorage: StrategyFakes.FakeBacktestRunStorage
+    runStorage: StrategyFakes.FakeBacktestRunStorage,
+    extraStrategies: List[Strategy] = Nil
   ): IO[BacktestService[IO]] = {
     implicit val logs: Logs[IO, IO] =
       Logs.const[IO, IO](Logging.Make.plain[IO].forService[BacktestService[IO]])
     for {
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       registry <- StrategyRegistryImpl.create[IO, IO]
-      _ <- registry.register(knownStrategy)
+      _ <- (knownStrategy :: extraStrategies).traverse_(registry.register)
       service <- BacktestServiceImpl.create[IO, IO](registry, priceHistory, runStorage)
     } yield service
   }
@@ -83,7 +85,13 @@ class BacktestServiceSpec extends Specification with CatsEffect {
           runStorage <- StrategyFakes.backtestRunStorage()
           service <- buildService(List(bar(from), bar(from.plusDays(1))), runStorage)
           result <- service
-            .runPortfolio(StrategyId("missing"), List(ticker), Source.Yahoo, from, to, config)
+            .runPortfolio(
+              StrategyId("missing"),
+              List(SourcedTicker(ticker, Source.Yahoo)),
+              from,
+              to,
+              config
+            )
             .attempt
         } yield result must beLeft[Throwable].like { case e =>
           e must_== BacktestServiceError.StrategyNotFound(StrategyId("missing"))
@@ -102,8 +110,7 @@ class BacktestServiceSpec extends Specification with CatsEffect {
           service <- buildService(bars, runStorage)
           run <- service.runPortfolio(
             knownStrategy.id,
-            List(tickerA, tickerB),
-            Source.Yahoo,
+            List(SourcedTicker(tickerA, Source.Yahoo), SourcedTicker(tickerB, Source.Yahoo)),
             from,
             to,
             config
@@ -115,6 +122,73 @@ class BacktestServiceSpec extends Specification with CatsEffect {
           saved must haveSize(1)
           saved.head.id must_== run.id
           saved.head.result must_== run.result
+        }
+      }
+
+      "sources" >> {
+
+        val tickerA = Ticker("AAA")
+        val tickerB = Ticker("BBB")
+        val days = List(from, from.plusDays(1), from.plusDays(2))
+        // Buys one share of each ticker on its first bar, filled at the next bar's open.
+        val buyOne = ScriptedStrategy(
+          StrategyId("buy-one"),
+          warmupBars = 1,
+          (ctx, _) =>
+            if (ctx.position.isEmpty)
+              List(StrategySignal.Buy(ctx.ticker, Sizing.Quantity(1), "buy one"))
+            else List(StrategySignal.Hold("holding"))
+        )
+
+        "reads each ticker's bars from the source paired with it, although the other source also has bars for it" >> {
+          // AAA trades at 100 on Yahoo and 200 on Tinkoff; BBB at 300 on Yahoo and 50 on Tinkoff.
+          val bars = days.flatMap(day =>
+            List(
+              StrategyFakes.flatBar(tickerA, day, 100, Source.Yahoo),
+              StrategyFakes.flatBar(tickerA, day, 200, Source.Tinkoff),
+              StrategyFakes.flatBar(tickerB, day, 300, Source.Yahoo),
+              StrategyFakes.flatBar(tickerB, day, 50, Source.Tinkoff)
+            )
+          )
+          for {
+            runStorage <- StrategyFakes.backtestRunStorage()
+            service <- buildService(bars, runStorage, List(buyOne))
+            run <- service.runPortfolio(
+              buyOne.id,
+              List(SourcedTicker(tickerA, Source.Yahoo), SourcedTicker(tickerB, Source.Tinkoff)),
+              from,
+              to,
+              config
+            )
+          } yield
+          // Trades are listed in ticker order: AAA's fill, then BBB's.
+          run.result.trades.map(_.price) must_== List(BigDecimal(100), BigDecimal(50))
+        }
+
+        "fails instead of using another source's bars when a ticker has none on its own source" >> {
+          val bars = days.flatMap(day =>
+            List(
+              StrategyFakes.flatBar(tickerA, day, 100, Source.Yahoo),
+              StrategyFakes.flatBar(tickerB, day, 300, Source.Yahoo)
+            )
+          )
+          for {
+            runStorage <- StrategyFakes.backtestRunStorage()
+            service <- buildService(bars, runStorage, List(buyOne))
+            result <- service
+              .runPortfolio(
+                buyOne.id,
+                List(SourcedTicker(tickerA, Source.Yahoo), SourcedTicker(tickerB, Source.Tinkoff)),
+                from,
+                to,
+                config
+              )
+              .attempt
+            saved <- runStorage.saved
+          } yield {
+            result must beLeft[Throwable](BacktestServiceError.Failed(BacktestError.NoBars))
+            saved must beEmpty
+          }
         }
       }
     }

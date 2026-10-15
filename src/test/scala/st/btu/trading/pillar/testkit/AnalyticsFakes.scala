@@ -92,13 +92,13 @@ object AnalyticsFakes {
   // --- PortfolioValuationStorage ---
 
   trait FakePortfolioValuationStorage extends PortfolioValuationStorage[IO] {
-    def all: IO[Map[AccountId, (String, Vector[ValuationPoint])]]
+    def all: IO[Map[AccountId, (Currency, Vector[ValuationPoint])]]
   }
 
   def portfolioValuationStorage(): IO[FakePortfolioValuationStorage] =
-    Ref.of[IO, Map[AccountId, (String, Vector[ValuationPoint])]](Map.empty).map { ref =>
+    Ref.of[IO, Map[AccountId, (Currency, Vector[ValuationPoint])]](Map.empty).map { ref =>
       new FakePortfolioValuationStorage {
-        def upsert(accountId: AccountId, currency: String, points: Vector[ValuationPoint])
+        def upsert(accountId: AccountId, currency: Currency, points: Vector[ValuationPoint])
           : IO[Int] =
           ref
             .update { m =>
@@ -119,7 +119,7 @@ object AnalyticsFakes {
         def latest(accountId: AccountId): IO[Option[ValuationPoint]] =
           ref.get.map(_.get(accountId).flatMap(_._2.maxByOption(_.date.toEpochDay)))
 
-        def all: IO[Map[AccountId, (String, Vector[ValuationPoint])]] = ref.get
+        def all: IO[Map[AccountId, (Currency, Vector[ValuationPoint])]] = ref.get
       }
     }
 
@@ -139,13 +139,13 @@ object AnalyticsFakes {
         def dailySeries(accountId: AccountId, from: LocalDate, to: LocalDate): IO[ValuationSeries] =
           callsRef.update(_ :+ accountId) >> outcomes.getOrElse(
             accountId,
-            IO.pure(ValuationSeries(accountId, "RUB", Vector.empty, Set.empty, Set.empty))
+            IO.pure(ValuationSeries(accountId, DefaultCurrency, Vector.empty, Set.empty, Set.empty))
           )
 
         def positionsAsOf(accountId: AccountId, date: LocalDate): IO[PositionSnapshot] =
           callsRef.update(_ :+ accountId) >> positionSnapshots.getOrElse(
             accountId,
-            IO.pure(PositionSnapshot(date, "RUB", Vector.empty, Zero, Zero, 0))
+            IO.pure(PositionSnapshot(date, DefaultCurrency, Vector.empty, Zero, Zero, 0))
           )
 
         def calls: IO[List[AccountId]] = callsRef.get
@@ -153,6 +153,7 @@ object AnalyticsFakes {
     }
 
   private val Zero = BigDecimal(0)
+  private val DefaultCurrency = Currency("RUB")
 
   // --- AllocationTargetStorage ---
 

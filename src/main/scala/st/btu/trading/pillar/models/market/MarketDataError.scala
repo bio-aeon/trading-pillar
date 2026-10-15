@@ -24,6 +24,10 @@ object MarketDataError {
         None
       )
 
+  /** `source` is the source a ticker is set to use, but no adapter for it is configured. */
+  final case class SourceNotConfigured(source: Source)
+      extends MarketDataError(s"Market data source not configured: ${source.value}", None)
+
   /** A transient failure (network, timeout) worth retrying. */
   final case class Transient(message: String, cause: Option[Throwable])
       extends MarketDataError(message, cause)

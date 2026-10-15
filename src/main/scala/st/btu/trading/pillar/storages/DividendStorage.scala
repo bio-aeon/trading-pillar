@@ -1,10 +1,10 @@
 package st.btu.trading.pillar.storages
 
-import st.btu.trading.pillar.models.market.{DividendEvent, Ticker}
+import st.btu.trading.pillar.models.market.{DividendEvent, Source, SourcedTicker, Ticker}
 
 import java.time.LocalDate
 
-/** Persisted dividend events. */
+/** Persisted dividend events. Events of different sources coexist, so reads name the source. */
 trait DividendStorage[F[_]] {
 
   /** Inserts or updates `events`.
@@ -14,9 +14,16 @@ trait DividendStorage[F[_]] {
     */
   def upsert(events: List[DividendEvent]): F[Int]
 
-  /** `ticker`'s dividend events with an ex-date between `from` and `to`. */
-  def byTicker(ticker: Ticker, from: LocalDate, to: LocalDate): F[List[DividendEvent]]
+  /** `ticker`'s dividend events from `source` with an ex-date between `from` and `to`. */
+  def byTicker(
+    ticker: Ticker,
+    source: Source,
+    from: LocalDate,
+    to: LocalDate
+  ): F[List[DividendEvent]]
 
-  /** Dividend events with an ex-date on or after `from`, across any of `tickers`. */
-  def upcoming(tickers: List[Ticker], from: LocalDate): F[List[DividendEvent]]
+  /** Dividend events with an ex-date on or after `from`, for any of `tickers` and only from the
+    * source paired with that ticker.
+    */
+  def upcoming(tickers: List[SourcedTicker], from: LocalDate): F[List[DividendEvent]]
 }

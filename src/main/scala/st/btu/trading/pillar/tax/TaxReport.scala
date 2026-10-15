@@ -1,11 +1,6 @@
 package st.btu.trading.pillar.tax
 
-import st.btu.trading.pillar.models.domain.{
-  Figi,
-  OperationStatus,
-  OperationType,
-  TcsPortfolioOperation
-}
+import st.btu.trading.pillar.models.domain.*
 
 import java.time.{LocalDate, ZoneOffset}
 
@@ -34,16 +29,16 @@ object TaxReport {
     year: Int,
     ledger: LotLedger,
     operations: List[TcsPortfolioOperation],
-    fxRate: (String, LocalDate) => Option[BigDecimal],
+    fxRate: (Currency, LocalDate) => Option[BigDecimal],
     config: TaxConfig = TaxConfig()
   ): AnnualTaxReport = {
     val base = config.baseCurrency
 
-    def convert(amount: BigDecimal, currency: String, date: LocalDate): Option[BigDecimal] =
+    def convert(amount: BigDecimal, currency: Currency, date: LocalDate): Option[BigDecimal] =
       if (currency == base) Some(amount) else fxRate(currency, date).map(amount * _)
 
-    val figiCurrency: Map[Figi, String] =
-      operations.iterator.flatMap(op => op.figi.map(_ -> op.currency.value)).toMap
+    val figiCurrency: Map[Figi, Currency] =
+      operations.iterator.flatMap(op => op.figi.map(_ -> op.currency)).toMap
 
     val longTermDays = config.longTermYears.toLong * DaysPerYear
     val yearGains = ledger.realized.filter(_.sellDate.getYear == year)
@@ -94,13 +89,13 @@ object TaxReport {
 
   private def sumConverted(
     ops: List[TcsPortfolioOperation],
-    convert: (BigDecimal, String, LocalDate) => Option[BigDecimal],
+    convert: (BigDecimal, Currency, LocalDate) => Option[BigDecimal],
     amountOf: TcsPortfolioOperation => BigDecimal
   ): Summed =
     ops.foldLeft(Summed(Zero, 0)) { (acc, op) =>
       val amount = amountOf(op)
       val date = op.createdAt.withZoneSameInstant(ZoneOffset.UTC).toLocalDate
-      convert(amount, op.currency.value, date) match {
+      convert(amount, op.currency, date) match {
         case Some(v) => acc.copy(total = acc.total + v)
         case None => acc.copy(unconverted = acc.unconverted + 1)
       }

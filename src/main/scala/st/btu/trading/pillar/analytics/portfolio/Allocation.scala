@@ -3,6 +3,9 @@ package st.btu.trading.pillar.analytics.portfolio
 /** Cash is reported separately via `cashWeight`, never folded into the three breakdowns below. A
   * position with no weight contributes to none of them, since its share of total is unknown rather
   * than zero.
+  *
+  * Each breakdown is keyed by the text of the field it groups by, `unknown` for a position without
+  * that field; `byCurrency` is keyed by `Currency.value`.
   */
 final case class Allocation(
   byInstrumentType: Map[String, BigDecimal],
@@ -24,7 +27,7 @@ object Allocation {
     val weighted = snapshot.positions.flatMap(p => p.weight.map(p -> _))
     Allocation(
       byInstrumentType = grouped(weighted)(_.instrumentType),
-      byCurrency = grouped(weighted)(_.currency),
+      byCurrency = grouped(weighted)(_.currency.map(_.value)),
       byExchange = grouped(weighted)(_.exchange),
       cashWeight = if (snapshot.total == Zero) Zero else snapshot.cash / snapshot.total,
       unpricedWeightUnknown = snapshot.unpriced

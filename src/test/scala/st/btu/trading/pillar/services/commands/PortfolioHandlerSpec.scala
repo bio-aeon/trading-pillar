@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
 
@@ -14,6 +14,7 @@ class PortfolioHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
 
   "PortfolioHandler" >> {
     "handle" >> {
@@ -38,7 +39,7 @@ class PortfolioHandlerSpec extends Specification with CatsEffect {
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationStorage()
-          _ <- valuations.upsert(accountId, "RUB", points)
+          _ <- valuations.upsert(accountId, rub, points)
           handler = new PortfolioHandler[IO](tgGateway, valuations, accountId)
           _ <- handler.handle(chatId, Nil)
           messages <- tgGateway.sentMessages

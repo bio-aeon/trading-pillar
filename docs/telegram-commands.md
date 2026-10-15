@@ -114,19 +114,24 @@ One line per Tinkoff portfolio position, `"<name> - <balance rounded to an Int>"
 
 ### `/watchlist`
 
-Usage: `/watchlist, /watchlist add SYM [yahoo|tinkoff] (note), or /watchlist rm SYM`
+Usage: `/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM`
 
 Single-account app: rows are written under a fixed `AccountId` the handler is constructed with, not
-derived from the chat. The ticker is always upper-cased.
+derived from the chat. The ticker is always upper-cased. A watchlist entry has no source of its
+own: which source serves a ticker is a setting of the ticker (see [`/source`](#source)), and the
+listing shows it.
 
 ```
 /watchlist
 ```
 ```
 AAPL (yahoo) - core position
+SBER (tinkoff, board TQBR)
 MSFT (yahoo) (disabled)
 ```
-(`Watchlist is empty.` if there are none.)
+(`Watchlist is empty.` if there are none.) Each line names the source the ticker effectively uses:
+the setting it has of its own, or the default source when it has none. For a Tinkoff setting the
+board follows, `default board` when the setting names none.
 
 ```
 /watchlist add aapl core position
@@ -135,25 +140,27 @@ MSFT (yahoo) (disabled)
 Added AAPL (yahoo) to the watchlist.
 ```
 
-The token right after the symbol is optional and selects the `Source`: parsed with
-`Source.withValueOpt` (so it must match a `Source` value exactly - `yahoo`, `tinkoff` or `binance`),
-defaulting to `Source.Yahoo` when omitted. When the token doesn't name a known source, it is treated
-as the first word of the note instead of being dropped.
+The token right after the symbol is optional and sets the ticker's source: `yahoo` or `tinkoff`,
+matched regardless of case. Without it the ticker's source setting is left as it is, and the reply
+names the source the ticker effectively uses. A token that names neither source is treated as the
+first word of the note instead of being dropped. `yahoo` replaces whatever setting the ticker had;
+`tinkoff` puts a ticker that is not on Tinkoff on the default board and keeps the board of one that
+already is.
 
 ```
 /watchlist add sber tinkoff
 ```
 ```
-Added SBER (tinkoff) to the watchlist.
+Added SBER (tinkoff, default board) to the watchlist.
 ```
 
 ```
 /watchlist add sber tinkoff MOEX blue chip
 ```
 ```
-Added SBER (tinkoff) to the watchlist.
+Added SBER (tinkoff, default board) to the watchlist.
 ```
-(note is `MOEX blue chip`; `/watchlist` then lists `SBER (tinkoff) - MOEX blue chip`.)
+(note is `MOEX blue chip`; `/watchlist` then lists `SBER (tinkoff, default board) - MOEX blue chip`.)
 
 ```
 /watchlist rm AAPL
@@ -162,7 +169,71 @@ Added SBER (tinkoff) to the watchlist.
 Removed AAPL from the watchlist.
 ```
 (`AAPL was not on the watchlist.` if it wasn't there; `Usage: ...` if `add`/`rm` is missing its
-symbol.)
+symbol.) Removing a ticker leaves its source setting in place.
+
+### `/source`
+
+Usage: `/source, /source SYM, /source SYM yahoo, /source SYM tinkoff (BOARD), or /source SYM default`
+
+Shows or changes the market data source of a ticker. The setting belongs to the ticker, not to an
+account or a watchlist, so it applies everywhere the ticker is used: price-history sync, backtests,
+alerts, valuation and dividends. A ticker with no setting of its own uses the default source the
+router is configured with. A board is the broker's class code for a trading venue, such as `TQBR`
+or `CETS`; only Tinkoff has boards.
+
+```
+/source
+```
+```
+AAPL - yahoo
+GAZP - tinkoff, default board
+SBER - tinkoff, board TQBR
+```
+(One line per ticker that has a setting, ordered by ticker. `No ticker has a source of its own; every
+ticker uses the default.` if there are none.)
+
+```
+/source sber
+```
+```
+SBER uses tinkoff, board TQBR.
+```
+```
+/source aapl
+```
+```
+AAPL uses the default: yahoo.
+```
+(The second form is the reply for a ticker with no setting; it names the default source.)
+
+```
+/source sber yahoo
+```
+```
+SBER now uses yahoo.
+```
+
+```
+/source usd000utstom tinkoff cets
+```
+```
+USD000UTSTOM now uses tinkoff, board CETS.
+```
+
+`/source SYM tinkoff` without a board puts the ticker on the Tinkoff adapter's default board
+(`TcsMarketDataConfig.defaultClassCode`) and drops a board it had; the board is upper-cased.
+
+```
+/source sber default
+```
+```
+SBER now uses the default source.
+```
+(`SBER already uses the default source.` if it had no setting.)
+
+The ticker is upper-cased, and `yahoo`, `tinkoff` and `default` are matched regardless of case. Any
+other form - an unknown word, a board after `yahoo`, more than one board, words after `default` -
+replies `Usage: ...` and changes nothing. Not tied to an account, unlike `/watchlist`.
 
 ### `/strategies`
 
@@ -208,10 +279,12 @@ a rendering or sending failure is logged and swallowed rather than failing the c
 text reply has already gone out by that point.
 
 `years` defaults to 2 if omitted or not a positive integer; `from = today - years`. The handler
-doesn't take a source argument itself - `source` is resolved via `MarketDataSources.forTicker(SYM)`
-(the symbol's own watchlist entry, or `Source.Yahoo` if it isn't on any watchlist; see
-[`market-data.md`](market-data.md#routing-multiple-sources-marketdatasources)). Percentages and the
-Sharpe ratio are rounded to 2 decimals. The `Parameters:` line is shown whenever the run's
+doesn't take a source argument itself: the stored bars are read from the source the symbol is set
+to use, or the default source if it has no setting (`MarketDataSources.settingFor`; see
+[`/source`](#source) and
+[`market-data.md`](market-data.md#routing-multiple-sources-marketdatasources)). A backtest only
+reads stored bars, so it needs no market data adapter for that source to be wired. Percentages and
+the Sharpe ratio are rounded to 2 decimals. The `Parameters:` line is shown whenever the run's
 `BacktestResult.parameters` is non-empty (true for every reference strategy) - `key=value`, sorted
 by key, comma-separated; it's omitted only for a strategy with no parameters at all. Failure
 replies:
@@ -294,10 +367,10 @@ Buy and hold: 15.63%
 [a photo: backtest-15-equity.png]
 ```
 
-`source` is resolved once, from the **first** ticker (`MarketDataSources.forTicker`), and used to
-load every ticker's bars; the reply's header and the persisted run's ticker both show the full
-ticker list joined by `,`, in the order given. `Buy and hold` is the equal-weight definition (split
-the initial cash evenly, one share lot per ticker bought at its own first open), not any one
+Each ticker's bars are read from the source that ticker is set to use (see [`/source`](#source)),
+so one portfolio can mix sources; the reply's header and the persisted run's ticker both show the
+full ticker list joined by `,`, in the order given. `Buy and hold` is the equal-weight definition
+(split the initial cash evenly, one share lot per ticker bought at its own first open), not any one
 ticker's own buy-and-hold. `Trades` still counts every individual fill across every ticker
 (`metrics.tradeCount`), same meaning as the single-ticker reply.
 
@@ -313,7 +386,8 @@ params= is not supported with multiple tickers.
 Usage: `/sweep strategyId SYM [years=2] key=from:to:step [key=from:to:step ...] - parameter sweep, top 5 by Sharpe`
 
 Runs a whole grid of parameter combinations for one `ParameterizedStrategy` against the same stored
-bars and replies with the top 5 by Sharpe ratio - see
+bars (those of the source the symbol is set to use, read without needing an adapter for it, as in
+`/backtest`) and replies with the top 5 by Sharpe ratio - see
 [`backtesting.md`](backtesting.md#parameter-sweeps-backtestsweep) for `BacktestSweep`/`Grid.expand`
 themselves. Unlike `/backtest`, **a sweep's points are never persisted** - nothing is written to
 `BacktestRunStorage`, and there is no run id in the reply.
@@ -465,8 +539,10 @@ account's watchlist tickers, each `"<ticker> <exDate> <amount> <currency>"` (amo
 decimals, `currency` omitted when the event has none); then trailing-12-month totals per ticker
 that had any dividend in that window, each `"<ticker>: <total>"`. Either section reads
 `No upcoming ex-dividend dates.` / `No dividends in the trailing 12 months.` when empty - including
-when the account's watchlist itself is empty. Single-account app, same as `/watchlist`: the handler
-is constructed with a fixed `AccountId`, not derived from the chat.
+when the account's watchlist itself is empty. Each ticker's events are read from the source it is
+set to use (see [`/source`](#source)), so dividends another source stored for the ticker are not
+shown or counted. Single-account app, same as `/watchlist`: the handler is constructed with a fixed
+`AccountId`, not derived from the chat.
 
 ### `/performance`
 
@@ -531,9 +607,9 @@ Total: 45916.00
 One line per open position (a fully closed position - net quantity 0 - is omitted), computed live
 from `PortfolioValuationService.positionsAsOf(accountId, today)` - see
 [`analytics.md`](analytics.md#positions-and-allocation), not read from storage. Priced
-positions come first, largest `value` first; unpriced ones (no known close, no FX rate, or no
-`InstrumentStorage` mapping at all) follow, marked `(unpriced)`, ordered by ticker (or FIGI when
-there's no ticker). `price` is the instrument's own last known close in its own currency,
+positions come first, largest `value` first; unpriced ones (no known close, no FX rate, or a FIGI
+the `InstrumentDirectory` does not know) follow, marked `(unpriced)`, ordered by ticker (or FIGI
+when there's no ticker). `price` is the instrument's own last known close in its own currency,
 unconverted; `value` and the trailing `Cash`/`Total` lines are all in the account's base currency.
 `No positions.` in place of the list when the snapshot has none. Single-account app, same as
 `/performance`: the handler is constructed with a fixed `AccountId`, not derived from the chat, and
@@ -563,11 +639,13 @@ Cash: 12.50%
 ```
 
 Three breakdowns of `Allocation.of(positionsAsOf(accountId, today))` - see
-[`analytics.md`](analytics.md#positions-and-allocation) - each largest weight first; a position
-missing the relevant field (no `InstrumentStorage` mapping at all) falls under `unknown`, and an
-empty breakdown prints `(none)`. `Cash` is always its own trailing line, never folded into `By
-currency`. When any position is unpriced, one more trailing line reads `Unpriced positions (weight
-unknown): N`. Single-account app, same as `/positions`.
+[`analytics.md`](analytics.md#positions-and-allocation) - each largest weight first. Only priced
+positions appear in them, so a FIGI the `InstrumentDirectory` does not know (an unpriced position)
+is in none of the three. A priced position whose ticker has no stored instrument metadata from its
+configured source falls under `unknown` in `By exchange` only, since its type and currency fall back
+to the broker's record. An empty breakdown prints `(none)`. `Cash` is always its own trailing line,
+never folded into `By currency`. When any position is unpriced, one more trailing line reads
+`Unpriced positions (weight unknown): N`. Single-account app, same as `/positions`.
 
 ### `/drift`
 
@@ -641,10 +719,11 @@ Virtual account fed by `StrategyBinding`s with `mode = paper` (see
 [`paper-trading.md`](paper-trading.md) and [`alerts.md`](alerts.md#paper-trading)) - `AccountId` is
 a fixed constructor argument, same as every other single-account handler. `Cash` is the stored
 `PaperAccount.cash`; each `PaperPosition` is priced with the ticker's own routed latest quote
-(`MarketDataSources.forTicker`, same source resolution `/backtest`/`/positions` use) - `price` is
-shown unconverted in the position's own currency, `value = quantity * price` and
-`P&L = (price - averageCost) * quantity`; a position with no quote available right now is marked
-`(unpriced)` instead and excluded from `Equity`. `Equity = cash + sum(priced positions' value)`.
+(`MarketDataSources.forTicker`, so it needs the ticker's adapter, unlike `/backtest` and
+`/positions`, which read only stored data) - `price` is shown unconverted in the position's own
+currency, `value = quantity * price` and `P&L = (price - averageCost) * quantity`; a position with
+no quote available right now is marked `(unpriced)` instead and excluded from `Equity`.
+`Equity = cash + sum(priced positions' value)`.
 `No open positions.` / `No orders yet.` in place of either section when empty; `No paper account
 configured.` instead of the whole reply when `PaperAccount` doesn't exist for this account (the
 consumer provisions one, and its starting cash, outside the library). The last 5 orders
@@ -765,7 +844,7 @@ and sends it with [`TgGateway.sendDocument`](#tggatewaysenddocument) as `<kind>-
 |---|---|---|
 | `operations` | every executed-or-not operation of the account in `year`, oldest first | `TcsPortfolioOperationStorage.operationsByDtRange` |
 | `valuations` | the stored daily valuation series for `year` | `PortfolioValuationStorage.series` |
-| `dividends` | dividend events of `year`, across the account's watchlist tickers, by ex-date | `DividendStorage.byTicker` per `WatchlistStorage.byAccount` ticker |
+| `dividends` | dividend events of `year`, across the account's watchlist tickers, by ex-date | `DividendStorage.byTicker` per `WatchlistStorage.byAccount` ticker, from the source the ticker is set to use |
 
 `year` defaults to the current year (UTC) when omitted or not an integer; the `kind` token is
 matched case-insensitively. When there is nothing to export, the reply is a short text instead of a
@@ -862,7 +941,8 @@ Usage: `/help - list available commands`
 ```
 /ping - health check
 /info - portfolio positions
-/watchlist, /watchlist add SYM [yahoo|tinkoff] (note), or /watchlist rm SYM
+/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
+/source, /source SYM, /source SYM yahoo, /source SYM tinkoff (BOARD), or /source SYM default
 /strategies - list registered strategies
 /backtest strategyId SYM[,SYM2,...] (years, default 2) (params=key:value,key:value)
 /sweep strategyId SYM [years=2] key=from:to:step [key=from:to:step ...] - parameter sweep, top 5 by Sharpe

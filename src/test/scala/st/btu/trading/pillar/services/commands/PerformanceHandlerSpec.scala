@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
 
@@ -14,6 +14,7 @@ class PerformanceHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
 
   "PerformanceHandler" >> {
     "handle" >> {
@@ -34,7 +35,7 @@ class PerformanceHandlerSpec extends Specification with CatsEffect {
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationStorage()
-          _ <- valuations.upsert(accountId, "RUB", Vector(point))
+          _ <- valuations.upsert(accountId, rub, Vector(point))
           handler = new PerformanceHandler[IO](tgGateway, valuations, accountId)
           _ <- handler.handle(chatId, Nil)
           messages <- tgGateway.sentMessages
@@ -59,7 +60,7 @@ class PerformanceHandlerSpec extends Specification with CatsEffect {
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationStorage()
-          _ <- valuations.upsert(accountId, "RUB", points)
+          _ <- valuations.upsert(accountId, rub, points)
           handler = new PerformanceHandler[IO](tgGateway, valuations, accountId)
           _ <- handler.handle(chatId, Nil)
           messages <- tgGateway.sentMessages
@@ -81,7 +82,7 @@ class PerformanceHandlerSpec extends Specification with CatsEffect {
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationStorage()
-          _ <- valuations.upsert(accountId, "RUB", Vector(outsideOneMonth, insideOneMonth))
+          _ <- valuations.upsert(accountId, rub, Vector(outsideOneMonth, insideOneMonth))
           handler = new PerformanceHandler[IO](tgGateway, valuations, accountId)
           _ <- handler.handle(chatId, List("1m"))
           messages <- tgGateway.sentMessages

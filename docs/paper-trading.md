@@ -26,7 +26,7 @@ carrier of those signals.
 ## Models
 
 ```scala
-final case class PaperAccount(accountId: AccountId, cash: BigDecimal, currency: String)
+final case class PaperAccount(accountId: AccountId, cash: BigDecimal, currency: Currency)
 
 @newtype final case class PaperOrderId(value: Long)
 

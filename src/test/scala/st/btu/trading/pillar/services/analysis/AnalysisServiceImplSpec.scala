@@ -3,8 +3,8 @@ package st.btu.trading.pillar.services.analysis
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.*
-import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
 import st.btu.trading.pillar.storages.{DividendStorage, PriceHistoryStorage}
 import st.btu.trading.pillar.testkit.MarketDataFakes
 
@@ -15,29 +15,36 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
   private val ticker = Ticker("AAPL")
   private val today = LocalDate.now(ZoneOffset.UTC)
   private val asOf = ZonedDateTime.now(ZoneOffset.UTC)
+  private val usd = Currency("USD")
 
   // High/low = close (zero intrabar spread): none of the assertions below depend on the spread,
   // only on the close series itself.
   private def bar(date: LocalDate, close: BigDecimal): Bar =
     Bar(ticker, date, close, close, close, close, close, 0L, Source.Yahoo)
 
-  private def quote(price: BigDecimal, currency: String = "USD"): Quote =
+  private def quote(price: BigDecimal, currency: Currency = usd): Quote =
     Quote(ticker, price, currency, asOf, Source.Yahoo)
 
   private def info(instrumentType: String = "EQUITY", exchange: String = "NASDAQ"): InstrumentInfo =
     InstrumentInfo(
       ticker,
+      Source.Yahoo,
+      None,
       Some("Apple"),
       instrumentType,
-      "USD",
+      usd,
       exchange,
       "America/New_York",
       None,
       asOf
     )
 
-  private def div(exDate: LocalDate, amount: BigDecimal): DividendEvent =
-    DividendEvent(ticker, exDate, amount, Some("USD"), Source.Yahoo)
+  private def div(
+    exDate: LocalDate,
+    amount: BigDecimal,
+    source: Source = Source.Yahoo
+  ): DividendEvent =
+    DividendEvent(ticker, exDate, amount, Some(usd), source)
 
   // Raises on any call - used to prove the NotFound short-circuit never reaches storage.
   private val raisingPriceHistory: PriceHistoryStorage[IO] = new PriceHistoryStorage[IO] {
@@ -51,30 +58,42 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
 
   private val raisingDividends: DividendStorage[IO] = new DividendStorage[IO] {
     def upsert(events: List[DividendEvent]): IO[Int] = boom
-    def byTicker(t: Ticker, from: LocalDate, to: LocalDate): IO[List[DividendEvent]] = boom
-    def upcoming(tickers: List[Ticker], from: LocalDate): IO[List[DividendEvent]] = boom
+    def byTicker(t: Ticker, s: Source, from: LocalDate, to: LocalDate): IO[List[DividendEvent]] =
+      boom
+    def upcoming(tickers: List[SourcedTicker], from: LocalDate): IO[List[DividendEvent]] = boom
     private def boom[A]: IO[A] =
       IO.raiseError(new RuntimeException("DividendStorage should not be called"))
   }
 
+  // Yahoo and Tinkoff adapters serve the same quotes and metadata, so which one answers is decided
+  // by `settings` alone; a ticker without a setting uses Yahoo.
   private def service(
     quotes: Map[Ticker, IO[Option[Quote]]] = Map.empty,
     infos: Map[Ticker, IO[Option[InstrumentInfo]]] = Map.empty,
     bars: List[Bar] = List.empty,
     dividends: List[DividendEvent] = List.empty,
     priceHistory: Option[PriceHistoryStorage[IO]] = None,
-    dividendStorage: Option[DividendStorage[IO]] = None
+    dividendStorage: Option[DividendStorage[IO]] = None,
+    settings: List[TickerSource] = List.empty
   ): IO[AnalysisService[IO]] =
     for {
-      source <- MarketDataFakes.marketDataSource(quotes = quotes, info = infos)
-      watchlist <- MarketDataFakes.watchlistStorage()
+      yahoo <- MarketDataFakes.marketDataSource(quotes = quotes, info = infos)
+      tinkoff <- MarketDataFakes.marketDataSource(
+        src = Source.Tinkoff,
+        quotes = quotes,
+        info = infos
+      )
       ph <- priceHistory.fold[IO[PriceHistoryStorage[IO]]](
         MarketDataFakes.priceHistoryStorage(bars)
       )(IO.pure)
       ds <- dividendStorage.fold[IO[DividendStorage[IO]]](
         MarketDataFakes.dividendStorage(dividends)
       )(IO.pure)
-      sources = new MarketDataSourcesImpl[IO](List(source), watchlist, Source.Yahoo)
+      sources <- MarketDataFakes.marketDataSources(
+        yahoo = Some(yahoo),
+        tinkoff = Some(MarketDataFakes.tinkoffBoardsOver(tinkoff)),
+        settings = settings
+      )
     } yield AnalysisServiceImpl.create[IO](sources, ph, ds)
 
   "AnalysisServiceImpl" >> {
@@ -107,7 +126,7 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
           result <- svc.analyze(ticker)
         } yield {
           result.price must beSome(BigDecimal(123.45))
-          result.currency must beSome("USD")
+          result.currency must beSome(usd)
           result.asOf must beSome(asOf)
           result.instrumentType must beSome("EQUITY")
           result.exchange must beSome("NASDAQ")
@@ -181,6 +200,22 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
           result.dividends12m must_== BigDecimal(4)
           result.dividendYieldPct must beSome(BigDecimal(4))
         }
+      }
+
+      "counts only the dividends of the source the ticker is configured to use" >> {
+        val events = List(
+          div(today.minusMonths(6), BigDecimal(2), Source.Yahoo),
+          div(today.minusMonths(3), BigDecimal(50), Source.Tinkoff)
+        )
+        for {
+          svc <- service(
+            quotes = Map(ticker -> IO.pure(Some(quote(BigDecimal(100))))),
+            infos = Map(ticker -> IO.pure(Some(info()))),
+            dividends = events,
+            settings = List(TickerSource(ticker, SourceSetting.Tinkoff(None)))
+          )
+          result <- svc.analyze(ticker)
+        } yield result.dividends12m must_== BigDecimal(50)
       }
     }
   }

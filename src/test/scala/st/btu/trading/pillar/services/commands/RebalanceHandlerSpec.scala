@@ -9,7 +9,7 @@ import st.btu.trading.pillar.analytics.portfolio.{
   PositionSnapshot,
   PositionValue
 }
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
 
@@ -19,6 +19,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
   private val today = LocalDate.now
 
   private def position(instrumentType: Option[String], weight: Option[BigDecimal]): PositionValue =
@@ -50,7 +51,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
       "sells an overweight target down to target, relative to the current total, with no cash argument" >> {
         val snapshot = PositionSnapshot(
           today,
-          "RUB",
+          rub,
           Vector(position(Some("share"), Some(BigDecimal("0.6")))),
           cash = BigDecimal(400),
           total = BigDecimal(1000),
@@ -78,7 +79,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
         val snapshot =
           PositionSnapshot(
             today,
-            "RUB",
+            rub,
             Vector.empty,
             cash = BigDecimal(1000),
             total = BigDecimal(1000),
@@ -107,7 +108,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
       "replies that the portfolio is already within thresholds when there is nothing to suggest" >> {
         val snapshot = PositionSnapshot(
           today,
-          "RUB",
+          rub,
           Vector(position(Some("share"), Some(BigDecimal("0.5")))),
           cash = BigDecimal(500),
           total = BigDecimal(1000),
@@ -130,7 +131,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
       }
 
       "replies with usage on an invalid cash argument" >> {
-        val snapshot = PositionSnapshot(today, "RUB", Vector.empty, BigDecimal(0), BigDecimal(0), 0)
+        val snapshot = PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), 0)
         for {
           pair <- handlerAndGateway(snapshot, List.empty)
           (handler, tgGateway) = pair

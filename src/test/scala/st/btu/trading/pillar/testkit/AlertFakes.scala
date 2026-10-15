@@ -4,7 +4,7 @@ import cats.effect.{IO, Ref}
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import st.btu.trading.pillar.alerts.*
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.{Quote, Source, Ticker}
 import st.btu.trading.pillar.storages.{
   AlertHistoryStorage,
@@ -256,5 +256,5 @@ object AlertFakes {
     price: BigDecimal,
     asOf: ZonedDateTime,
     source: Source = Source.Yahoo
-  ): Quote = Quote(ticker, price, "USD", asOf, source)
+  ): Quote = Quote(ticker, price, Currency("USD"), asOf, source)
 }

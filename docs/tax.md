@@ -24,8 +24,8 @@ object TaxLots {
 
 Pure, no `F[_]`. Only `status.value == "OPERATION_STATE_EXECUTED"` operations are considered;
 everything else in `operations` is ignored. `tickerOf` is a plain function so `TaxLots` itself
-never touches `InstrumentStorage` - the caller (`TaxServiceImpl`) resolves every figi it sees to a
-ticker once, up front.
+never touches an `InstrumentDirectory` - the caller (`TaxServiceImpl`) resolves every figi it sees
+to a ticker once, up front.
 
 ### Opening a lot
 
@@ -99,15 +99,16 @@ order (a stable sort), and different figis on the same date break the tie by fig
 ## `TaxReport.annual` - the yearly estimate
 
 ```scala
-final case class TaxConfig(baseCurrency: String = "RUB", progressiveThreshold: BigDecimal = 2400000,
-                           lowerRate: BigDecimal = 0.13, upperRate: BigDecimal = 0.15, longTermYears: Int = 3)
+final case class TaxConfig(baseCurrency: Currency = Currency("RUB"), progressiveThreshold: BigDecimal = 2400000,
+                           lowerRate: BigDecimal = 0.13, upperRate: BigDecimal = 0.15, longTermYears: Int = 3,
+                           fxTickers: Map[Currency, Ticker] = Map.empty)
 final case class AnnualTaxReport(year: Int, realizedGains: BigDecimal, exemptGains: BigDecimal, taxableGains: BigDecimal,
                                  dividendIncome: BigDecimal, couponIncome: BigDecimal, taxesWithheld: BigDecimal,
-                                 estimatedTax: BigDecimal, unconverted: Int, currency: String)
+                                 estimatedTax: BigDecimal, unconverted: Int, currency: Currency)
 
 object TaxReport {
   def annual(year: Int, ledger: LotLedger, operations: List[TcsPortfolioOperation],
-             fxRate: (String, LocalDate) => Option[BigDecimal], config: TaxConfig = TaxConfig()): AnnualTaxReport
+             fxRate: (Currency, LocalDate) => Option[BigDecimal], config: TaxConfig = TaxConfig()): AnnualTaxReport
 }
 ```
 
@@ -115,8 +116,8 @@ Pure. `operations` must be the same (or a superset of the) operations `ledger` w
 `TaxReport.annual` uses it for two things `ledger` alone cannot provide:
 
 1. **Each figi's trading currency.** `RealizedGain` carries no currency of its own, so it is looked
-   up from any operation referencing that figi (`operations.flatMap(op => op.figi.map(_.value ->
-   op.currency.value)).toMap`), trusting - as `PortfolioValuationServiceImpl` already does - that one
+   up from any operation referencing that figi (`operations.flatMap(op => op.figi.map(_ ->
+   op.currency)).toMap`), trusting - as `PortfolioValuationServiceImpl` already does - that one
    instrument trades in one currency.
 2. **Dividend and coupon income, and withheld tax.** These operation types never open or close a
    lot, so they never appear in `ledger` at all; they are scanned directly from `operations`.
@@ -125,13 +126,20 @@ Pure. `operations` must be the same (or a superset of the) operations `ledger` w
 
 Every monetary figure in `AnnualTaxReport` is in `config.baseCurrency`. A non-base amount is
 converted with `fxRate(currency, date)` - supplied by the caller, approximating the rate on `date`
-with the latest `<currency><baseCurrency>=X` close in the stored price history **at or before**
-`date` (the exact same convention `PortfolioValuationServiceImpl` documents in
-[`analytics.md`](analytics.md#rules) - both now share the lookup through `analytics.FxRates`). When
-`fxRate` returns `None` for some amount (no bar on or before that date for that currency), that one
-amount is dropped from every sum it would have contributed to and `unconverted` is incremented once
-for it - never twice, even for a realized gain that would otherwise have counted toward both
-`realizedGains` and `exemptGains`.
+with the latest close in the stored price history **at or before** `date` of the currency's rate
+ticker: `config.fxTickers(currency)` when it names one, otherwise the conventional
+`<currency><baseCurrency>=X` pair (the exact same convention `PortfolioValuationServiceImpl`
+documents in [`analytics.md`](analytics.md#rules) - both share the lookup through
+`analytics.FxRates`). The rate ticker's bars are read from the source that ticker is configured to
+use, never from another source. When `fxRate` returns `None` for some amount (no bar on or before
+that date for that currency), that one amount is dropped from every sum it would have contributed
+to and `unconverted` is incremented once for it - never twice, even for a realized gain that would
+otherwise have counted toward both `realizedGains` and `exemptGains`.
+
+Currencies are `models.domain.Currency` values, which normalise their code on construction (see
+[`analytics.md`](analytics.md#rules), rule 10), so `TaxReport.annual` compares them exactly: a `usd`
+operation is `USD` and is converted through `USDRUB=X` with base `RUB`, a `rub` operation counts as
+base with no rate, and `AnnualTaxReport.currency` carries the configured base currency.
 
 ### Field definitions
 
@@ -175,8 +183,9 @@ trait TaxService[F[_]] {
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]]   // oldest first; Nil if none
 }
 object TaxServiceImpl {
-  def create[F[_]: Monad: Clock](operations: TcsPortfolioOperationStorage[F], instruments: InstrumentStorage[F],
-                                 priceHistory: PriceHistoryStorage[F], config: TaxConfig): TaxService[F]
+  def create[F[_]: Monad: Clock](operations: TcsPortfolioOperationStorage[F], directory: InstrumentDirectory[F],
+                                 sources: MarketDataSources[F], priceHistory: PriceHistoryStorage[F],
+                                 config: TaxConfig): TaxService[F]
 }
 ```
 
@@ -187,10 +196,18 @@ before a requested year is still on hand to be matched against a sale inside it.
 on the trait itself (not threaded through every method) so a caller like `LotsHandler` can derive its
 own display-only figures - the long-term holding-period threshold - without a dedicated method.
 
+Every figi in the loaded operations is mapped to a ticker through `InstrumentDirectory.byFigi`, once
+per distinct figi per call; a figi the directory does not know is left out of the ticker mapping, so
+it never matches a ticker in `openLots`. A ticker can have one figi per board: `openLots` returns the
+open lots of every figi that maps to it, concatenated in figi order and then stably sorted by
+acquisition date, so the result is oldest first with same-day lots in figi order.
+
 FX bars are loaded once per `annualReport` call, one `PriceHistoryStorage.bars` call per non-base
-currency actually present in the loaded operations (over the same 20-year window), from
-`Source.Yahoo` - not configurable per `TaxConfig` today, unlike
-[`ValuationConfig.fxSource`](analytics.md#portfolio-valuation).
+currency actually present in the loaded operations (over the same 20-year window), for that
+currency's rate ticker on the source the ticker is configured to use - see
+["FX conversion"](#fx-conversion). `TaxConfig.fxTickers` and
+[`ValuationConfig.fxTickers`](analytics.md#portfolio-valuation) name a rate ticker for a currency
+whose rate is not the conventional pair.
 
 ## Commands
 

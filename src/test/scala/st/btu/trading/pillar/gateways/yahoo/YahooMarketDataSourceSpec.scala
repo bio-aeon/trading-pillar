@@ -4,6 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import io.github.coinductive.yfinance4s.models.{Ticker as YfTicker, YFinanceError}
 import org.specs2.mutable.Specification
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.{MarketDataError, Source, Ticker}
 import st.btu.trading.pillar.testkit.MarketDataFakes
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
@@ -138,7 +139,7 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
           events must haveSize(1)
           events.head.exDate must_== LocalDate.of(2024, 1, 10)
           events.head.amount must_== BigDecimal("0.240000")
-          events.head.currency must beSome("USD")
+          events.head.currency must beSome(Currency("USD"))
           events.head.source must_== Source.Yahoo
         }
       }
@@ -177,6 +178,38 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
             .dividends(ticker, LocalDate.of(2024, 1, 1), LocalDate.of(2024, 1, 31))
             .attempt
         } yield result must beLeft(MarketDataError.NotFound(ticker))
+      }
+    }
+
+    "latestQuote" >> {
+
+      "quotes in the currency Yahoo reports, keeping a minor-unit marker such as GBp" >> {
+        val pence = usMetadata.copy(currency = "GBp")
+        for {
+          api <- MarketDataFakes.yahooApi(metadata = Map(ticker.value -> IO.pure(pence)))
+          source <- buildSource(api)
+          quote <- source.latestQuote(ticker)
+        } yield quote.map(_.currency) must beSome(Currency("GBp"))
+      }
+    }
+
+    "instrumentInfo" >> {
+
+      "describes the ticker from Yahoo's metadata, naming Yahoo as the source" >> {
+        for {
+          api <- MarketDataFakes.yahooApi(metadata = Map(ticker.value -> IO.pure(usMetadata)))
+          source <- buildSource(api)
+          info <- source.instrumentInfo(ticker)
+        } yield info must beSome.like { case i =>
+          i.source must_== Source.Yahoo
+          i.name must beNone
+          i.instrumentType must_== "EQUITY"
+          i.currency must_== Currency("USD")
+          i.exchange must_== "NMS"
+          i.timezone must_== "America/New_York"
+          i.figi must beNone
+          i.board must beNone
+        }
       }
     }
 

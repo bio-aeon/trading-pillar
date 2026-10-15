@@ -7,7 +7,7 @@ import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import enumeratum.values.*
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
-import st.btu.trading.pillar.gateways.TgGateway
+import st.btu.trading.pillar.gateways.{MarketDataSources, TgGateway}
 import st.btu.trading.pillar.models.domain.{AccountId, Command, TcsPortfolioOperation}
 import st.btu.trading.pillar.models.market.DividendEvent
 import st.btu.trading.pillar.models.tg
@@ -23,13 +23,15 @@ import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 import scala.util.Try
 
 // Single-account app for now, same as every other handler: accountId is a constructor argument
-// rather than derived from the chat.
+// rather than derived from the chat. Dividends are read from the source each ticker is configured
+// to use.
 final class ExportHandler[F[_]: Monad: Clock](
   tgGateway: TgGateway[F],
   operations: TcsPortfolioOperationStorage[F],
   valuations: PortfolioValuationStorage[F],
   dividends: DividendStorage[F],
   watchlist: WatchlistStorage[F],
+  sources: MarketDataSources[F],
   accountId: AccountId
 ) extends CommandHandler[F] {
 
@@ -79,7 +81,8 @@ final class ExportHandler[F[_]: Monad: Clock](
     val to = LocalDate.of(year, 12, 31)
     for {
       items <- watchlist.byAccount(accountId)
-      perTicker <- items.map(_.ticker).traverse(dividends.byTicker(_, from, to))
+      tickers <- items.traverse(item => MarketDataSources.sourced(sources, item.ticker))
+      perTicker <- tickers.traverse(t => dividends.byTicker(t.ticker, t.source, from, to))
       rows = perTicker.flatten.sortBy(_.exDate.toEpochDay).map(dividendRow)
       _ <- sendOrEmpty(chatId, Kind.Dividends, year, DividendsHeader, rows)
     } yield ()
@@ -114,7 +117,7 @@ final class ExportHandler[F[_]: Monad: Clock](
     List(p.date.toString, p.value.toString, p.invested.toString, p.cashFlow.toString)
 
   private def dividendRow(e: DividendEvent): List[String] =
-    List(e.ticker.value, e.exDate.toString, e.amount.toString, e.currency.getOrElse(""))
+    List(e.ticker.value, e.exDate.toString, e.amount.toString, e.currency.fold("")(_.value))
 
   private def resolveYear(arg: Option[String]): F[Int] =
     arg.flatMap(a => Try(a.toInt).toOption) match {

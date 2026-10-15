@@ -5,20 +5,22 @@ import cats.effect.Clock
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
-import st.btu.trading.pillar.gateways.TgGateway
+import st.btu.trading.pillar.gateways.{MarketDataSources, TgGateway}
 import st.btu.trading.pillar.models.domain.{AccountId, Command}
-import st.btu.trading.pillar.models.market.{DividendEvent, Ticker}
+import st.btu.trading.pillar.models.market.{DividendEvent, SourcedTicker, Ticker}
 import st.btu.trading.pillar.models.tg
 import st.btu.trading.pillar.storages.{DividendStorage, WatchlistStorage}
 
 import java.time.LocalDate
 
 // Single-account app for now: accountId is a constructor argument rather than derived from the
-// chat, same as WatchlistHandler.
+// chat, same as WatchlistHandler. Each ticker's events are read from the source it is configured
+// to use, so events another source stored for it are left out.
 final class DividendsHandler[F[_]: Monad: Clock](
   tgGateway: TgGateway[F],
   dividends: DividendStorage[F],
   watchlist: WatchlistStorage[F],
+  sources: MarketDataSources[F],
   accountId: AccountId
 ) extends CommandHandler[F] {
 
@@ -30,16 +32,16 @@ final class DividendsHandler[F[_]: Monad: Clock](
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     for {
       items <- watchlist.byAccount(accountId)
-      tickers = items.map(_.ticker)
+      tickers <- items.traverse(item => MarketDataSources.sourced(sources, item.ticker))
       today <- Replies.todayUtc[F]
       upcoming <- dividends.upcoming(tickers, today)
       totals <- tickers.traverse(totalFor(_, today))
       _ <- Replies.reply(tgGateway, chatId, format(upcoming, totals.flatten))
     } yield ()
 
-  private def totalFor(ticker: Ticker, today: LocalDate): F[Option[(Ticker, BigDecimal)]] =
-    dividends.byTicker(ticker, today.minusYears(1), today).map { events =>
-      Option.when(events.nonEmpty)(ticker -> events.map(_.amount).sum)
+  private def totalFor(sourced: SourcedTicker, today: LocalDate): F[Option[(Ticker, BigDecimal)]] =
+    dividends.byTicker(sourced.ticker, sourced.source, today.minusYears(1), today).map { events =>
+      Option.when(events.nonEmpty)(sourced.ticker -> events.map(_.amount).sum)
     }
 
   private def format(upcoming: List[DividendEvent], totals: List[(Ticker, BigDecimal)]): String = {
@@ -53,7 +55,7 @@ final class DividendsHandler[F[_]: Monad: Clock](
   }
 
   private def formatUpcoming(e: DividendEvent): String = {
-    val currencySuffix = e.currency.fold("")(c => s" $c")
+    val currencySuffix = e.currency.fold("")(c => s" ${c.value}")
     s"${e.ticker.value} ${e.exDate} ${Replies.scaled(e.amount)}$currencySuffix"
   }
 

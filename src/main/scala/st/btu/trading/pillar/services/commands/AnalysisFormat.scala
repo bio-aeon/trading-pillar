@@ -1,5 +1,6 @@
 package st.btu.trading.pillar.services.commands
 
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.services.analysis.StockAnalysis
 
 import java.time.ZonedDateTime
@@ -48,8 +49,10 @@ object AnalysisFormat {
     (header :: lines).mkString("\n")
   }
 
-  private def money(price: Option[BigDecimal], currency: Option[String]): String =
-    price.fold(NotAvailable)(p => currency.fold(Replies.scaled(p))(c => s"${Replies.scaled(p)} $c"))
+  private def money(price: Option[BigDecimal], currency: Option[Currency]): String =
+    price.fold(NotAvailable)(p =>
+      currency.fold(Replies.scaled(p))(c => s"${Replies.scaled(p)} ${c.value}")
+    )
 
   private def dec(v: Option[BigDecimal]): String = v.fold(NotAvailable)(Replies.scaled)
 

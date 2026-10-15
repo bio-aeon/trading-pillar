@@ -3,8 +3,8 @@ package st.btu.trading.pillar.services.commands
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.gateways.{MarketDataSources, MarketDataSourcesImpl}
-import st.btu.trading.pillar.models.market.{Bar, Ticker}
+import st.btu.trading.pillar.gateways.MarketDataSources
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.strategy.backtest.BacktestConfig
 import st.btu.trading.pillar.strategy.reference.MovingAverageCrossoverStrategy
@@ -29,13 +29,14 @@ class SweepHandlerSpec extends Specification with CatsEffect {
     StrategyRegistryImpl.create[IO, IO]
   }
 
-  // No watchlist entries configured: forTicker always falls back to the single fake source's own
-  // source (Yahoo, the same default StrategyFakes.flatBar uses).
-  private def buildRouter: IO[MarketDataSources[IO]] =
-    for {
-      marketData <- MarketDataFakes.marketDataSource()
-      watchlist <- MarketDataFakes.watchlistStorage()
-    } yield new MarketDataSourcesImpl[IO](List(marketData), watchlist, marketData.source)
+  // No ticker has a setting of its own, so every ticker gets the default setting, Yahoo, the source
+  // StrategyFakes.flatBar uses.
+  private def buildRouter: IO[MarketDataSources[IO]] = MarketDataFakes.marketDataSources()
+
+  // fast takes 1 and 2 and slow only 3: a grid of two combinations.
+  private val fastAxis = "fast=1:2:1"
+  private val slowAxis = "slow=3:3:1"
+  private val tickerOnTinkoff = List(TickerSource(ticker, SourceSetting.Tinkoff(None)))
 
   // A fast(2)/slow(3) SMA crossover series (same shape as MovingAverageCrossoverStrategySpec's),
   // dated in the last 8 days so it falls inside the default 2-year lookback regardless of when
@@ -69,7 +70,7 @@ class SweepHandlerSpec extends Specification with CatsEffect {
           priceHistory <- MarketDataFakes.priceHistoryStorage()
           sources <- buildRouter
           handler = new SweepHandler[IO](tgGateway, registry, priceHistory, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", "fast=1:2:1"))
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", fastAxis))
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain(s"Unknown strategy: ${strategyId.value}")
       }
@@ -82,7 +83,7 @@ class SweepHandlerSpec extends Specification with CatsEffect {
           priceHistory <- MarketDataFakes.priceHistoryStorage()
           sources <- buildRouter
           handler = new SweepHandler[IO](tgGateway, registry, priceHistory, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", "fast=1:2:1"))
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", fastAxis))
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain("does not support parameters")
       }
@@ -108,7 +109,7 @@ class SweepHandlerSpec extends Specification with CatsEffect {
           priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
           sources <- buildRouter
           handler = new SweepHandler[IO](tgGateway, registry, priceHistory, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", "fast=1:2:1", "slow=3:3:1"))
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", fastAxis, slowAxis))
           messages <- tgGateway.sentMessages
         } yield {
           val msg = messages.head.message
@@ -122,6 +123,39 @@ class SweepHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "reads the bars stored for the source the ticker is set to, with no adapter wired for it" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          registry <- buildRegistry
+          _ <- registry.register(new MovingAverageCrossoverStrategy(fast = 2, slow = 3))
+          priceHistory <- MarketDataFakes.priceHistoryStorage(
+            bars.map(_.copy(source = Source.Tinkoff))
+          )
+          sources <- MarketDataFakes.marketDataSources(settings = tickerOnTinkoff)
+          handler = new SweepHandler[IO](tgGateway, registry, priceHistory, sources, defaults)
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", fastAxis, slowAxis))
+          messages <- tgGateway.sentMessages
+        } yield {
+          val msg = messages.head.message
+          msg must contain("Grid: 2 combination(s)")
+          msg must not(contain("No successful sweep points."))
+        }
+      }
+
+      "does not sweep the bars another source stored for the ticker" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          registry <- buildRegistry
+          _ <- registry.register(new MovingAverageCrossoverStrategy(fast = 2, slow = 3))
+          // The bars are stored under Yahoo, but the ticker is set to Tinkoff.
+          priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
+          sources <- MarketDataFakes.marketDataSources(settings = tickerOnTinkoff)
+          handler = new SweepHandler[IO](tgGateway, registry, priceHistory, sources, defaults)
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", fastAxis, slowAxis))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must contain("No successful sweep points.")
+      }
+
       "replies with 'No successful sweep points' when every point in the grid fails" >> {
         for {
           tgGateway <- Fakes.tgGateway()
@@ -130,7 +164,7 @@ class SweepHandlerSpec extends Specification with CatsEffect {
           priceHistory <- MarketDataFakes.priceHistoryStorage() // no bars stored anywhere
           sources <- buildRouter
           handler = new SweepHandler[IO](tgGateway, registry, priceHistory, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", "fast=1:2:1"))
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", fastAxis))
           messages <- tgGateway.sentMessages
         } yield {
           val msg = messages.head.message

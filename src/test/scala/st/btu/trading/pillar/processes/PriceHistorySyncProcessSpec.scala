@@ -26,7 +26,6 @@ class PriceHistorySyncProcessSpec extends Specification with CatsEffect {
     WatchlistItem(
       accountId,
       Ticker(symbol),
-      Source.Yahoo,
       enabled = true,
       None,
       ZonedDateTime.now(ZoneOffset.UTC)

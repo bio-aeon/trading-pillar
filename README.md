@@ -35,9 +35,9 @@ strategy is registered.
 | Package | Contents |
 |---|---|
 | `models.domain` | `Account`, `Command`, `Portfolio`, `TcsPortfolioOperation`, newtypes (`AccountId`, `Figi`, ...) |
-| `models.market` | `Ticker`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `WatchlistItem`, `MarketDataError` |
+| `models.market` | `Ticker`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.binance` | Telegram, Tinkoff and Binance wire/domain types |
-| `gateways` | `TgGateway` (Telegram Bot API), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the broker that serves it, `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data, gRPC) |
+| `gateways` | `TgGateway` (Telegram Bot API), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
 | `gateways.news` | `NewsSource`, `YahooNewsSource`, `NewsItem` - per-ticker headlines, backs `/news` |
 | `facades` | `TcsFacade` - high-level Tinkoff gRPC API (portfolio, operations) |
@@ -52,7 +52,7 @@ strategy is registered.
 | `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
 | `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
-| `services.commands` | `CommandParser`, `CommandHandler`, and the command handlers, in the order `/help` lists them: ping/info built in, then watchlist/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
+| `services.commands` | `CommandParser`, `CommandHandler`, and the command handlers, in the order `/help` lists them: ping/info built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
 | `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess`, `PriceHistorySyncProcess`, `AnalyticsProcess` (recomputes portfolio valuations and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
 | `data` | `ProcessContext`, `TraceIds`, `UtcClock` - the trace/account context threaded through every process via `tofu.WithLocal`, and a UTC-normalized clock helper |
 | `storages` | Storage traits a consumer implements; see [`docs/storage-contracts.md`](docs/storage-contracts.md) |
@@ -65,68 +65,63 @@ Full docs: [market data](docs/market-data.md) · [strategies](docs/strategies.md
 
 ## Quick start
 
-The snippets below compile against the real `trading-pillar` API. They use `cats.effect.IO` for
-both the initialization (`I`) and runtime (`F`) effect that every `create`/`resource` constructor
-in this library is parameterized over (`tofu.logging.Logs[I, F]`); a consumer can use the same
-pattern, or any other `I`/`F` pair that satisfies the constructors' type-class bounds and has a
+The snippets below compile against the real `trading-pillar` API. Most `create`/`resource`
+constructors take two effects: the one a component is built in (`I`) and the one it runs in (`F`),
+with a `tofu.logging.Logs[I, F]` in scope; a service that logs nothing, such as
+`PaperBrokerImpl.create[F]`, takes only `F`. The snippets build in `cats.effect.IO` and run in
+`ReaderT[IO, ProcessContext, *]`, because the processes use `WithLocal[F, ProcessContext]` to give
+each iteration a fresh trace id and contextual logging attaches that context to every log entry. A
+consumer can use any other `I`/`F` pair that satisfies the constructors' type-class bounds and has a
 `Logs[I, F]`, for example a ZIO runtime through zio-interop-cats.
+
+The snippets share this setup, which defines `F` and the instances the constructors ask for:
+
+```scala
+import cats.data.ReaderT
+import cats.effect.IO
+import tofu.Delay
+import tofu.generate.GenUUID
+import tofu.logging.{LoggableContext, Logs}
+import st.btu.trading.pillar.data.ProcessContext
+import st.btu.trading.pillar.models.domain.AccountId
+
+type F[A] = ReaderT[IO, ProcessContext, A]
+
+// tofu-logging needs a Delay for both effects. With tofu-core-ce3 on the classpath they come from
+// Sync; without it, write IO's by hand and tofu derives the ReaderT's.
+implicit val delayForIO: Delay[IO] = new Delay[IO] { def delay[A](a: => A): IO[A] = IO(a) }
+
+// Every log entry carries the process context of the call that wrote it. tofu's logback layouts
+// (ConsoleContextLayout and ELKLayout, in tofu-logging-layout) render it.
+implicit val loggableContext: LoggableContext[F] = LoggableContext.of[F].instance[ProcessContext]
+implicit val logs: Logs[IO, F] = Logs.withContext[IO, F]
+implicit val genUUID: GenUUID[F] = GenUUID.syncGenUUID[F]
+
+// The context F starts from; each process iteration sets its own trace id.
+val root = ProcessContext(traceId = "", accountId = AccountId(1))
+```
 
 ### a) Wire market-data sources behind a router, and the price-history sync process
 
 ```scala
-import cats.effect.{IO, Ref}
-import cats.syntax.functor.*
-import cats.Functor
 import scala.concurrent.duration.*
-import tofu.{Delay, WithLocal}
-import tofu.generate.GenUUID
-import tofu.logging.{Logging, Logs}
 import st.btu.trading.pillar.alerts.{AlertDispatcherImpl, FailureTrackerImpl, SystemAlertsImpl}
-import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
 import st.btu.trading.pillar.gateways.yahoo.{YahooApi, YahooMarketDataSource}
 import st.btu.trading.pillar.gateways.yahoo.YahooMarketDataSource.YahooConfig
-import st.btu.trading.pillar.models.domain.AccountId
-import st.btu.trading.pillar.models.market.Source
+import st.btu.trading.pillar.models.market.SourceSetting
 import st.btu.trading.pillar.processes.PriceHistorySyncProcessImpl
 import st.btu.trading.pillar.services.{PriceHistorySyncConfig, PriceHistorySyncServiceImpl}
-import st.btu.trading.pillar.storages.{
-  AlertHistoryStorage,
-  DividendStorage,
-  InstrumentStorage,
-  PriceHistoryStorage,
-  WatchlistStorage
-}
-
-// trading-pillar's tofu-logging usage needs a `Delay[F]` instance; this library does not depend on
-// tofu-core-ce3 (which would derive one for any `Sync[F]` automatically), so a consumer using IO
-// provides this trivial one itself, once, and shares it the same way as `withLocalIO` below.
-implicit val delayForIO: Delay[IO] = new Delay[IO] {
-  override def delay[A](a: => A): IO[A] = IO(a)
-}
-
-// The simplest way to satisfy `WithLocal[F, ProcessContext]` for a plain IO program; another
-// runtime can provide its own instance.
-def withLocalIO(initial: ProcessContext): IO[WithLocal[IO, ProcessContext]] =
-  Ref.of[IO, ProcessContext](initial).map { ref =>
-    new WithLocal[IO, ProcessContext] {
-      def functor: Functor[IO] = Functor[IO]
-      def context: IO[ProcessContext] = ref.get
-      def local[A](fa: IO[A])(project: ProcessContext => ProcessContext): IO[A] =
-        ref.get.flatMap(orig => ref.set(project(orig)) *> fa.guarantee(ref.set(orig)))
-    }
-  }
+import st.btu.trading.pillar.storages.*
 
 def wireSync(
-  priceHistoryStorage: PriceHistoryStorage[IO], // your implementation; the library ships none
-  instrumentStorage: InstrumentStorage[IO],
-  dividendStorage: DividendStorage[IO],
-  watchlistStorage: WatchlistStorage[IO],
-  alertHistoryStorage: AlertHistoryStorage[IO]
+  priceHistoryStorage: PriceHistoryStorage[F], // your implementation; the library ships none
+  instrumentStorage: InstrumentStorage[F],
+  dividendStorage: DividendStorage[F],
+  watchlistStorage: WatchlistStorage[F],
+  tickerSourceStorage: TickerSourceStorage[F],
+  alertHistoryStorage: AlertHistoryStorage[F]
 ): IO[Unit] = {
-  implicit val logs: Logs[IO, IO] =
-    Logs.const[IO, IO](Logging.Make.plain[IO].forService[YahooMarketDataSource[IO]])
-
   val yahooConfig = YahooConfig(
     connectTimeout = 10.seconds,
     readTimeout = 30.seconds,
@@ -141,42 +136,48 @@ def wireSync(
     metadataRefresh = 7.days
   )
 
-  YahooMarketDataSource.clientResource[IO](yahooConfig).use { client =>
-    val yahooApi = YahooApi.fromClient[IO](client)
+  // The client is built in F; applying `root` turns its resource into one in IO.
+  YahooMarketDataSource.clientResource[F](yahooConfig).mapK(ReaderT.applyK(root)).use { client =>
+    val yahooApi = YahooApi.fromClient[F](client)
     for {
-      yahooSource <- YahooMarketDataSource.create[IO, IO](yahooApi)
-      // Routes a ticker to whichever broker's watchlist entry carries it, falling back to Yahoo;
-      // add further MarketDataSources (e.g. a Tinkoff one, for MOEX symbols) to the list as they
-      // are wired.
-      sources = new MarketDataSourcesImpl[IO](List(yahooSource), watchlistStorage, Source.Yahoo)
+      yahooSource <- YahooMarketDataSource.create[IO, F](yahooApi)
+      // Routes each ticker to the adapter its stored source setting selects, and a ticker with no
+      // setting to Yahoo. Pass the Tinkoff adapter (a TcsMarketDataSource, for MOEX symbols) as
+      // the second argument once it is wired.
+      sources = new MarketDataSourcesImpl[F](
+        Some(yahooSource),
+        None,
+        tickerSourceStorage,
+        SourceSetting.Yahoo
+      )
       // A sync failure is infrastructure-level, not per-symbol, so it is raised through the same
       // dispatcher/channels as any other alert; an empty channel list here still records it in
       // AlertHistoryStorage, just without delivery - see snippet (d) for a real Telegram channel,
       // which a real app shares with this one rather than building twice.
-      dispatcher <- AlertDispatcherImpl.create[IO, IO](List.empty, alertHistoryStorage)
-      systemAlerts <- SystemAlertsImpl.create[IO, IO](dispatcher, channels = List.empty)
-      failureTracker <- FailureTrackerImpl.create[IO, IO]
-      syncService <- PriceHistorySyncServiceImpl.create[IO, IO](
+      dispatcher <- AlertDispatcherImpl.create[IO, F](List.empty, alertHistoryStorage)
+      systemAlerts <- SystemAlertsImpl.create[IO, F](dispatcher, channels = List.empty)
+      failureTracker <- FailureTrackerImpl.create[IO, F]
+      syncService <- PriceHistorySyncServiceImpl.create[IO, F](
         sources,
         priceHistoryStorage,
         instrumentStorage,
         dividendStorage,
         syncConfig
       )
-      implicit0(wl: WithLocal[IO, ProcessContext]) <- withLocalIO(ProcessContext("", AccountId(1)))
-      implicit0(gu: GenUUID[IO]) = GenUUID.syncGenUUID[IO]
       syncProcess <- PriceHistorySyncProcessImpl
-        .create[IO, IO](watchlistStorage, syncService, syncConfig, systemAlerts, failureTracker)
-      _ <- syncProcess.run.compile.drain // normally run alongside your other processes via parJoin
+        .create[IO, F](watchlistStorage, syncService, syncConfig, systemAlerts, failureTracker)
+      // normally run alongside your other processes via parJoin
+      _ <- syncProcess.run.compile.drain.run(root)
     } yield ()
   }
 }
 ```
 
-`watchlistStorage.add(WatchlistItem(accountId, Ticker("AAPL"), Source.Yahoo, enabled = true, None,
-now))` (e.g. from the `/watchlist add` command) is what puts a symbol in scope for the sync loop. A
-sync failure raises a `sync-failed:<ticker>` system alert after 3 consecutive failures, and a
-matching `sync-recovered:<ticker>` once it succeeds again.
+`watchlistStorage.add(WatchlistItem(accountId, Ticker("AAPL"), enabled = true, None, now))` (e.g.
+from the `/watchlist add` command) is what puts a symbol in scope for the sync loop. Which source
+serves it is a setting of the ticker, kept in `TickerSourceStorage` (e.g. by `/source SBER tinkoff`),
+and Yahoo here when none is stored. A sync failure raises a `sync-failed:<ticker>` system alert
+after 3 consecutive failures, and a matching `sync-recovered:<ticker>` once it succeeds again.
 
 ### b) Implement and register your own `Strategy`
 
@@ -208,15 +209,12 @@ A strategy written directly (not by composition) just implements `onBar` - see
 [`docs/strategies.md`](docs/strategies.md) for the full contract. Register it once at startup:
 
 ```scala
+import com.example.strategies.MaCross50x200
 import st.btu.trading.pillar.strategy.StrategyRegistryImpl
-import tofu.logging.{Logging, Logs}
-
-implicit val logs: Logs[IO, IO] =
-  Logs.const[IO, IO](Logging.Make.plain[IO].forService[StrategyRegistry[IO]])
 
 for {
-  registry <- StrategyRegistryImpl.create[IO, IO]
-  _        <- registry.register(new com.example.strategies.MaCross50x200)
+  registry <- StrategyRegistryImpl.create[IO, F]
+  _        <- registry.register(new MaCross50x200).run(root)
 } yield registry
 ```
 
@@ -227,30 +225,33 @@ Through `BacktestService` (loads bars from `PriceHistoryStorage` and persists th
 ```scala
 import java.time.LocalDate
 import st.btu.trading.pillar.models.market.{Source, Ticker}
-import st.btu.trading.pillar.strategy.StrategyId
-import st.btu.trading.pillar.strategy.backtest.{BacktestConfig, BacktestService, BacktestServiceImpl}
+import st.btu.trading.pillar.strategy.{StrategyId, StrategyRegistry}
+import st.btu.trading.pillar.strategy.backtest.{BacktestConfig, BacktestServiceImpl}
 import st.btu.trading.pillar.storages.BacktestRunStorage
-import tofu.logging.Logging
 
 def runBacktest(
-  registry: st.btu.trading.pillar.strategy.StrategyRegistry[IO],
-  priceHistoryStorage: PriceHistoryStorage[IO],
-  backtestRunStorage: BacktestRunStorage[IO]
+  registry: StrategyRegistry[F],
+  priceHistoryStorage: PriceHistoryStorage[F],
+  backtestRunStorage: BacktestRunStorage[F]
 ): IO[Unit] = {
-  implicit val logs: Logs[IO, IO] =
-    Logs.const[IO, IO](Logging.Make.plain[IO].forService[BacktestService[IO]])
   val config = BacktestConfig(initialCash = 100000, commissionRate = BigDecimal("0.0005"), slippageBps = 5)
 
   for {
-    backtestService <- BacktestServiceImpl.create[IO, IO](registry, priceHistoryStorage, backtestRunStorage)
-    run <- backtestService.run(
-      StrategyId("ma-cross-50-200"),
-      Ticker("AAPL"),
-      Source.Yahoo,
-      LocalDate.now.minusYears(2),
-      LocalDate.now,
-      config
+    backtestService <- BacktestServiceImpl.create[IO, F](
+      registry,
+      priceHistoryStorage,
+      backtestRunStorage
     )
+    run <- backtestService
+      .run(
+        StrategyId("ma-cross-50-200"),
+        Ticker("AAPL"),
+        Source.Yahoo,
+        LocalDate.now.minusYears(2),
+        LocalDate.now,
+        config
+      )
+      .run(root)
     _ = println(s"total return ${run.result.metrics.totalReturn}, trades ${run.result.trades.size}")
   } yield ()
 }
@@ -290,31 +291,26 @@ import st.btu.trading.pillar.storages.{
 }
 
 def wireAlerts(
-  sttpBackend: SttpBackend[IO, Any],
-  strategyBindingStorage: StrategyBindingStorage[IO],
-  alertRuleStorage: AlertRuleStorage[IO],
-  alertHistoryStorage: AlertHistoryStorage[IO],
-  priceHistoryStorage: PriceHistoryStorage[IO],
-  paperStorage: PaperStorage[IO], // backs `/paper` and any paper-mode StrategyBinding
-  marketDataSources: MarketDataSources[IO], // e.g. the `sources` router built in snippet (a)
-  registry: st.btu.trading.pillar.strategy.StrategyRegistry[IO]
-): IO[Unit] = {
-  implicit val logs: Logs[IO, IO] =
-    Logs.const[IO, IO](Logging.Make.plain[IO].forService[AlertProcess[IO]])
-
+  sttpBackend: SttpBackend[F, Any],
+  strategyBindingStorage: StrategyBindingStorage[F],
+  alertRuleStorage: AlertRuleStorage[F],
+  alertHistoryStorage: AlertHistoryStorage[F],
+  priceHistoryStorage: PriceHistoryStorage[F],
+  paperStorage: PaperStorage[F], // backs `/paper` and any paper-mode StrategyBinding
+  marketDataSources: MarketDataSources[F], // e.g. the `sources` router built in snippet (a)
+  registry: StrategyRegistry[F]
+): IO[Unit] =
   for {
-    tgGateway    <- TgGatewayImpl.create[IO, IO](tg.Token("<bot-token>"), sttpBackend)
-    channel      <- TelegramAlertChannel.create[IO, IO](tgGateway, tg.ChatId(123456789L))
-    dispatcher   <- AlertDispatcherImpl.create[IO, IO](List(channel), alertHistoryStorage)
-    systemAlerts <- SystemAlertsImpl.create[IO, IO](dispatcher, channels = List("telegram"))
-    liveSvc      <- LiveStrategyServiceImpl.create[IO, IO](priceHistoryStorage, marketDataSources)
-    paperBroker = PaperBrokerImpl.create[IO](
+    tgGateway    <- TgGatewayImpl.create[IO, F](tg.Token("<bot-token>"), sttpBackend)
+    channel      <- TelegramAlertChannel.create[IO, F](tgGateway, tg.ChatId(123456789L))
+    dispatcher   <- AlertDispatcherImpl.create[IO, F](List(channel), alertHistoryStorage)
+    systemAlerts <- SystemAlertsImpl.create[IO, F](dispatcher, channels = List("telegram"))
+    liveSvc      <- LiveStrategyServiceImpl.create[IO, F](priceHistoryStorage, marketDataSources)
+    paperBroker = PaperBrokerImpl.create[F](
       paperStorage,
       PaperBrokerConfig(commissionRate = BigDecimal("0.0005"), slippageBps = 5)
     )
-    implicit0(wl: WithLocal[IO, ProcessContext]) <- withLocalIO(ProcessContext("", AccountId(1)))
-    implicit0(gu: GenUUID[IO]) = GenUUID.syncGenUUID[IO]
-    process <- AlertProcessImpl.create[IO, IO](
+    process <- AlertProcessImpl.create[IO, F](
       strategyBindingStorage,
       alertRuleStorage,
       registry,
@@ -326,9 +322,8 @@ def wireAlerts(
       systemAlerts,
       AlertProcessConfig(pollInterval = 5.minutes, rateLimitBackoff = 60.seconds)
     )
-    _ <- process.run.compile.drain
+    _ <- process.run.compile.drain.run(root)
   } yield ()
-}
 ```
 
 Every alert `dispatcher.dispatch` emits goes through six guards in order - mute, cooldown,
@@ -344,10 +339,6 @@ paper order can be rejected instead of filled.
 - **JDK 21**
 - **Scala 2.13.18**, built with **sbt 1.9.8**
 
-[yfinance4s](https://github.com/coinductive/yfinance4s), the Yahoo Finance client, resolves from
-Maven Central like every other dependency: `io.github.coinductive %% yfinance4s % 0.2.0`. No setup
-step is needed before `sbt compile` or `sbt test`.
-
 ```bash
 sbt test          # specs2 + cats-effect-testing; no network access required
 sbt publishLocal   # publishes st.btu %% trading-pillar % 0.1.0-SNAPSHOT to ~/.ivy2/local
@@ -358,12 +349,14 @@ trading-pillar change the consumer needs to see.
 
 ## Status
 
-- Tinkoff Invest, Binance and Telegram integrations: stable, in production use.
-- Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategy/backtest
-  engine, and the alert pipeline: implemented and covered by the test suite. Yahoo Finance no
-  longer serves MOEX (Russian exchange) data; MOEX symbols (e.g. `SBER`) are served instead through
-  `TcsMarketDataSource` (Tinkoff Invest gRPC) - see [`docs/market-data.md`](docs/market-data.md).
-- Analytics, dividend tracking, multi-symbol backtests, parameter sweeps and walk-forward
-  validation, paper trading, a tax-estimate report and system alerts for sync/process failures are
-  all implemented and covered by the test suite.
-- The Binance gateway remains the one integration not yet wired to a sync process.
+- Telegram bot plumbing and the Tinkoff Invest portfolio-operations sync: used in production by an
+  earlier version of this library.
+- Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategies and
+  backtesting (multi-symbol runs, parameter sweeps, walk-forward validation), alerts and system
+  alerts, analytics, dividends, paper trading and the tax-estimate report: implemented and covered
+  by the test suite, but not yet used in production; the parts that call Yahoo or Tinkoff have run
+  only against test fakes. Yahoo Finance no longer serves MOEX (Russian exchange) data; MOEX symbols
+  (e.g. `SBER`) are served instead through `TcsMarketDataSource` (Tinkoff Invest gRPC) - see
+  [`docs/market-data.md`](docs/market-data.md).
+- Binance: a minimal gateway, one signed `allOrders` request returning raw JSON. No process uses it,
+  and the gateway has no tests.

@@ -40,8 +40,8 @@ Package root `st.btu.trading.pillar`:
 
 | Package | Contents |
 |---|---|
-| `models` | `domain` (accounts, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
-| `gateways` | `TgGateway`, `MarketDataSource` and the `MarketDataSources` router; adapters in `yahoo`, `tcs`, `news`, `screener` |
+| `models` | `domain` (accounts, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
+| `gateways` | `TgGateway`, `MarketDataSource`, the `MarketDataSources` router and the `InstrumentDirectory` port; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |

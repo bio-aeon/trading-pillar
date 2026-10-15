@@ -21,6 +21,10 @@ object Dimension extends StringEnum[Dimension] {
   * `dimension`, and how much drift (see `Rebalancer.drift`) is tolerated before it counts as
   * breached.
   *
+  * @param key
+  *   the bucket of `dimension`, matched against the keys of the matching `Allocation` breakdown; a
+  *   `Currency` key is first read as a [[st.btu.trading.pillar.models.domain.Currency]], so `usd`
+  *   reads the weight of `USD`; a `Ticker` key is matched against position tickers
   * @param targetPct
   *   percentage, e.g. `60` means 60% (not a 0-1 fraction like `Allocation`'s own weight maps)
   * @param driftThresholdPct

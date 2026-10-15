@@ -209,20 +209,22 @@ ticker that fails determines the error): `NoBars` if `barsByTicker` is empty, ot
 
 ```scala
 trait BacktestService[F[_]] {
-  def runPortfolio(strategyId: StrategyId, tickers: List[Ticker], source: Source, from: LocalDate, to: LocalDate, config: BacktestConfig): F[BacktestRun]
+  def runPortfolio(strategyId: StrategyId, tickers: List[SourcedTicker], from: LocalDate, to: LocalDate, config: BacktestConfig): F[BacktestRun]
 }
 ```
 
 Looks up `strategyId` in the `StrategyRegistry` (raising `StrategyNotFound`, same as `run`), loads
-every ticker's bars from `PriceHistoryStorage.bars(ticker, source, from, to)` using the **same**
-`source` for all of them, runs `BacktestEngine.runPortfolio`, and persists the result - but since
-`BacktestRunStorage` only knows how to save a single-ticker-shaped `BacktestResult`, the
-`PortfolioBacktestResult` is first projected into one: `ticker` becomes every ticker's `value`
-joined by `","` (e.g. `"AAPL,MSFT,TSLA"`), and `trades` becomes every ticker's own trade list
-concatenated **in ticker order** and then sorted by date (a stable sort, so same-date trades from
-different tickers keep that deterministic ticker-alphabetical order) - `equityCurve`, `metrics`,
-`skipped`, `parameters`, `dateFrom`/`dateTo` and `config` carry over unchanged. This needs no
-`BacktestRunStorage` schema or interface change. There is no `runStrategy`-style ad hoc/`params=`
+every ticker's bars from `PriceHistoryStorage.bars(ticker, source, from, to)` using the source
+**paired with that ticker** in its `SourcedTicker` (so one portfolio can mix sources, and bars
+another source stored for the same ticker are never read), runs `BacktestEngine.runPortfolio`, and
+persists the result - but since `BacktestRunStorage` only knows how to save a single-ticker-shaped
+`BacktestResult`, the `PortfolioBacktestResult` is first projected into one: `ticker` becomes every
+ticker's `value` joined by `","` (e.g. `"AAPL,MSFT,TSLA"`), and `trades` becomes every ticker's own
+trade list concatenated **in ticker order** and then sorted by date (a stable sort, so same-date
+trades from different tickers keep that deterministic ticker-alphabetical order) - `equityCurve`,
+`metrics`, `skipped`, `parameters`, `dateFrom`/`dateTo` and `config` carry over unchanged. The
+sources are not part of the persisted run. This needs no `BacktestRunStorage` schema or interface
+change. There is no `runStrategy`-style ad hoc/`params=`
 counterpart for portfolios - see [`telegram-commands.md`](telegram-commands.md#backtest).
 
 ## Equity-curve images (`charts.EquityCurveImage`, `TgGateway.sendPhoto`)

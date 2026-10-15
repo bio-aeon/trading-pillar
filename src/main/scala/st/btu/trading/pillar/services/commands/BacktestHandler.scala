@@ -5,6 +5,7 @@ import cats.effect.Clock
 import cats.syntax.applicativeError.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
+import cats.syntax.traverse.*
 import st.btu.trading.pillar.charts.EquityCurveImage
 import st.btu.trading.pillar.gateways.{MarketDataSources, TgGateway}
 import st.btu.trading.pillar.models.domain.Command
@@ -24,6 +25,8 @@ import scala.util.Try
 
 // Single-account app for now: the account (and therefore which watchlist /watchlist add lands in)
 // isn't threaded through here; the suggestion in the NotEnoughBars reply is purely informational.
+// Backtests read stored bars only, so they need each ticker's source setting but no adapter: a
+// source with none wired must not stop them.
 final class BacktestHandler[F[_]: Clock: Logging](
   tgGateway: TgGateway[F],
   registry: StrategyRegistry[F],
@@ -97,8 +100,8 @@ final class BacktestHandler[F[_]: Clock: Logging](
       for {
         today <- Replies.todayUtc[F]
         from = today.minusYears(years.toLong)
-        source <- marketDataSources.forTicker(ticker)
-        run <- service.run(strategyId, ticker, source.source, from, today, defaults)
+        source <- MarketDataSources.sourceOf(marketDataSources, ticker)
+        run <- service.run(strategyId, ticker, source, from, today, defaults)
       } yield run
     )
 
@@ -114,8 +117,8 @@ final class BacktestHandler[F[_]: Clock: Logging](
       for {
         today <- Replies.todayUtc[F]
         from = today.minusYears(years.toLong)
-        source <- marketDataSources.forTicker(tickers.head)
-        run <- service.runPortfolio(strategyId, tickers, source.source, from, today, defaults)
+        sourced <- tickers.traverse(MarketDataSources.sourced(marketDataSources, _))
+        run <- service.runPortfolio(strategyId, sourced, from, today, defaults)
       } yield run
     )
 
@@ -157,8 +160,8 @@ final class BacktestHandler[F[_]: Clock: Logging](
       for {
         today <- Replies.todayUtc[F]
         from = today.minusYears(years.toLong)
-        source <- marketDataSources.forTicker(ticker)
-        run <- service.runStrategy(strategy, ticker, source.source, from, today, defaults)
+        source <- MarketDataSources.sourceOf(marketDataSources, ticker)
+        run <- service.runStrategy(strategy, ticker, source, from, today, defaults)
       } yield run
     )
 

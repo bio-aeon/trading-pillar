@@ -2,7 +2,8 @@
 
 Package `st.btu.trading.pillar.models.market` (domain), `gateways.MarketDataSource` (contract),
 `gateways.yahoo` (Yahoo Finance implementation), `gateways.tcs` (Tinkoff Invest implementation),
-`gateways.MarketDataSources` (routes a ticker/source to the right implementation),
+`gateways.MarketDataSources` (routes a ticker to the implementation its source setting selects),
+`gateways.InstrumentDirectory` (resolves a broker FIGI to an instrument),
 `services`/`processes` (sync loop), `storages` (persistence contracts - see
 [`storage-contracts.md`](storage-contracts.md)).
 
@@ -14,18 +15,28 @@ All in `st.btu.trading.pillar.models.market`:
 |---|---|---|
 | `Ticker` | `@newtype case class Ticker(value: String)` | Named `Ticker`, not `Symbol`, to avoid shadowing `scala.Symbol`. |
 | `Source` | enum: `Yahoo`, `Tinkoff`, `Binance` (`enumeratum` `StringEnumEntry`, values `"yahoo"`/`"tinkoff"`/`"binance"`) | `Yahoo` and `Tinkoff` each have a `MarketDataSource` implementation (see below); `Binance` does not yet. |
+| `ClassCode` | `@newtype case class ClassCode(value: String)` | A broker's code for a trading board, e.g. `"TQBR"`. |
+| `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])` | Where one ticker's data comes from. `Tinkoff(None)` means the Tinkoff adapter's default board. `Binance` has no setting, so a ticker cannot be set to it. |
+| `TickerSource` | `TickerSource(ticker, setting: SourceSetting)` | The setting stored for a ticker. A ticker with none uses the router's default setting. |
+| `SourcedTicker` | `SourcedTicker(ticker, source: Source)` | A ticker paired with the source its stored data is read from; the key `DividendStorage.upcoming` takes. |
+| `BrokerInstrument` | `BrokerInstrument(figi: Figi, ticker, classCode: ClassCode, name: String, instrumentType: String, currency: Currency, updatedAt)` | A broker's own record of an instrument, found by FIGI. `currency` is the currency the instrument settles in. |
 | `Bar` | `Bar(ticker, date: LocalDate, open, high, low, close, adjClose, volume: Long, source)` | One daily OHLCV bar. All prices are `BigDecimal`. |
-| `Quote` | `Quote(ticker, price: BigDecimal, currency: String, asOf: ZonedDateTime, source)` | A single live/last price. |
-| `InstrumentInfo` | `InstrumentInfo(ticker, name: Option[String], instrumentType, currency, exchange, timezone, figi: Option[String], updatedAt)` | `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
-| `WatchlistItem` | `WatchlistItem(accountId, ticker, source, enabled: Boolean, note: Option[String], createdAt)` | Drives the sync process; managed via the `/watchlist` command or the consumer's own tooling. |
-| `DividendEvent` | `DividendEvent(ticker, exDate: LocalDate, amount: BigDecimal, currency: Option[String], source)` | One dividend ex-date event. `currency` is `None` when the source doesn't report one distinct from the instrument's trading currency. |
-| `MarketDataError` | sealed: `NotFound(ticker)`, `RateLimited(retryAfter: Option[FiniteDuration])`, `Transient(message, cause)`, `Other(message, cause)` | Raised (not returned as `Either`) by every `MarketDataSource` method. |
+| `Quote` | `Quote(ticker, price: BigDecimal, currency: Currency, asOf: ZonedDateTime, source)` | A single live/last price. |
+| `InstrumentInfo` | `InstrumentInfo(ticker, source: Source, board: Option[ClassCode], name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `source` is the source the metadata was read from; two sources can describe one ticker differently, in another currency for instance. `board` is the board it was read on (`None` for Yahoo, which has no boards); one source can describe a ticker differently on each board too. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
+| `WatchlistItem` | `WatchlistItem(accountId, ticker, enabled: Boolean, note: Option[String], createdAt)` | Drives the sync process; managed via the `/watchlist` command or the consumer's own tooling. It has no source of its own: which source serves its ticker is the ticker's `SourceSetting`. |
+| `DividendEvent` | `DividendEvent(ticker, exDate: LocalDate, amount: BigDecimal, currency: Option[Currency], source)` | One dividend ex-date event. `currency` is `None` when the source doesn't report one distinct from the instrument's trading currency. |
+| `MarketDataError` | sealed: `NotFound(ticker)`, `RateLimited(retryAfter: Option[FiniteDuration])`, `Transient(message, cause)`, `SourceNotConfigured(source: Source)`, `Other(message, cause)` | Raised (not returned as `Either`) by every `MarketDataSource` method. `SourceNotConfigured` is raised by the router, not by an adapter: a ticker's source has no adapter wired. |
+
+Every `currency` field is a `models.domain.Currency`, whose constructor normalises the code (see
+[`analytics.md`](analytics.md#rules), rule 10). Each adapter builds it from what its source reports,
+so Tinkoff's `rub` arrives as `RUB` and Yahoo's `GBp` stays `GBp`.
 
 ## `MarketDataSource[F[_]]`
 
 ```scala
 trait MarketDataSource[F[_]] {
   def source: Source
+  def board: Option[ClassCode]  // the board tickers are looked up on; None for a source without boards
   def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): F[List[Bar]]  // chronological
   def latestQuote(ticker: Ticker): F[Option[Quote]]
   def instrumentInfo(ticker: Ticker): F[Option[InstrumentInfo]]
@@ -62,7 +73,8 @@ object YahooApi {
 - **Metadata caching**: `YahooMetadata` is cached per `Ticker` with a TTL (`DefaultMetadataTtl =
   6.hours`); a cache miss or expiry triggers a fresh `api.metadata` call. `instrumentInfo` always
   serves from this cache (so its `figi`/`name` fields are always `None` - Yahoo metadata has
-  neither).
+  neither) and carries `source = Source.Yahoo`. Yahoo has no boards, so `board` is `None`, in the
+  info and on `MarketDataSource.board`.
 - **Date derivation**: each `YahooQuote.datetime` (UTC) is converted to a `LocalDate` in the
   instrument's *exchange* timezone (`meta.exchangeTimezoneName`), not UTC or the caller's zone.
   When two quotes fall on the same exchange-local date, the later one in the source list wins.
@@ -132,11 +144,11 @@ It calls three Tinkoff Invest RPCs, all against `invest-public-api.tinkoff.ru:44
 Bearer-token `Metadata` interceptor built from a `tcs.Token`):
 
 - **`InstrumentsService.GetInstrumentBy`** (`InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER`, keyed by
-  `Ticker.value` and `TcsMarketDataConfig.classCode`) resolves a ticker to its FIGI and the rest of
-  the `Instrument` (currency, name, exchange, type). The result is cached per `Ticker` in an
-  in-memory `Ref` for the lifetime of the source, since every other call needs the FIGI, not the
-  ticker - a repeated `dailyBars`/`latestQuote`/`instrumentInfo` call for the same ticker resolves
-  it only once (`InstrumentsService.GetInstrumentBy` is not called again).
+  `Ticker.value` and the board's class code) resolves a ticker to its FIGI and the rest of the
+  `Instrument` (currency, name, exchange, type). The result is cached per `(Ticker, ClassCode)` in
+  an in-memory `Ref` for the lifetime of the source, since every other call needs the FIGI, not the
+  ticker - a repeated `dailyBars`/`latestQuote`/`instrumentInfo` call for the same ticker on the
+  same board resolves it only once (`InstrumentsService.GetInstrumentBy` is not called again).
 - **`MarketDataService.GetCandles`** (`CandleInterval.CANDLE_INTERVAL_DAY`) backs `dailyBars`. A
   single request window is capped at one year, so a multi-year `since..until` range is chunked into
   at-most-one-year requests and the results concatenated and sorted chronologically. **Incomplete
@@ -152,7 +164,8 @@ Bearer-token `Metadata` interceptor built from a `tcs.Token`):
 
 `instrumentInfo` is built entirely from the cached `Instrument` plus `config.zone.getId` as the
 timezone (Tinkoff's API has no per-instrument timezone field); unlike the Yahoo source, `figi` is
-always populated.
+always populated, `source` is `Source.Tinkoff`, and `board` (here and on `MarketDataSource.board`)
+is the board the source or view looks tickers up on.
 
 Prices arrive as Tinkoff's `Quotation` (`units` + `nano`, a fixed-point decimal split across two
 integer fields) and are converted to `BigDecimal` as `units + nano / 1e9`, scaled to 6 decimals
@@ -180,12 +193,32 @@ approximation, not an exact figure from the API. `amount` is `dividend_net` (a `
 `currency` field. Entries without a `last_buy_date`, or whose `dividend_net` amount is zero, are
 skipped rather than guessed at.
 
+### Boards (`TinkoffBoards`)
+
+One ticker can be listed on several boards of the same exchange, each board with its own FIGI. The
+source therefore also implements `gateways.TinkoffBoards`, which is what the router asks for:
+
+```scala
+trait TinkoffBoards[F[_]] {
+  def onBoard(classCode: Option[ClassCode]): MarketDataSource[F]
+}
+```
+
+`onBoard(Some(code))` returns a view of the source that looks tickers up on board `code`;
+`onBoard(None)` returns one on `TcsMarketDataConfig.defaultClassCode`, and so does the source
+itself. The view's `MarketDataSource.board` is the board it looks tickers up on, and so is the
+`board` of the metadata it reads. A view differs from the source in the board it sends to
+`GetInstrumentBy` and in nothing else: candles, quotes, dividends and error mapping are the same.
+All views share the source's FIGI cache, which is keyed by `(Ticker, ClassCode)`, so a ticker is
+resolved once per board however many views ask for it, and the same ticker on two boards resolves to
+two instruments.
+
 Construction:
 
 ```scala
 object TcsMarketDataSource {
   final case class TcsMarketDataConfig(
-    classCode: String = "TQBR",
+    defaultClassCode: ClassCode = ClassCode("TQBR"),
     zone: ZoneId = ZoneId.of("Europe/Moscow")
   )
   def resource[I[_]: Sync, F[_]: Async](token: tcs.Token, config: TcsMarketDataConfig)(implicit
@@ -195,45 +228,93 @@ object TcsMarketDataSource {
 }
 ```
 
-`TcsMarketDataConfig`'s defaults - `classCode = "TQBR"` (MOEX's main equity board class code) and
-`zone = ZoneId.of("Europe/Moscow")` (MOEX's trading timezone) - are exactly the values a consumer
-wires for a MOEX ticker like `SBER`; a non-default `classCode` would only be needed for an
-instrument listed on a different board. `resource` opens its own Netty gRPC channel
-(`useTransportSecurity()`) and builds the `InstrumentsServiceFs2Grpc`/`MarketDataServiceFs2Grpc`
-stubs with the Bearer-auth interceptor; `TcsMarketDataSource.create` is the lower-level constructor
+`TcsMarketDataConfig`'s defaults - `defaultClassCode = ClassCode("TQBR")` (MOEX's main equity board
+class code) and `zone = ZoneId.of("Europe/Moscow")` (MOEX's trading timezone) - are exactly the
+values a consumer wires for a MOEX ticker like `SBER`. A ticker listed on another board names it in
+its own `SourceSetting.Tinkoff(Some(classCode))` instead of changing the default - see
+["Routing multiple sources"](#routing-multiple-sources-marketdatasources). `resource` opens its own
+Netty gRPC channel (`useTransportSecurity()`) and builds the
+`InstrumentsServiceFs2Grpc`/`MarketDataServiceFs2Grpc` stubs with the Bearer-auth interceptor; `TcsMarketDataSource.create` is the lower-level constructor
 for callers (tests, or an app that already manages the gRPC stubs) that supply the stubs directly -
 see `TcsMarketDataSourceSpec`.
 
+## Instrument directory (`InstrumentDirectory`)
+
+A broker operation identifies its instrument by FIGI alone, while market data is keyed by ticker.
+`gateways.InstrumentDirectory` is the bridge:
+
+```scala
+trait InstrumentDirectory[F[_]] {
+  def byFigi(figi: Figi): F[Option[BrokerInstrument]]
+}
+```
+
+`byFigi` returns `None` for a FIGI the broker does not know and raises `MarketDataError` when the
+lookup itself fails. The tax service maps every FIGI on its operations through it, the valuation
+service only those on buy and sell operations - see [`tax.md`](tax.md) and
+[`analytics.md`](analytics.md#portfolio-valuation).
+
+`gateways.tcs.TcsInstrumentDirectory` implements it over the Tinkoff Invest API:
+
+- A FIGI that `BrokerInstrumentStorage` already holds is answered from it, without a gRPC call.
+- Any other FIGI is fetched with `InstrumentsService.GetInstrumentBy`
+  (`InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI`, with no class code: a FIGI identifies the instrument
+  on its own), mapped to a `BrokerInstrument` whose `updatedAt` is the time of the lookup, stored
+  through `BrokerInstrumentStorage.upsert` and returned. The next call finds it in the storage.
+- A gRPC `NOT_FOUND`, or an answer that carries no instrument, gives `None` and stores nothing, so
+  a FIGI the broker does not know is asked about again on every call, while a FIGI the broker knows
+  is fetched once. Any other gRPC failure maps like the market data source above:
+  `RESOURCE_EXHAUSTED` to `RateLimited(None)`, `UNAVAILABLE` and `DEADLINE_EXCEEDED` to
+  `Transient`, anything else to `Other`.
+- Stored records are never refreshed. A ticker the broker renames under the same FIGI keeps its old
+  ticker until its stored record is removed.
+
+Construction mirrors `TcsMarketDataSource`; `resource` opens its own gRPC channel:
+
+```scala
+object TcsInstrumentDirectory {
+  def create[F[_]: MonadThrow: Clock](
+    instruments: InstrumentsServiceFs2Grpc[F, Unit],
+    storage: BrokerInstrumentStorage[F]
+  ): TcsInstrumentDirectory[F]
+
+  def resource[I[_]: Sync, F[_]: Async](token: tcs.Token, storage: BrokerInstrumentStorage[F])(
+    implicit liftFI: Lift[F, I]
+  ): Resource[I, TcsInstrumentDirectory[F]]
+}
+```
+
 ## Routing multiple sources (`MarketDataSources`)
 
-With two `MarketDataSource` implementations available (Yahoo, Tinkoff), `gateways.MarketDataSources`
-is the router every consumer - `PriceHistorySyncService`, `LiveStrategyService`, `AlertProcess`, and
-the `/backtest` command handler - goes through instead of holding a single hard-coded source:
+Which source serves a ticker is a setting of the ticker, not of a watchlist entry, so every
+consumer - `PriceHistorySyncService`, `LiveStrategyService`, `AlertProcess` and the command
+handlers - goes through `gateways.MarketDataSources` instead of holding a single hard-coded source:
 
 ```scala
 trait MarketDataSources[F[_]] {
-  def forSource(source: Source): Option[MarketDataSource[F]]
+  def settingFor(ticker: Ticker): F[SourceSetting]
   def forTicker(ticker: Ticker): F[MarketDataSource[F]]
 }
 ```
 
-`MarketDataSourcesImpl(sources: List[MarketDataSource[F]], watchlist: WatchlistStorage[F], default: Source)`:
+`MarketDataSourcesImpl(yahoo: Option[MarketDataSource[F]], tinkoff: Option[TinkoffBoards[F]], settings: TickerSourceStorage[F], default: SourceSetting)`:
 
-- `forSource` is a plain lookup into a `Map[Source, MarketDataSource[F]]` built from `sources` -
-  `None` when that `Source` has no configured implementation (e.g. Tinkoff not wired because no
-  Tinkoff token is configured).
-- `forTicker` calls `WatchlistStorage.findByTicker(ticker)` and uses **that watchlist item's own
-  `source`** (the first match across any account, regardless of `enabled` - see
-  [`storage-contracts.md`](storage-contracts.md)) when the ticker is on a watchlist; otherwise it
-  falls back to the configured `default` source (the README quick start uses `Source.Yahoo`). It
-  then resolves through `forSource`, raising `MarketDataError.Other` when the resolved `Source` has
-  no configured `MarketDataSource`.
+- `settingFor` is the setting `TickerSourceStorage.find(ticker)` holds for the ticker, or `default`
+  when it holds none (the README quick start uses `SourceSetting.Yahoo`).
+- `forTicker` matches that setting exhaustively: `SourceSetting.Yahoo` gives the Yahoo adapter and
+  `SourceSetting.Tinkoff(classCode)` gives `tinkoff.onBoard(classCode)`, so a ticker set to a board
+  is served from that board. When the setting's source has no adapter wired (the option is `None`,
+  e.g. no Tinkoff token is configured), it raises `MarketDataError.SourceNotConfigured(source)`,
+  whose message names the source.
 
-Callers differ in which method they need: `PriceHistorySyncServiceImpl.syncSymbol` uses
-`forSource(item.source)` because it already has the full `WatchlistItem` (and therefore its
-source) in hand; `LiveStrategyServiceImpl.evaluate`, `AlertProcessImpl`'s price-rule evaluation and
-`BacktestHandler` all use `forTicker`, since they only have a `Ticker` and need the router to look
-its source up.
+`forTicker` is for callers that need the adapter itself - `LiveStrategyServiceImpl.evaluate`,
+`AlertProcessImpl`'s price-rule evaluation, `PriceHistorySyncServiceImpl.syncSymbol`,
+`AnalysisServiceImpl` and the paper handler. Callers that only read stored data, with no adapter
+involved - the valuation and tax services, the backtest and sweep handlers, and the dividend
+reads of `/dividends` and `/export` - use `settingFor(ticker).source` instead (a ticker paired with
+it is a `SourcedTicker`), so a source with no adapter wired does not stop them from reading what is
+already stored. Bars and dividends of different sources coexist in storage, and one source's
+series is never used in place of another's.
 
 ## Price-history sync
 
@@ -253,24 +334,44 @@ final case class PriceHistorySyncConfig(
 )
 ```
 
-`PriceHistorySyncServiceImpl.syncSymbol` logic, per symbol:
+`PriceHistorySyncServiceImpl.syncSymbol` first resolves the ticker's adapter with
+`MarketDataSources.forTicker(item.ticker)`; "source" below is that adapter's source, which
+`SyncReport.source` reports. When the ticker's source has no adapter configured (the router raises
+`MarketDataError.SourceNotConfigured`), a warning is logged and nothing is fetched: the report is
+empty and carries the source the error names. Any other failure of the lookup, such as an
+unreadable settings storage, fails the call. Then, per symbol:
 
-1. Look up `PriceHistoryStorage.lastBarDate(ticker, source)`.
-2. `since = lastBarDate - overlapDays` if bars already exist, else `today - backfillYears` (a full
-   backfill). The `overlapDays` window re-fetches a few recent days on every run so a late
-   provider-side correction to a recent bar is picked up.
-3. If `since` is after `today`, no fetch happens (an empty `SyncReport`, `dividends = 0`).
-4. Otherwise `source.dailyBars(ticker, since, today)` is fetched and every bar upserted via
+1. Read the ticker's stored metadata once, with `InstrumentStorage.find`. A failing read is logged
+   as a warning and the record counts as absent. The **origin** of the stored data has changed when
+   a record exists and its `source` or `board` differs from the adapter's (`MarketDataSource.source`
+   and `MarketDataSource.board`).
+2. Unless the origin changed, look up `PriceHistoryStorage.lastBarDate(ticker, source)`.
+3. `since = lastBarDate - overlapDays` if bars already exist and the origin did not change, else
+   `today - backfillYears` (a full backfill). The `overlapDays` window re-fetches a few recent days
+   on every run so a late provider-side correction to a recent bar is picked up. A changed origin
+   refetches the whole window because bars and dividends are stored per source, not per board, so
+   the ones already stored may have been read from another board.
+4. If `since` is after `today`, no fetch happens (an empty `SyncReport`, `dividends = 0`).
+5. Otherwise `source.dailyBars(ticker, since, today)` is fetched and every bar upserted via
    `PriceHistoryStorage.upsertBars` (keyed by `(ticker, source, date)` - an upsert, so overlap days
    overwrite rather than duplicate).
-5. `source.dividends(ticker, since, today)` is then fetched for the **same window** and upserted via
+6. `source.dividends(ticker, since, today)` is then fetched for the **same window** and upserted via
    `DividendStorage.upsert`; `SyncReport.dividends` is the count returned by that upsert. A
    dividends failure (the source raising, or the storage call failing) is logged as a warning and
    does **not** fail `syncSymbol` - the bar sync has already succeeded by that point, and
    `SyncReport.dividends` is `0` for that run.
-6. Instrument metadata is refreshed if missing or older than `metadataRefresh`, **after** the bar
-   (and dividends) sync; a metadata failure is likewise logged as a warning and does not fail
+7. Instrument metadata is refreshed if it is missing, older than `metadataRefresh`, or its origin
+   changed, **after** the bar (and dividends) sync. The last condition makes switching a ticker's
+   source or board, and switching it back, refresh the metadata on the next sync, instead of
+   leaving the old origin's currency, name and exchange in place until `metadataRefresh` passes.
+   The refreshed record is also what marks the new origin as synced: a sync that fails before it
+   sees the old origin again and refetches the window again, as does every sync of a ticker whose
+   source returns no metadata. A metadata failure is logged as a warning and does not fail
    `syncSymbol`.
+
+The refetch of a changed origin replaces only the days inside the window. Bars older than the
+backfill window that a previous board stored stay in the series, because bars are keyed by
+`(ticker, source, date)` and nothing deletes them.
 
 `processes.PriceHistorySyncProcessImpl` (mirrors `TcsPortfolioSyncProcessImpl`: `ProcessContext` /
 `tofu.WithLocal`, tofu logging, self-restart on an uncaught loop failure):
@@ -289,7 +390,7 @@ final case class PriceHistorySyncConfig(
 
 ## Dividends
 
-`models.market.DividendEvent(ticker, exDate: LocalDate, amount: BigDecimal, currency: Option[String], source)`
+`models.market.DividendEvent(ticker, exDate: LocalDate, amount: BigDecimal, currency: Option[Currency], source)`
 is the one dividend-event shape both `MarketDataSource` implementations produce and
 `DividendStorage`/`/dividends` consume. `MarketDataSource.dividends(ticker, since, until)` raises
 `MarketDataError` on failure, same as `dailyBars`; see the Yahoo and Tinkoff subsections above for
@@ -299,20 +400,28 @@ Tinkoff, the skipped-entry rules).
 ```scala
 trait DividendStorage[F[_]] {
   def upsert(events: List[DividendEvent]): F[Int]
-  def byTicker(ticker: Ticker, from: LocalDate, to: LocalDate): F[List[DividendEvent]]
-  def upcoming(tickers: List[Ticker], from: LocalDate): F[List[DividendEvent]]   // exDate >= from
+  def byTicker(ticker: Ticker, source: Source, from: LocalDate, to: LocalDate): F[List[DividendEvent]]
+  def upcoming(tickers: List[SourcedTicker], from: LocalDate): F[List[DividendEvent]]   // exDate >= from
 }
 ```
 
-`PriceHistorySyncServiceImpl` is the only writer (see "Price-history sync" above); `/dividends`
-(see [`telegram-commands.md`](telegram-commands.md)) is the only reader in trading-pillar. See
-[`storage-contracts.md`](storage-contracts.md) for a suggested relational layout.
+Events of different sources for the same ticker coexist (the key includes the source), so every
+read names the source, and `upcoming` takes each ticker paired with the one source to read it from.
+`/dividends`, `/export dividends` and the analysis service read each ticker's events from the source
+the ticker is configured to use (`MarketDataSources.settingFor`), so events another source stored
+for it are left out.
+
+`PriceHistorySyncServiceImpl` is the only writer (see "Price-history sync" above); the readers in
+trading-pillar are `/dividends`, `/export` (see [`telegram-commands.md`](telegram-commands.md)) and
+the analysis service. See [`storage-contracts.md`](storage-contracts.md) for a suggested relational
+layout.
 
 ## Stock analysis
 
 Package `services.analysis`. Combines a ticker's routed quote/instrument info
 (`MarketDataSources.forTicker`, above), its stored daily bars (`PriceHistoryStorage`) and its
-trailing-year dividends (`DividendStorage`) into one flat `StockAnalysis` - the data behind the
+trailing-year dividends (`DividendStorage`, read from the source `forTicker` resolved) into one flat
+`StockAnalysis` - the data behind the
 [`/analyze` and `/compare`](telegram-commands.md#analyze) commands.
 
 ```scala
@@ -332,8 +441,8 @@ object AnalysisServiceImpl {
 on the source `forTicker` resolves) is the only step that can raise `MarketDataError.NotFound`.
 When it does, `analyze` returns `StockAnalysis.empty(ticker)` - every `Option` field `None`,
 `dividends12m` zero - **without** querying `PriceHistoryStorage` or `DividendStorage` at all. Every
-other error (`RateLimited`, `Transient`, `Other`, or a storage failure) propagates instead of being
-caught.
+other error (`RateLimited`, `Transient`, `SourceNotConfigured`, `Other`, or a storage failure)
+propagates instead of being caught.
 
 Fields split into two independent groups, plus one that spans both:
 
@@ -349,7 +458,7 @@ Fields split into two independent groups, plus one that spans both:
   price, so they stay populated even when the quote has no price right now, as long as bars are
   stored.
 - **`dividendYieldPct`** spans both: `dividends12m` (summed from `DividendStorage.byTicker(ticker,
-  today - 1 year, today)`) divided by the quote's `price` - `None` whenever there's no live price,
+  source, today - 1 year, today)`) divided by the quote's `price` - `None` whenever there's no live price,
   even if `dividends12m` itself is known.
 
 | Field | Definition |
@@ -453,9 +562,10 @@ See [`telegram-commands.md`](telegram-commands.md#screen) for `/screen`.
 
 ## Storage contracts
 
-`PriceHistoryStorage[F[_]]`, `InstrumentStorage[F[_]]`, `WatchlistStorage[F[_]]` and
-`DividendStorage[F[_]]` are the traits a consumer implements. See
-[`storage-contracts.md`](storage-contracts.md) for every method and a suggested relational layout.
+`PriceHistoryStorage[F[_]]`, `InstrumentStorage[F[_]]`, `WatchlistStorage[F[_]]`,
+`DividendStorage[F[_]]`, `TickerSourceStorage[F[_]]` and `BrokerInstrumentStorage[F[_]]` are the
+traits a consumer implements. See [`storage-contracts.md`](storage-contracts.md) for every method
+and a suggested relational layout.
 
 ## Known limitation: Yahoo does not serve MOEX
 
@@ -468,9 +578,10 @@ Yahoo Finance no longer serves data for MOEX (Russian exchange) instruments, so 
   command and whatever tooling the consumer provides), not derived from the Tinkoff portfolio.
 - Examples in these docs use a Yahoo-served ticker such as `AAPL`; a MOEX ticker such as `SBER`
   needs the Tinkoff source described next.
-- MOEX symbols are served instead through `TcsMarketDataSource` (see above): a watchlist item picks
-  Tinkoff explicitly as its source (`/watchlist add SBER tinkoff`, or a `Source.Tinkoff` item added
-  through the consumer's own tooling), and `MarketDataSources.forTicker`/`forSource` (also above)
-  route every consumer - sync, live strategy evaluation, the alert process, `/backtest` - to the
-  right `MarketDataSource` per ticker. `Source.Tinkoff` bars co-exist with `Source.Yahoo` bars in
-  `PriceHistoryStorage`, since a bar is keyed by `(ticker, date, source)`.
+- MOEX symbols are served instead through `TcsMarketDataSource` (see above): the ticker is set to
+  Tinkoff (`/source SBER tinkoff`, `/watchlist add SBER tinkoff`, or a `TickerSource` stored through
+  the consumer's own tooling), and `MarketDataSources.forTicker` (also above) routes the consumers
+  that fetch data - sync, live strategy evaluation, the alert process - to the right
+  `MarketDataSource` per ticker. `Source.Tinkoff` bars co-exist with `Source.Yahoo` bars in
+  `PriceHistoryStorage`, since a bar is keyed by `(ticker, date, source)`; `/backtest` and the
+  valuation read the bars stored for the ticker's source.

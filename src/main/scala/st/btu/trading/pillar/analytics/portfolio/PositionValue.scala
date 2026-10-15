@@ -1,11 +1,15 @@
 package st.btu.trading.pillar.analytics.portfolio
 
-import st.btu.trading.pillar.models.domain.Figi
+import st.btu.trading.pillar.models.domain.{Currency, Figi}
 import st.btu.trading.pillar.models.market.Ticker
 
-/** `name`/`instrumentType`/`currency`/`exchange` are `None` together only when `figi` is unmapped;
-  * `price`/`value`/`weight` can still be `None` separately on a mapped but unpriced position.
+/** `ticker`/`name`/`instrumentType`/`currency` are `None` together only when `figi` is unmapped,
+  * and `exchange` is also `None` for a mapped position whose ticker has no stored instrument
+  * metadata from its configured source; `price`/`value`/`weight` can still be `None` separately on
+  * a mapped but unpriced position.
   *
+  * @param currency
+  *   the currency the position is priced in
   * @param price
   *   the last known close in this position's own `currency`, unconverted
   * @param value
@@ -19,7 +23,7 @@ final case class PositionValue(
   ticker: Option[Ticker],
   name: Option[String],
   instrumentType: Option[String],
-  currency: Option[String],
+  currency: Option[Currency],
   exchange: Option[String],
   quantity: Int,
   price: Option[BigDecimal],

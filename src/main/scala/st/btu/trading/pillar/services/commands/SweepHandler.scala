@@ -78,8 +78,8 @@ final class SweepHandler[F[_]: Clock: Async](
     for {
       today <- Replies.todayUtc[F]
       from = today.minusYears(years.toLong)
-      source <- marketDataSources.forTicker(ticker)
-      bars <- priceHistory.bars(ticker, source.source, from, today)
+      source <- MarketDataSources.sourceOf(marketDataSources, ticker)
+      bars <- priceHistory.bars(ticker, source, from, today)
       points <- BacktestSweep.run[F](base, grid, bars, defaults)
       _ <- Replies.reply(tgGateway, chatId, format(grid.size, points))
     } yield ()

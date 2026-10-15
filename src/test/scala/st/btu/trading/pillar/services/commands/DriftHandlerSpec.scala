@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.{Dimension, PositionSnapshot, PositionValue}
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
 
@@ -14,6 +14,7 @@ class DriftHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
   private val today = LocalDate.now
 
   private def position(instrumentType: Option[String], weight: Option[BigDecimal]): PositionValue =
@@ -36,7 +37,7 @@ class DriftHandlerSpec extends Specification with CatsEffect {
       "prints every enabled target with actual, target and drift, marking breached ones" >> {
         val snapshot = PositionSnapshot(
           today,
-          "RUB",
+          rub,
           Vector(position(Some("share"), Some(BigDecimal("0.6")))),
           cash = BigDecimal(400),
           total = BigDecimal(1000),
@@ -82,7 +83,7 @@ class DriftHandlerSpec extends Specification with CatsEffect {
       }
 
       "reports that there are no targets configured" >> {
-        val snapshot = PositionSnapshot(today, "RUB", Vector.empty, BigDecimal(0), BigDecimal(0), 0)
+        val snapshot = PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), 0)
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =

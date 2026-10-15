@@ -1,5 +1,6 @@
 package st.btu.trading.pillar.analytics.portfolio
 
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.strategy.Side
 
 /** One target's actual weight against its configured target, both in percent (not a 0-1 fraction,
@@ -119,20 +120,21 @@ object Rebalancer {
     else if (diff < Zero) Some(Suggestion(t.dimension, t.key, Side.Sell, -diff))
     else None
 
+  // Targets are entered by hand, so a currency key is read as a Currency, like the codes of the
+  // allocation it is looked up in: a target keyed "usd" reads the weight of "USD".
   private def actualWeight(
     allocation: Allocation,
     tickerWeights: Map[String, BigDecimal],
     dimension: Dimension,
     key: String
-  ): BigDecimal = {
-    val breakdown = dimension match {
-      case Dimension.InstrumentType => allocation.byInstrumentType
-      case Dimension.Currency => allocation.byCurrency
-      case Dimension.Exchange => allocation.byExchange
-      case Dimension.Ticker => tickerWeights
+  ): BigDecimal =
+    dimension match {
+      case Dimension.InstrumentType => allocation.byInstrumentType.getOrElse(key, Zero)
+      case Dimension.Currency =>
+        allocation.byCurrency.getOrElse(Currency(key).value, Zero)
+      case Dimension.Exchange => allocation.byExchange.getOrElse(key, Zero)
+      case Dimension.Ticker => tickerWeights.getOrElse(key, Zero)
     }
-    breakdown.getOrElse(key, Zero)
-  }
 
   private def actualByTicker(snapshot: PositionSnapshot): Map[String, BigDecimal] =
     snapshot.positions

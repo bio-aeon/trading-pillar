@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.{PositionSnapshot, PositionValue}
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
@@ -15,6 +15,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
   private val today = LocalDate.now
 
   private def position(
@@ -30,7 +31,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       ticker.map(Ticker(_)),
       name = None,
       instrumentType = Some("share"),
-      currency = Some("RUB"),
+      currency = Some(rub),
       exchange = Some("MOEX"),
       quantity = quantity,
       price = price,
@@ -44,7 +45,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       "lists positions sorted by value descending, then cash and total" >> {
         val snapshot = PositionSnapshot(
           today,
-          "RUB",
+          rub,
           Vector(
             position(
               "F1",
@@ -91,7 +92,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       "marks an unpriced position and falls back to the figi when there is no ticker" >> {
         val snapshot = PositionSnapshot(
           today,
-          "RUB",
+          rub,
           Vector(position("UNMAPPED", None, 5, None, None, None)),
           cash = BigDecimal(0),
           total = BigDecimal(0),
@@ -112,7 +113,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       }
 
       "reports 'No positions.' when the snapshot is empty" >> {
-        val snapshot = PositionSnapshot(today, "RUB", Vector.empty, BigDecimal(0), BigDecimal(0), 0)
+        val snapshot = PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), 0)
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =

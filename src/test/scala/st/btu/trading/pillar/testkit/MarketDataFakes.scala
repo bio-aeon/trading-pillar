@@ -6,20 +6,15 @@ import cats.syntax.apply.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import st.btu.trading.pillar.data.ProcessContext
-import st.btu.trading.pillar.gateways.MarketDataSource
+import st.btu.trading.pillar.gateways.*
 import st.btu.trading.pillar.gateways.yahoo.{YahooApi, YahooChart, YahooDividend, YahooMetadata}
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.services.{PriceHistorySyncService, SyncReport}
-import st.btu.trading.pillar.storages.{
-  DividendStorage,
-  InstrumentStorage,
-  PriceHistoryStorage,
-  WatchlistStorage
-}
+import st.btu.trading.pillar.storages.*
 import tofu.Delay
 
-import java.time.{LocalDate, ZonedDateTime}
+import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 
 object MarketDataFakes {
 
@@ -106,7 +101,8 @@ object MarketDataFakes {
     bars: Map[Ticker, IO[List[Bar]]] = Map.empty,
     quotes: Map[Ticker, IO[Option[Quote]]] = Map.empty,
     info: Map[Ticker, IO[Option[InstrumentInfo]]] = Map.empty,
-    dividendEvents: Map[Ticker, IO[List[DividendEvent]]] = Map.empty
+    dividendEvents: Map[Ticker, IO[List[DividendEvent]]] = Map.empty,
+    onBoard: Option[ClassCode] = None
   ): IO[FakeMarketDataSource] =
     for {
       barsCallsRef <- Ref.of[IO, List[Ticker]](List.empty)
@@ -114,6 +110,8 @@ object MarketDataFakes {
       dividendsCallsRef <- Ref.of[IO, List[Ticker]](List.empty)
     } yield new FakeMarketDataSource {
       def source: Source = src
+
+      def board: Option[ClassCode] = onBoard
 
       def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): IO[List[Bar]] =
         barsCallsRef.update(_ :+ ticker) >> bars.getOrElse(ticker, IO.pure(List.empty))
@@ -132,6 +130,74 @@ object MarketDataFakes {
       def instrumentInfoCalls: IO[List[Ticker]] = infoCallsRef.get
       def dividendsCalls: IO[List[Ticker]] = dividendsCallsRef.get
     }
+
+  // A Tinkoff-flavoured source that only remembers the board it was opened on, for specs that
+  // assert which board the router chose.
+  final case class BoardView(classCode: Option[ClassCode]) extends MarketDataSource[IO] {
+    def source: Source = Source.Tinkoff
+
+    def board: Option[ClassCode] = classCode
+
+    def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): IO[List[Bar]] =
+      IO.pure(List.empty)
+
+    def latestQuote(ticker: Ticker): IO[Option[Quote]] = IO.pure(None)
+
+    def instrumentInfo(ticker: Ticker): IO[Option[InstrumentInfo]] = IO.pure(None)
+
+    def dividends(ticker: Ticker, since: LocalDate, until: LocalDate): IO[List[DividendEvent]] =
+      IO.pure(List.empty)
+  }
+
+  val boardViews: TinkoffBoards[IO] = new TinkoffBoards[IO] {
+    def onBoard(classCode: Option[ClassCode]): MarketDataSource[IO] = BoardView(classCode)
+  }
+
+  // Serves every board with the one given source, for specs that assert what that source was asked.
+  def tinkoffBoardsOver(source: MarketDataSource[IO]): TinkoffBoards[IO] =
+    new TinkoffBoards[IO] {
+      def onBoard(classCode: Option[ClassCode]): MarketDataSource[IO] = source
+    }
+
+  def marketDataSources(
+    yahoo: Option[MarketDataSource[IO]] = None,
+    tinkoff: Option[TinkoffBoards[IO]] = None,
+    settings: List[TickerSource] = List.empty,
+    default: SourceSetting = SourceSetting.Yahoo
+  ): IO[MarketDataSources[IO]] =
+    tickerSourceStorage(settings).map(storage =>
+      new MarketDataSourcesImpl[IO](yahoo, tinkoff, storage, default)
+    )
+
+  trait FakeTickerSourceStorage extends TickerSourceStorage[IO]
+
+  def tickerSourceStorage(initial: List[TickerSource] = List.empty): IO[FakeTickerSourceStorage] =
+    Ref.of[IO, Map[Ticker, TickerSource]](initial.map(entry => entry.ticker -> entry).toMap).map {
+      ref =>
+        new FakeTickerSourceStorage {
+          def find(ticker: Ticker): IO[Option[TickerSource]] = ref.get.map(_.get(ticker))
+
+          def all: IO[List[TickerSource]] = ref.get.map(_.values.toList)
+
+          def upsert(entry: TickerSource): IO[Unit] = ref.update(_.updated(entry.ticker, entry))
+
+          def delete(ticker: Ticker): IO[Boolean] =
+            ref.modify(entries => (entries - ticker, entries.contains(ticker)))
+        }
+    }
+
+  // Every call fails with `failure`, for specs of how a caller reacts to an unreadable settings
+  // store.
+  def failingTickerSourceStorage(failure: Throwable): IO[FakeTickerSourceStorage] =
+    IO.pure(new FakeTickerSourceStorage {
+      def find(ticker: Ticker): IO[Option[TickerSource]] = IO.raiseError(failure)
+
+      def all: IO[List[TickerSource]] = IO.raiseError(failure)
+
+      def upsert(entry: TickerSource): IO[Unit] = IO.raiseError(failure)
+
+      def delete(ticker: Ticker): IO[Boolean] = IO.raiseError(failure)
+    })
 
   // --- PriceHistoryStorage ---
 
@@ -186,14 +252,61 @@ object MarketDataFakes {
       new FakeInstrumentStorage {
         def find(ticker: Ticker): IO[Option[InstrumentInfo]] = ref.get.map(_.get(ticker))
 
-        def findByFigi(figi: String): IO[Option[InstrumentInfo]] =
-          ref.get.map(_.values.find(_.figi.contains(figi)))
-
         def upsert(info: InstrumentInfo): IO[Unit] = ref.update(_.updated(info.ticker, info))
 
         def all: IO[Map[Ticker, InstrumentInfo]] = ref.get
       }
     }
+
+  // Every call fails with `failure`, for specs of how a caller reacts to an unavailable metadata
+  // store.
+  def failingInstrumentStorage(failure: Throwable): IO[InstrumentStorage[IO]] =
+    IO.pure(new InstrumentStorage[IO] {
+      def find(ticker: Ticker): IO[Option[InstrumentInfo]] = IO.raiseError(failure)
+
+      def upsert(info: InstrumentInfo): IO[Unit] = IO.raiseError(failure)
+    })
+
+  trait FakeBrokerInstrumentStorage extends BrokerInstrumentStorage[IO] {
+    def all: IO[List[BrokerInstrument]]
+  }
+
+  def brokerInstrumentStorage(
+    initial: List[BrokerInstrument] = List.empty
+  ): IO[FakeBrokerInstrumentStorage] =
+    Ref.of[IO, Map[Figi, BrokerInstrument]](initial.map(i => i.figi -> i).toMap).map { ref =>
+      new FakeBrokerInstrumentStorage {
+        def find(figi: Figi): IO[Option[BrokerInstrument]] = ref.get.map(_.get(figi))
+
+        def upsert(instrument: BrokerInstrument): IO[Unit] =
+          ref.update(_.updated(instrument.figi, instrument))
+
+        def all: IO[List[BrokerInstrument]] = ref.get.map(_.values.toList)
+      }
+    }
+
+  // Terse fixture builder: only the fields a spec cares about are named, the rest get arbitrary
+  // but valid values.
+  def brokerInstrument(
+    figi: String,
+    ticker: Ticker,
+    currency: String = "RUB",
+    classCode: String = "TQBR"
+  ): BrokerInstrument =
+    BrokerInstrument(
+      Figi(figi),
+      ticker,
+      ClassCode(classCode),
+      name = ticker.value,
+      instrumentType = "share",
+      currency = Currency(currency),
+      updatedAt = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+    )
+
+  def instrumentDirectory(known: List[BrokerInstrument] = List.empty): IO[InstrumentDirectory[IO]] =
+    IO.pure(new InstrumentDirectory[IO] {
+      def byFigi(figi: Figi): IO[Option[BrokerInstrument]] = IO.pure(known.find(_.figi == figi))
+    })
 
   // --- WatchlistStorage ---
 
@@ -208,9 +321,6 @@ object MarketDataFakes {
 
         def byAccount(accountId: AccountId): IO[List[WatchlistItem]] =
           ref.get.map(_.filter(_.accountId == accountId))
-
-        def findByTicker(ticker: Ticker): IO[Option[WatchlistItem]] =
-          ref.get.map(_.find(_.ticker == ticker))
 
         def add(item: WatchlistItem): IO[Unit] = ref.update(_ :+ item)
 
@@ -239,7 +349,7 @@ object MarketDataFakes {
         def syncSymbol(item: WatchlistItem, today: LocalDate): IO[SyncReport] =
           callsRef.update(_ :+ item.ticker) >> outcomes.getOrElse(
             item.ticker,
-            IO.pure(SyncReport(item.ticker, item.source, 0, 0, 0, today, today))
+            IO.pure(SyncReport(item.ticker, Source.Yahoo, 0, 0, 0, today, today))
           )
 
         def syncedTickers: IO[List[Ticker]] = callsRef.get
@@ -263,16 +373,19 @@ object MarketDataFakes {
             }
             .as(events.size)
 
-        def byTicker(ticker: Ticker, from: LocalDate, to: LocalDate): IO[List[DividendEvent]] =
+        def byTicker(ticker: Ticker, source: Source, from: LocalDate, to: LocalDate)
+          : IO[List[DividendEvent]] =
           ref.get.map(
-            _.filter(e => e.ticker == ticker && !e.exDate.isBefore(from) && !e.exDate.isAfter(to))
-              .sortBy(_.exDate.toEpochDay)
+            _.filter(e =>
+              e.ticker == ticker && e.source == source && !e.exDate.isBefore(from) &&
+                !e.exDate.isAfter(to)
+            ).sortBy(_.exDate.toEpochDay)
           )
 
-        def upcoming(tickers: List[Ticker], from: LocalDate): IO[List[DividendEvent]] = {
-          val tickerSet = tickers.toSet
+        def upcoming(tickers: List[SourcedTicker], from: LocalDate): IO[List[DividendEvent]] = {
+          val wanted = tickers.map(t => (t.ticker, t.source)).toSet
           ref.get.map(
-            _.filter(e => tickerSet.contains(e.ticker) && !e.exDate.isBefore(from))
+            _.filter(e => wanted.contains((e.ticker, e.source)) && !e.exDate.isBefore(from))
               .sortBy(_.exDate.toEpochDay)
           )
         }

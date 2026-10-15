@@ -3,6 +3,7 @@ package st.btu.trading.pillar.services.commands
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.services.analysis.StockAnalysis
@@ -15,7 +16,7 @@ class CompareHandlerSpec extends Specification with CatsEffect {
   private val msft = Ticker("MSFT")
 
   private def analysisWithPrice(ticker: Ticker, price: BigDecimal): StockAnalysis =
-    StockAnalysis.empty(ticker).copy(price = Some(price), currency = Some("USD"))
+    StockAnalysis.empty(ticker).copy(price = Some(price), currency = Some(Currency("USD")))
 
   "CompareHandler" >> {
     "handle" >> {

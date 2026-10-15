@@ -2,12 +2,12 @@ package st.btu.trading.pillar.services
 
 import cats.MonadThrow
 import cats.effect.Clock
-import cats.syntax.apply.*
+import cats.syntax.applicativeError.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.{Applicative, Functor}
 import st.btu.trading.pillar.gateways.{MarketDataSource, MarketDataSources}
-import st.btu.trading.pillar.models.market.{InstrumentInfo, Ticker, WatchlistItem}
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.storages.{DividendStorage, InstrumentStorage, PriceHistoryStorage}
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
@@ -24,12 +24,16 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
     extends PriceHistorySyncService[F] {
 
   def syncSymbol(item: WatchlistItem, today: LocalDate): F[SyncReport] =
-    sources.forSource(item.source) match {
-      case None =>
-        warn"No market data source configured for ${item.source.value}; skipping ${item.ticker.value}"
-          .as(SyncReport(item.ticker, item.source, 0, 0, 0, today, today))
-      case Some(source) => syncWithSource(source, item, today)
+    sources.forTicker(item.ticker).attempt.flatMap {
+      case Right(source) => syncWithSource(source, item, today)
+      case Left(MarketDataError.SourceNotConfigured(source)) =>
+        skipUnconfigured(item.ticker, source, today)
+      case Left(error) => F.raiseError(error)
     }
+
+  private def skipUnconfigured(ticker: Ticker, source: Source, today: LocalDate): F[SyncReport] =
+    warn"No market data source configured for ${source.value}; skipping ${ticker.value}"
+      .as(SyncReport(ticker, source, 0, 0, 0, today, today))
 
   private def syncWithSource(
     source: MarketDataSource[F],
@@ -37,7 +41,10 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
     today: LocalDate
   ): F[SyncReport] =
     for {
-      lastBarDate_? <- priceHistory.lastBarDate(item.ticker, source.source)
+      stored_? <- storedMetadata(item.ticker)
+      lastBarDate_? <-
+        if (stored_?.exists(originChanged(_, source))) F.pure(Option.empty[LocalDate])
+        else priceHistory.lastBarDate(item.ticker, source.source)
       since = lastBarDate_?
         .map(_.minusDays(config.overlapDays.toLong))
         .getOrElse(today.minusYears(config.backfillYears.toLong))
@@ -45,7 +52,7 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
         if (since.isAfter(today))
           F.pure(SyncReport(item.ticker, source.source, 0, 0, 0, since, today))
         else syncBars(source, item.ticker, since, today)
-      _ <- refreshMetadataIfStale(source, item.ticker)
+      _ <- refreshMetadataIfStale(source, item.ticker, stored_?)
     } yield report
 
   private def syncBars(
@@ -72,17 +79,38 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
       warnCause"Failed to sync dividends for ${ticker.value}" (e).as(0)
     )
 
+  // An unreadable record counts as absent, so a metadata failure cannot fail the bar sync.
+  private def storedMetadata(ticker: Ticker): F[Option[InstrumentInfo]] =
+    F.handleErrorWith(instruments.find(ticker))(e =>
+      warnCause"Failed to read instrument metadata for ${ticker.value}" (e).as(None)
+    )
+
   // Metadata failure must not fail the bar sync: log a warning and move on.
-  private def refreshMetadataIfStale(source: MarketDataSource[F], ticker: Ticker): F[Unit] =
+  private def refreshMetadataIfStale(
+    source: MarketDataSource[F],
+    ticker: Ticker,
+    stored: Option[InstrumentInfo]
+  ): F[Unit] =
     F.handleErrorWith(
-      isMetadataStale(ticker) >>= (Applicative[F].whenA(_)(refreshMetadata(source, ticker)))
+      nowF.flatMap(now =>
+        Applicative[F].whenA(stored.forall(stale(_, source, now)))(refreshMetadata(source, ticker))
+      )
     )(e => warnCause"Failed to refresh instrument metadata for ${ticker.value}" (e))
 
-  private def isMetadataStale(ticker: Ticker): F[Boolean] =
-    (instruments.find(ticker), nowF).mapN((existing, now) => existing.forall(stale(_, now)))
+  // Metadata read from another source or board describes the ticker as that one does, so a change
+  // of origin refreshes it at once, whatever its age.
+  private def stale(
+    info: InstrumentInfo,
+    source: MarketDataSource[F],
+    now: ZonedDateTime
+  ): Boolean =
+    originChanged(info, source) ||
+      info.updatedAt.isBefore(now.minusNanos(config.metadataRefresh.toNanos))
 
-  private def stale(info: InstrumentInfo, now: ZonedDateTime): Boolean =
-    info.updatedAt.isBefore(now.minusNanos(config.metadataRefresh.toNanos))
+  // Bars are stored per source, not per board, so those stored under another origin may have been
+  // read from another board: a changed origin refetches the whole window to replace them.
+  private def originChanged(info: InstrumentInfo, source: MarketDataSource[F]): Boolean =
+    info.source != source.source || info.board != source.board
 
   private def refreshMetadata(source: MarketDataSource[F], ticker: Ticker): F[Unit] =
     source.instrumentInfo(ticker).flatMap {

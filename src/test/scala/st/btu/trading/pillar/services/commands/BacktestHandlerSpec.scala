@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.gateways.MarketDataSources
-import st.btu.trading.pillar.models.market.Ticker
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.strategy.backtest.*
 import st.btu.trading.pillar.strategy.reference.MovingAverageCrossoverStrategy
@@ -14,7 +14,6 @@ import st.btu.trading.pillar.strategy.{
   StrategyRegistry,
   StrategyRegistryImpl
 }
-import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import st.btu.trading.pillar.testkit.{Fakes, MarketDataFakes, StrategyFakes}
 import tofu.logging.{Logging, Logs}
@@ -29,14 +28,9 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
   private val defaults = BacktestConfig(10000, BigDecimal("0.001"), 5)
   private val strategyId = StrategyId("ma-cross-50-200")
   private val ticker = Ticker("AAPL")
+  private val tenFortyParams = "params=fast:10,slow:40"
 
-  // No watchlist entries configured: forTicker always falls back to the single fake source's own
-  // source. None of these tests inspect which Source ends up passed to BacktestService.run.
-  private def buildRouter: IO[MarketDataSources[IO]] =
-    for {
-      marketData <- MarketDataFakes.marketDataSource()
-      watchlist <- MarketDataFakes.watchlistStorage()
-    } yield new MarketDataSourcesImpl[IO](List(marketData), watchlist, marketData.source)
+  private def buildRouter: IO[MarketDataSources[IO]] = MarketDataFakes.marketDataSources()
 
   private def buildRegistry: IO[StrategyRegistry[IO]] = {
     implicit val logs: Logs[IO, IO] =
@@ -196,7 +190,7 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
           )
           sources <- buildRouter
           handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "aapl", "params=fast:10,slow:40"))
+          _ <- handler.handle(chatId, List(strategyId.value, "aapl", tenFortyParams))
           messages <- tgGateway.sentMessages
           calls <- service.calls
         } yield {
@@ -216,7 +210,7 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
           service <- StrategyFakes.backtestService(id => IO.pure(run(2L, metrics(), 10, id)))
           sources <- buildRouter
           handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "aapl", "3", "params=fast:10,slow:40"))
+          _ <- handler.handle(chatId, List(strategyId.value, "aapl", "3", tenFortyParams))
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain("Backtest #2")
       }
@@ -230,7 +224,7 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
           )
           sources <- buildRouter
           handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", "params=fast:10,slow:40"))
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", tenFortyParams))
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain(s"Unknown strategy: ${strategyId.value}")
       }
@@ -246,7 +240,7 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
           )
           sources <- buildRouter
           handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", "params=fast:10,slow:40"))
+          _ <- handler.handle(chatId, List(strategyId.value, "AAPL", tenFortyParams))
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain("does not support parameters")
       }
@@ -319,6 +313,71 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
       }
     }
 
+    "stored bars" >> {
+
+      // No adapter is wired for any source: the handler may consult only the tickers' settings.
+      def routerWith(settings: List[TickerSource]): IO[MarketDataSources[IO]] =
+        MarketDataFakes.marketDataSources(settings = settings)
+
+      val sber = Ticker("SBER")
+      val sberOnTinkoff = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
+
+      "reads a ticker set to Tinkoff from its Tinkoff bars, with no Tinkoff adapter wired" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          registry <- buildRegistry
+          service <- StrategyFakes.backtestService(_ => IO.pure(run(1L, metrics(), 10)))
+          sources <- routerWith(sberOnTinkoff)
+          handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
+          _ <- handler.handle(chatId, List(strategyId.value, "sber"))
+          messages <- tgGateway.sentMessages
+          readSources <- service.readSources
+        } yield {
+          readSources must_== List(Source.Tinkoff)
+          messages.head.message must contain("Backtest #1")
+        }
+      }
+
+      "reads a ticker with no setting from the default source" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          registry <- buildRegistry
+          service <- StrategyFakes.backtestService(_ => IO.pure(run(1L, metrics(), 10)))
+          sources <- routerWith(Nil)
+          handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
+          _ <- handler.handle(chatId, List(strategyId.value, "aapl"))
+          readSources <- service.readSources
+        } yield readSources must_== List(Source.Yahoo)
+      }
+
+      "reads the bars of a params= run from the source the ticker is set to" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          registry <- buildRegistry
+          _ <- registry.register(new MovingAverageCrossoverStrategy(fast = 50, slow = 200))
+          service <- StrategyFakes.backtestService(_ => IO.pure(run(2L, metrics(), 10)))
+          sources <- routerWith(sberOnTinkoff)
+          handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
+          _ <- handler.handle(chatId, List(strategyId.value, "sber", tenFortyParams))
+          readSources <- service.readSources
+        } yield readSources must_== List(Source.Tinkoff)
+      }
+
+      "reads each ticker of a portfolio from the source it is set to" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          registry <- buildRegistry
+          service <- StrategyFakes.backtestService(_ => IO.pure(run(3L, metrics(), 10)))
+          sources <- routerWith(sberOnTinkoff)
+          handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
+          _ <- handler.handle(chatId, List(strategyId.value, "aapl,sber"))
+          portfolios <- service.portfolioTickers
+        } yield portfolios must_== List(
+          List(SourcedTicker(ticker, Source.Yahoo), SourcedTicker(sber, Source.Tinkoff))
+        )
+      }
+    }
+
     "multi-ticker" >> {
 
       "routes a comma-separated ticker argument to a portfolio backtest run" >> {
@@ -346,7 +405,7 @@ class BacktestHandlerSpec extends Specification with CatsEffect {
           )
           sources <- buildRouter
           handler = new BacktestHandler[IO](tgGateway, registry, service, sources, defaults)
-          _ <- handler.handle(chatId, List(strategyId.value, "aapl,msft", "params=fast:10,slow:40"))
+          _ <- handler.handle(chatId, List(strategyId.value, "aapl,msft", tenFortyParams))
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain("not supported with multiple tickers")
       }

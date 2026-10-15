@@ -1,6 +1,6 @@
 package st.btu.trading.pillar.strategy.backtest
 
-import st.btu.trading.pillar.models.market.{Source, Ticker}
+import st.btu.trading.pillar.models.market.{Source, SourcedTicker, Ticker}
 import st.btu.trading.pillar.strategy.{Strategy, StrategyId}
 
 import java.time.LocalDate
@@ -37,14 +37,18 @@ trait BacktestService[F[_]] {
     config: BacktestConfig
   ): F[BacktestRun]
 
-  /** Multi-ticker backtest: every ticker's bars are loaded from the same `source` and run as one
-    * portfolio sharing a single cash balance, then persisted as one `BacktestRun` whose
-    * `BacktestResult.ticker` is `tickers` joined by `","`.
+  /** Multi-ticker backtest: every ticker's bars are loaded from the source paired with it and run
+    * as one portfolio sharing a single cash balance, then persisted as one `BacktestRun` whose
+    * `BacktestResult.ticker` is the tickers joined by `","`.
+    *
+    * @return
+    *   a failed `F` with `BacktestServiceError.StrategyNotFound` if the id isn't registered, or
+    *   `BacktestServiceError.Failed` if the backtest itself fails, as `Failed(NoBars)` when a
+    *   ticker has no bars on its own source
     */
   def runPortfolio(
     strategyId: StrategyId,
-    tickers: List[Ticker],
-    source: Source,
+    tickers: List[SourcedTicker],
     from: LocalDate,
     to: LocalDate,
     config: BacktestConfig

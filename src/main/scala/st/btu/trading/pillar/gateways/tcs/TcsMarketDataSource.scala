@@ -6,13 +6,13 @@ import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import com.google.protobuf.timestamp.Timestamp
-import io.grpc.{Status, StatusRuntimeException}
 import ru.tinkoff.piapi.contract.v1.common.{MoneyValue, Quotation}
 import ru.tinkoff.piapi.contract.v1.instruments.*
 import ru.tinkoff.piapi.contract.v1.marketdata.*
 import st.btu.trading.pillar.facades.TcsGrpc
-import st.btu.trading.pillar.gateways.MarketDataSource
-import st.btu.trading.pillar.gateways.tcs.TcsMarketDataSource.TcsMarketDataConfig
+import st.btu.trading.pillar.gateways.{MarketDataSource, TinkoffBoards}
+import st.btu.trading.pillar.gateways.tcs.TcsMarketDataSource.{InstrumentKey, TcsMarketDataConfig}
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tcs
 import tofu.lift.Lift
@@ -22,15 +22,31 @@ import tofu.syntax.logging.*
 import java.time.{Clock as _, *}
 import scala.annotation.tailrec
 
+/** Market data from Tinkoff Invest over gRPC, with tickers looked up on the configured default
+  * board. [[onBoard]] gives views on other boards, which share the instruments resolved so far.
+  */
 final class TcsMarketDataSource[F[_]: Logging] private (
   instruments: InstrumentsServiceFs2Grpc[F, Unit],
   marketData: MarketDataServiceFs2Grpc[F, Unit],
   config: TcsMarketDataConfig,
-  cache: Ref[F, Map[Ticker, Instrument]]
+  cache: Ref[F, Map[InstrumentKey, Instrument]],
+  lookupBoard: ClassCode
 )(implicit F: Sync[F], clock: Clock[F])
-    extends MarketDataSource[F] {
+    extends MarketDataSource[F]
+    with TinkoffBoards[F] {
 
   def source: Source = Source.Tinkoff
+
+  def board: Option[ClassCode] = Some(lookupBoard)
+
+  def onBoard(classCode: Option[ClassCode]): MarketDataSource[F] =
+    new TcsMarketDataSource[F](
+      instruments,
+      marketData,
+      config,
+      cache,
+      classCode.getOrElse(config.defaultClassCode)
+    )
 
   def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): F[List[Bar]] =
     for {
@@ -49,7 +65,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
       Quote(
         ticker,
         toScale(lastPrice.price),
-        instrument.currency,
+        Currency(instrument.currency),
         lastPrice.time.fold(now)(toZonedDateTime),
         Source.Tinkoff
       )
@@ -62,9 +78,11 @@ final class TcsMarketDataSource[F[_]: Logging] private (
     } yield Some(
       InstrumentInfo(
         ticker,
+        Source.Tinkoff,
+        board,
         Some(instrument.name),
         instrument.instrumentType,
-        instrument.currency,
+        Currency(instrument.currency),
         instrument.exchange,
         config.zone.getId,
         Some(instrument.figi),
@@ -96,7 +114,13 @@ final class TcsMarketDataSource[F[_]: Logging] private (
     d.lastBuyDate.map(t => toZonedDateTime(t).toLocalDate.plusDays(1)).flatMap { exDate =>
       val amount = moneyToBigDecimal(d.dividendNet)
       Option.when(amount != 0)(
-        DividendEvent(ticker, exDate, amount, d.dividendNet.map(_.currency), Source.Tinkoff)
+        DividendEvent(
+          ticker,
+          exDate,
+          amount,
+          d.dividendNet.map(net => Currency(net.currency)),
+          Source.Tinkoff
+        )
       )
     }
 
@@ -147,7 +171,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
     }
 
   private def resolveInstrument(ticker: Ticker): F[Instrument] =
-    cache.get.map(_.get(ticker)).flatMap {
+    cache.get.map(_.get(InstrumentKey(ticker, lookupBoard))).flatMap {
       case Some(instrument) => F.pure(instrument)
       case None => fetchInstrument(ticker)
     }
@@ -157,7 +181,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
       instruments.getInstrumentBy(
         InstrumentRequest(
           InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-          config.classCode,
+          lookupBoard.value,
           ticker.value
         ),
         ()
@@ -165,7 +189,8 @@ final class TcsMarketDataSource[F[_]: Logging] private (
     )(mapStatus(ticker))
       .flatMap {
         _.instrument match {
-          case Some(instrument) => cache.update(_.updated(ticker, instrument)).as(instrument)
+          case Some(instrument) =>
+            cache.update(_.updated(InstrumentKey(ticker, lookupBoard), instrument)).as(instrument)
           case None => F.raiseError[Instrument](MarketDataError.NotFound(ticker))
         }
       }
@@ -198,21 +223,8 @@ final class TcsMarketDataSource[F[_]: Logging] private (
   private def quotationToBigDecimal(q: Quotation): BigDecimal =
     Prices.fromUnitsNano(q.units, q.nano)
 
-  private def mapStatus(ticker: Ticker): PartialFunction[Throwable, Throwable] = {
-    case e: StatusRuntimeException =>
-      e.getStatus.getCode match {
-        case Status.Code.NOT_FOUND => MarketDataError.NotFound(ticker)
-        case Status.Code.RESOURCE_EXHAUSTED => MarketDataError.RateLimited(None)
-        case Status.Code.UNAVAILABLE | Status.Code.DEADLINE_EXCEEDED =>
-          MarketDataError.Transient(statusMessage(e), Some(e))
-        case _ => MarketDataError.Other(statusMessage(e), Some(e))
-      }
-    case other =>
-      MarketDataError.Other(Option(other.getMessage).getOrElse(other.toString), Some(other))
-  }
-
-  private def statusMessage(e: StatusRuntimeException): String =
-    Option(e.getStatus.getDescription).getOrElse(e.getStatus.getCode.toString)
+  private def mapStatus(ticker: Ticker): PartialFunction[Throwable, Throwable] =
+    TcsErrors.toMarketDataError(Some(ticker))
 
   private def nowF: F[ZonedDateTime] =
     clock.realTimeInstant.map(ZonedDateTime.ofInstant(_, ZoneOffset.UTC))
@@ -220,18 +232,33 @@ final class TcsMarketDataSource[F[_]: Logging] private (
 
 object TcsMarketDataSource {
 
+  // A ticker as listed on one board, the key its resolved instrument is cached under: the same
+  // ticker has a different instrument on each board.
+  private[tcs] final case class InstrumentKey(ticker: Ticker, board: ClassCode)
+
+  /** Settings of the Tinkoff market data source.
+    *
+    * @param defaultClassCode
+    *   the board a ticker is looked up on when its setting names none
+    * @param zone
+    *   the exchange time zone that bar dates and timestamps are expressed in
+    */
   final case class TcsMarketDataConfig(
-    classCode: String = TcsMarketDataConfig.DefaultClassCode,
+    defaultClassCode: ClassCode = TcsMarketDataConfig.DefaultClassCode,
     zone: ZoneId = TcsMarketDataConfig.DefaultZone
   )
 
   object TcsMarketDataConfig {
-    val DefaultClassCode = "TQBR"
+
+    /** The class code of the Moscow Exchange's main equity board. */
+    val DefaultClassCode: ClassCode = ClassCode("TQBR")
+
+    /** The time zone of the Moscow Exchange. */
     val DefaultZone: ZoneId = ZoneId.of("Europe/Moscow")
   }
 
-  /** Wires a [[MarketDataSource]] over the given Tinkoff gRPC stubs, with an empty
-    * ticker-to-instrument cache.
+  /** Wires a [[MarketDataSource]] over the given Tinkoff gRPC stubs, on the configured default
+    * board, with an empty ticker-to-instrument cache.
     */
   def create[I[_]: Sync, F[_]: Sync: Clock](
     instruments: InstrumentsServiceFs2Grpc[F, Unit],
@@ -239,10 +266,18 @@ object TcsMarketDataSource {
     config: TcsMarketDataConfig
   )(implicit logs: Logs[I, F]): I[TcsMarketDataSource[F]] =
     for {
-      cache <- Ref.in[I, F, Map[Ticker, Instrument]](Map.empty)
+      cache <- Ref.in[I, F, Map[InstrumentKey, Instrument]](Map.empty)
       source <- logs
         .forService[MarketDataSource[F]]
-        .map(implicit log => new TcsMarketDataSource[F](instruments, marketData, config, cache))
+        .map(implicit log =>
+          new TcsMarketDataSource[F](
+            instruments,
+            marketData,
+            config,
+            cache,
+            config.defaultClassCode
+          )
+        )
     } yield source
 
   /** Wires a [[MarketDataSource]] authenticated as `token`, holding its gRPC channel and stubs open

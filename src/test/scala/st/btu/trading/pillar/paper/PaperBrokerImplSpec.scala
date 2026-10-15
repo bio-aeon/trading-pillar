@@ -3,7 +3,7 @@ package st.btu.trading.pillar.paper
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.{Quote, Source, Ticker}
 import st.btu.trading.pillar.strategy.{Side, Sizing, StrategySignal}
 import st.btu.trading.pillar.testkit.{AlertFakes, PaperFakes}
@@ -13,11 +13,12 @@ import java.time.{ZoneOffset, ZonedDateTime}
 class PaperBrokerImplSpec extends Specification with CatsEffect {
 
   private val accountId = AccountId(1)
+  private val usd = Currency("USD")
   private val ticker = Ticker("AAPL")
   private val now = ZonedDateTime.of(2026, 1, 15, 12, 0, 0, 0, ZoneOffset.UTC)
   private val binding = AlertFakes.strategyBinding(accountId = accountId, ticker = ticker)
 
-  private def quote(price: BigDecimal): Quote = Quote(ticker, price, "USD", now, Source.Yahoo)
+  private def quote(price: BigDecimal): Quote = Quote(ticker, price, usd, now, Source.Yahoo)
 
   private def buildBroker(
     accounts: List[PaperAccount] = List.empty,
@@ -34,7 +35,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
       "fills a buy at the quote price adjusted by slippage, with commission on the notional" >> {
         for {
           bs <- buildBroker(
-            accounts = List(PaperAccount(accountId, 100000, "USD")),
+            accounts = List(PaperAccount(accountId, 100000, usd)),
             config = PaperBrokerConfig(commissionRate = BigDecimal("0.001"), slippageBps = 50)
           )
           (broker, storage) = bs
@@ -63,7 +64,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
         val existing = PaperPosition(accountId, ticker, 20L, 90, now.minusDays(1))
         for {
           bs <- buildBroker(
-            accounts = List(PaperAccount(accountId, 1000, "USD")),
+            accounts = List(PaperAccount(accountId, 1000, usd)),
             positions = List(existing),
             config = PaperBrokerConfig(commissionRate = BigDecimal("0.001"), slippageBps = 50)
           )
@@ -93,7 +94,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
         val existing = PaperPosition(accountId, ticker, 10L, 100, now.minusDays(1))
         for {
           bs <- buildBroker(
-            accounts = List(PaperAccount(accountId, 100000, "USD")),
+            accounts = List(PaperAccount(accountId, 100000, usd)),
             positions = List(existing)
           )
           (broker, storage) = bs
@@ -111,7 +112,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
         val existing = PaperPosition(accountId, ticker, 5L, 100, now.minusDays(1))
         for {
           bs <- buildBroker(
-            accounts = List(PaperAccount(accountId, 1000, "USD")),
+            accounts = List(PaperAccount(accountId, 1000, usd)),
             positions = List(existing)
           )
           (broker, storage) = bs
@@ -157,7 +158,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
 
       "rejects a buy whose sizing resolves to zero quantity even though cash is ample" >> {
         for {
-          bs <- buildBroker(accounts = List(PaperAccount(accountId, 100000, "USD")))
+          bs <- buildBroker(accounts = List(PaperAccount(accountId, 100000, usd)))
           (broker, _) = bs
           order <- broker.execute(
             binding,
@@ -175,7 +176,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
         val existing = PaperPosition(accountId, ticker, 10L, 100, now.minusDays(1))
         for {
           bs <- buildBroker(
-            accounts = List(PaperAccount(accountId, 1000, "USD")),
+            accounts = List(PaperAccount(accountId, 1000, usd)),
             positions = List(existing)
           )
           (broker, _) = bs
@@ -193,7 +194,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
 
       "rejects a buy when cash can't cover even one share, distinctly from a zero-quantity sizing" >> {
         for {
-          bs <- buildBroker(accounts = List(PaperAccount(accountId, 1, "USD")))
+          bs <- buildBroker(accounts = List(PaperAccount(accountId, 1, usd)))
           (broker, _) = bs
           order <- broker.execute(
             binding,
@@ -210,7 +211,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
       "rejects a sell when there is no position for the ticker" >> {
         for {
           bs <- buildBroker(
-            accounts = List(PaperAccount(accountId, 1000, "USD")),
+            accounts = List(PaperAccount(accountId, 1000, usd)),
             positions = List.empty
           )
           (broker, _) = bs
@@ -228,7 +229,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
 
       "raises rather than silently accepting a hold signal, since callers are expected to filter those out beforehand" >> {
         for {
-          bs <- buildBroker(accounts = List(PaperAccount(accountId, 1000, "USD")))
+          bs <- buildBroker(accounts = List(PaperAccount(accountId, 1000, usd)))
           (broker, _) = bs
           result <- broker.execute(binding, StrategySignal.Hold("n/a"), quote(100), now).attempt
         } yield result must beLeft

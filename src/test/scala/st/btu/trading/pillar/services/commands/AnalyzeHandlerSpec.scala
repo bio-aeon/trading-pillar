@@ -3,6 +3,7 @@ package st.btu.trading.pillar.services.commands
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.services.analysis.StockAnalysis
@@ -19,7 +20,7 @@ class AnalyzeHandlerSpec extends Specification with CatsEffect {
   private val full = StockAnalysis(
     ticker = ticker,
     price = Some(BigDecimal("150.20")),
-    currency = Some("USD"),
+    currency = Some(Currency("USD")),
     asOf = Some(asOf),
     instrumentType = Some("EQUITY"),
     exchange = Some("NASDAQ"),

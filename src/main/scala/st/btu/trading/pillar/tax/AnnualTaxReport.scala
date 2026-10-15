@@ -1,5 +1,7 @@
 package st.btu.trading.pillar.tax
 
+import st.btu.trading.pillar.models.domain.Currency
+
 /** One account's estimated annual tax picture; every monetary field is expressed in `currency`.
   *
   * @param realizedGains
@@ -28,5 +30,5 @@ final case class AnnualTaxReport(
   taxesWithheld: BigDecimal,
   estimatedTax: BigDecimal,
   unconverted: Int,
-  currency: String
+  currency: Currency
 )

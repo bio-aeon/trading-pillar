@@ -1,82 +1,113 @@
 package st.btu.trading.pillar.gateways
 
-import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.AccountId
-import st.btu.trading.pillar.models.market.{MarketDataError, Source, Ticker, WatchlistItem}
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.testkit.MarketDataFakes
-
-import java.time.{ZoneOffset, ZonedDateTime}
+import st.btu.trading.pillar.testkit.MarketDataFakes.BoardView
 
 class MarketDataSourcesSpec extends Specification with CatsEffect {
 
-  private val accountId = AccountId(1)
-  private val ticker = Ticker("SBER")
-
-  private def watchlistItem(source: Source): WatchlistItem =
-    WatchlistItem(
-      accountId,
-      ticker,
-      source,
-      enabled = true,
-      None,
-      ZonedDateTime.now(ZoneOffset.UTC)
-    )
+  private val sber = Ticker("SBER")
+  private val aapl = Ticker("AAPL")
+  private val cets = ClassCode("CETS")
 
   "MarketDataSourcesImpl" >> {
-    "forTicker" >> {
+    "settingFor" >> {
 
-      "resolves the source of the watchlist item carrying the ticker, when the ticker is on a watchlist" >> {
+      "returns the setting stored for the ticker" >> {
         for {
-          yahoo <- MarketDataFakes.marketDataSource(src = Source.Yahoo)
-          tinkoff <- MarketDataFakes.marketDataSource(src = Source.Tinkoff)
-          watchlist <- MarketDataFakes.watchlistStorage(List(watchlistItem(Source.Tinkoff)))
-          sources = new MarketDataSourcesImpl[IO](List(yahoo, tinkoff), watchlist, Source.Yahoo)
-          resolved <- sources.forTicker(ticker)
-        } yield resolved.source must_== Source.Tinkoff
+          sources <- MarketDataFakes.marketDataSources(settings =
+            List(TickerSource(sber, SourceSetting.Tinkoff(Some(cets))))
+          )
+          setting <- sources.settingFor(sber)
+        } yield setting must_== SourceSetting.Tinkoff(Some(cets))
       }
 
-      "falls back to the default source when the ticker is on no watchlist" >> {
+      "falls back to the default for a ticker with no stored setting" >> {
         for {
-          yahoo <- MarketDataFakes.marketDataSource(src = Source.Yahoo)
-          watchlist <- MarketDataFakes.watchlistStorage(List(watchlistItem(Source.Tinkoff)))
-          sources = new MarketDataSourcesImpl[IO](List(yahoo), watchlist, Source.Yahoo)
-          // A different ticker than the one on the watchlist.
-          resolved <- sources.forTicker(Ticker("AAPL"))
-        } yield resolved.source must_== Source.Yahoo
-      }
-
-      "fails when the resolved source is not configured" >> {
-        for {
-          watchlist <- MarketDataFakes.watchlistStorage(List(watchlistItem(Source.Tinkoff)))
-          sources = new MarketDataSourcesImpl[IO](List.empty, watchlist, Source.Yahoo)
-          result <- sources.forTicker(ticker).attempt
-        } yield result must beLeft[Throwable].like { case MarketDataError.Other(message, cause) =>
-          message must contain(Source.Tinkoff.value)
-          cause must beNone
-        }
+          sources <- MarketDataFakes.marketDataSources(
+            settings = List(TickerSource(sber, SourceSetting.Tinkoff(None))),
+            default = SourceSetting.Tinkoff(Some(cets))
+          )
+          setting <- sources.settingFor(aapl)
+        } yield setting must_== SourceSetting.Tinkoff(Some(cets))
       }
     }
 
-    "forSource" >> {
+    "forTicker" >> {
 
-      "returns the configured source for a known source" >> {
+      "serves a ticker set to Yahoo with the Yahoo adapter" >> {
         for {
           yahoo <- MarketDataFakes.marketDataSource(src = Source.Yahoo)
-          watchlist <- MarketDataFakes.watchlistStorage()
+          sources <- MarketDataFakes.marketDataSources(
+            yahoo = Some(yahoo),
+            tinkoff = Some(MarketDataFakes.boardViews),
+            settings = List(TickerSource(sber, SourceSetting.Yahoo)),
+            default = SourceSetting.Tinkoff(None)
+          )
+          resolved <- sources.forTicker(sber)
+        } yield resolved must_== yahoo
+      }
+
+      "serves a ticker set to Tinkoff on the board its setting names" >> {
+        for {
+          sources <- MarketDataFakes.marketDataSources(
+            tinkoff = Some(MarketDataFakes.boardViews),
+            settings = List(TickerSource(sber, SourceSetting.Tinkoff(Some(cets))))
+          )
+          resolved <- sources.forTicker(sber)
+        } yield resolved must_== BoardView(Some(cets))
+      }
+
+      "serves a ticker set to Tinkoff without a board on the adapter's default board" >> {
+        for {
+          sources <- MarketDataFakes.marketDataSources(
+            tinkoff = Some(MarketDataFakes.boardViews),
+            settings = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
+          )
+          resolved <- sources.forTicker(sber)
+        } yield resolved must_== BoardView(None)
+      }
+
+      "serves a ticker with no stored setting according to the default" >> {
+        for {
+          yahoo <- MarketDataFakes.marketDataSource(src = Source.Yahoo)
+          onYahoo <- MarketDataFakes.marketDataSources(yahoo = Some(yahoo))
+          onBoard <- MarketDataFakes.marketDataSources(
+            tinkoff = Some(MarketDataFakes.boardViews),
+            default = SourceSetting.Tinkoff(Some(cets))
+          )
+          byDefaultYahoo <- onYahoo.forTicker(aapl)
+          byDefaultBoard <- onBoard.forTicker(aapl)
         } yield {
-          val sources = new MarketDataSourcesImpl[IO](List(yahoo), watchlist, Source.Yahoo)
-          sources.forSource(Source.Yahoo) must beSome(yahoo)
+          byDefaultYahoo must_== yahoo
+          byDefaultBoard must_== BoardView(Some(cets))
         }
       }
 
-      "returns None for a source with nothing configured" >> {
-        for {
-          watchlist <- MarketDataFakes.watchlistStorage()
-        } yield {
-          val sources = new MarketDataSourcesImpl[IO](List.empty, watchlist, Source.Yahoo)
-          sources.forSource(Source.Tinkoff) must beNone
+      "unconfigured adapter" >> {
+
+        "fails naming the source when the ticker is set to Tinkoff and no Tinkoff adapter is wired" >> {
+          for {
+            yahoo <- MarketDataFakes.marketDataSource(src = Source.Yahoo)
+            sources <- MarketDataFakes.marketDataSources(
+              yahoo = Some(yahoo),
+              settings = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
+            )
+            result <- sources.forTicker(sber).attempt
+          } yield result must beLeft[Throwable].like {
+            case error @ MarketDataError.SourceNotConfigured(source) =>
+              source must_== Source.Tinkoff
+              error.getMessage must contain(Source.Tinkoff.value)
+          }
+        }
+
+        "fails naming the source when the default is Yahoo and no Yahoo adapter is wired" >> {
+          for {
+            sources <- MarketDataFakes.marketDataSources(tinkoff = Some(MarketDataFakes.boardViews))
+            result <- sources.forTicker(aapl).attempt
+          } yield result must beLeft[Throwable](MarketDataError.SourceNotConfigured(Source.Yahoo))
         }
       }
     }

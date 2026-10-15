@@ -4,8 +4,8 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
-import st.btu.trading.pillar.models.domain.{AccountId, TcsPortfolioOperation}
-import st.btu.trading.pillar.models.market.{DividendEvent, Source, Ticker, WatchlistItem}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, TcsPortfolioOperation}
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes, MarketDataFakes}
 
@@ -16,20 +16,24 @@ class ExportHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
+  private val usd = Currency("USD")
 
   private def handlerWith(
     operations: List[TcsPortfolioOperation] = Nil,
     valuations: Vector[ValuationPoint] = Vector.empty,
     dividends: List[DividendEvent] = Nil,
-    watchlist: List[WatchlistItem] = Nil
+    watchlist: List[WatchlistItem] = Nil,
+    settings: List[TickerSource] = Nil
   ): IO[(ExportHandler[IO], Fakes.FakeTgGateway[IO])] =
     for {
       tgGateway <- Fakes.tgGateway()
       operationsStorage <- AnalyticsFakes.tcsPortfolioOperationStorage(operations)
       valuationsStorage <- AnalyticsFakes.portfolioValuationStorage()
-      _ <- valuationsStorage.upsert(accountId, "RUB", valuations)
+      _ <- valuationsStorage.upsert(accountId, rub, valuations)
       dividendStorage <- MarketDataFakes.dividendStorage(dividends)
       watchlistStorage <- MarketDataFakes.watchlistStorage(watchlist)
+      sources <- MarketDataFakes.marketDataSources(settings = settings)
     } yield (
       new ExportHandler[IO](
         tgGateway,
@@ -37,6 +41,7 @@ class ExportHandlerSpec extends Specification with CatsEffect {
         valuationsStorage,
         dividendStorage,
         watchlistStorage,
+        sources,
         accountId
       ),
       tgGateway
@@ -105,13 +110,12 @@ class ExportHandlerSpec extends Specification with CatsEffect {
 
       "exports dividends of the year for the account's watchlist tickers only" >> {
         val aaplDividend =
-          DividendEvent(Ticker("AAPL"), LocalDate.of(2024, 6, 1), 1.5, Some("USD"), Source.Yahoo)
+          DividendEvent(Ticker("AAPL"), LocalDate.of(2024, 6, 1), 1.5, Some(usd), Source.Yahoo)
         val msftDividend =
-          DividendEvent(Ticker("MSFT"), LocalDate.of(2024, 6, 1), 2.5, Some("USD"), Source.Yahoo)
+          DividendEvent(Ticker("MSFT"), LocalDate.of(2024, 6, 1), 2.5, Some(usd), Source.Yahoo)
         val watchlistItem = WatchlistItem(
           accountId,
           Ticker("AAPL"),
-          Source.Yahoo,
           enabled = true,
           note = None,
           createdAt = ZonedDateTime.now(ZoneOffset.UTC)
@@ -128,6 +132,38 @@ class ExportHandlerSpec extends Specification with CatsEffect {
           val csv = csvOf(docs.head)
           csv must contain("AAPL")
           csv must not(contain("MSFT"))
+        }
+      }
+
+      "exports each ticker's dividends from the source it is configured to use" >> {
+        val aapl = Ticker("AAPL")
+        val sber = Ticker("SBER")
+        def dividend(ticker: Ticker, amount: BigDecimal, source: Source) =
+          DividendEvent(ticker, LocalDate.of(2024, 6, 1), amount, Some(usd), source)
+        def watched(ticker: Ticker) =
+          WatchlistItem(accountId, ticker, enabled = true, None, ZonedDateTime.now(ZoneOffset.UTC))
+        for {
+          pair <- handlerWith(
+            dividends = List(
+              // AAPL has no setting of its own, so it uses the default, Yahoo.
+              dividend(aapl, BigDecimal("1.5"), Source.Yahoo),
+              dividend(aapl, BigDecimal("111"), Source.Tinkoff),
+              // SBER is set to Tinkoff.
+              dividend(sber, BigDecimal("2.5"), Source.Tinkoff),
+              dividend(sber, BigDecimal("222"), Source.Yahoo)
+            ),
+            watchlist = List(watched(aapl), watched(sber)),
+            settings = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
+          )
+          (handler, tgGateway) = pair
+          _ <- handler.handle(chatId, List("dividends", "2024"))
+          docs <- tgGateway.sentDocuments
+        } yield {
+          val csv = csvOf(docs.head)
+          csv must contain("AAPL,2024-06-01,1.5,USD")
+          csv must contain("SBER,2024-06-01,2.5,USD")
+          csv must not(contain("111"))
+          csv must not(contain("222"))
         }
       }
 

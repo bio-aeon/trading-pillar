@@ -7,7 +7,7 @@ import st.btu.trading.pillar.alerts.{AlertDispatcher, AlertKind, SystemAlerts}
 import st.btu.trading.pillar.analytics.portfolio.*
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.models.Account
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.storages.{
   AccountStorage,
   AllocationTargetStorage,
@@ -26,6 +26,7 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
 
   private val accountId1 = AccountId(1)
   private val accountId2 = AccountId(2)
+  private val rub = Currency("RUB")
   private val fastConfig = AnalyticsConfig(interval = 10.millis, recomputeDays = 30)
 
   private def account(id: AccountId, name: String): Account =
@@ -41,7 +42,7 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
       ticker = None,
       name = None,
       instrumentType = Some(instrumentType),
-      currency = currency,
+      currency = currency.map(Currency(_)),
       exchange = None,
       quantity = 1,
       price = None,
@@ -78,8 +79,8 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
     "run" >> {
 
       "recomputes the trailing window and upserts it for every account" >> {
-        val series1 = ValuationSeries(accountId1, "RUB", Vector.empty, Set.empty, Set.empty)
-        val series2 = ValuationSeries(accountId2, "RUB", Vector.empty, Set.empty, Set.empty)
+        val series1 = ValuationSeries(accountId1, rub, Vector.empty, Set.empty, Set.empty)
+        val series2 = ValuationSeries(accountId2, rub, Vector.empty, Set.empty, Set.empty)
 
         for {
           accounts <- AnalyticsFakes.accountStorage(
@@ -102,7 +103,7 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
       }
 
       "continues with the next account when one account's valuation fails" >> {
-        val goodSeries = ValuationSeries(accountId2, "RUB", Vector.empty, Set.empty, Set.empty)
+        val goodSeries = ValuationSeries(accountId2, rub, Vector.empty, Set.empty, Set.empty)
 
         for {
           accounts <- AnalyticsFakes.accountStorage(
@@ -151,12 +152,12 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
       }
 
       "dispatches one AllocationDrift alert per breached target after an account's valuation upsert" >> {
-        val series = ValuationSeries(accountId1, "RUB", Vector.empty, Set.empty, Set.empty)
+        val series = ValuationSeries(accountId1, rub, Vector.empty, Set.empty, Set.empty)
         // 100% in "share", 0% cash: a target of 50% is breached (drift 50pp > 5pp threshold), a
         // target of 100% is not (drift 0pp).
         val snapshot = PositionSnapshot(
           LocalDate.now,
-          "RUB",
+          rub,
           Vector(position("share", BigDecimal("1.0"), currency = Some("USD"))),
           cash = BigDecimal(0),
           total = BigDecimal(1000),
@@ -200,10 +201,10 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
       }
 
       "dispatches no alert when every target is within its drift threshold" >> {
-        val series = ValuationSeries(accountId1, "RUB", Vector.empty, Set.empty, Set.empty)
+        val series = ValuationSeries(accountId1, rub, Vector.empty, Set.empty, Set.empty)
         val snapshot = PositionSnapshot(
           LocalDate.now,
-          "RUB",
+          rub,
           Vector(position("share", BigDecimal("0.5"))),
           cash = BigDecimal(500),
           total = BigDecimal(1000),

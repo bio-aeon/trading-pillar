@@ -4,8 +4,8 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.data.ProcessContext
-import st.btu.trading.pillar.gateways.{MarketDataSource, MarketDataSourcesImpl}
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.gateways.MarketDataSource
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.{MarketDataError, Ticker}
 import st.btu.trading.pillar.paper.*
 import st.btu.trading.pillar.strategy.*
@@ -43,12 +43,7 @@ class AlertProcessImplSpec extends Specification with CatsEffect {
         bindingStorage <- AlertFakes.strategyBindingStorage(bindings)
         ruleStorage <- AlertFakes.alertRuleStorage(rules)
         priceHistory <- MarketDataFakes.priceHistoryStorage()
-        watchlist <- MarketDataFakes.watchlistStorage()
-        sources = new MarketDataSourcesImpl[IO](
-          List(marketDataSource),
-          watchlist,
-          marketDataSource.source
-        )
+        sources <- MarketDataFakes.marketDataSources(yahoo = Some(marketDataSource))
         process <- AlertProcessImpl.create[IO, IO](
           bindingStorage,
           ruleStorage,
@@ -200,7 +195,7 @@ class AlertProcessImplSpec extends Specification with CatsEffect {
         )
         dispatcher <- AlertFakes.alertDispatcher()
         paperStorage <- PaperFakes.paperStorage(accounts =
-          List(PaperAccount(accountId, 10000, "USD"))
+          List(PaperAccount(accountId, 10000, Currency("USD")))
         )
         paperBroker = PaperBrokerImpl.create[IO](paperStorage, PaperBrokerConfig(0, 0))
         process <- buildProcess(

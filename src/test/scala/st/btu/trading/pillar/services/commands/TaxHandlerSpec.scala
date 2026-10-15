@@ -3,7 +3,7 @@ package st.btu.trading.pillar.services.commands
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.tax.AnnualTaxReport
 import st.btu.trading.pillar.testkit.{Fakes, TaxFakes}
@@ -14,9 +14,10 @@ class TaxHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
 
   private def report(year: Int, unconverted: Int = 0) =
-    AnnualTaxReport(year, 600, 0, 600, 50, 20, 5, 78, unconverted, "RUB")
+    AnnualTaxReport(year, 600, 0, 600, 50, 20, 5, 78, unconverted, rub)
 
   "TaxHandler" >> {
     "handle" >> {

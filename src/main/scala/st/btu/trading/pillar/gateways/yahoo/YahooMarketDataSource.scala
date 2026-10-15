@@ -8,6 +8,7 @@ import cats.syntax.functor.*
 import io.github.coinductive.yfinance4s.models.RateLimitConfig
 import io.github.coinductive.yfinance4s.{YFinanceClient, YFinanceClientConfig}
 import st.btu.trading.pillar.gateways.MarketDataSource
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.*
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
@@ -23,6 +24,8 @@ final class YahooMarketDataSource[F[_]: Logging] private (
     extends MarketDataSource[F] {
 
   def source: Source = Source.Yahoo
+
+  def board: Option[ClassCode] = None
 
   def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): F[List[Bar]] =
     for {
@@ -45,7 +48,7 @@ final class YahooMarketDataSource[F[_]: Logging] private (
       Quote(
         ticker,
         Prices.fromDouble(price),
-        meta.currency,
+        Currency(meta.currency),
         meta.regularMarketTime.getOrElse(now),
         Source.Yahoo
       )
@@ -58,9 +61,11 @@ final class YahooMarketDataSource[F[_]: Logging] private (
     } yield Some(
       InstrumentInfo(
         ticker,
+        Source.Yahoo,
+        board,
         None,
         meta.instrumentType,
-        meta.currency,
+        Currency(meta.currency),
         meta.exchangeName,
         meta.exchangeTimezoneName,
         None,
@@ -143,7 +148,7 @@ final class YahooMarketDataSource[F[_]: Logging] private (
           ticker,
           d.exDate.withZoneSameInstant(zone).toLocalDate,
           Prices.fromDouble(d.amount),
-          d.currency,
+          d.currency.map(Currency(_)),
           Source.Yahoo
         )
       )

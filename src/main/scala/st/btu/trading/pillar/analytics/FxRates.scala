@@ -1,38 +1,60 @@
 package st.btu.trading.pillar.analytics
 
-import cats.Functor
-import cats.syntax.functor.*
-import st.btu.trading.pillar.models.market.{Bar, Source, Ticker}
+import cats.Monad
+import st.btu.trading.pillar.gateways.MarketDataSources
+import st.btu.trading.pillar.models.domain.Currency
+import st.btu.trading.pillar.models.market.{Bar, Ticker}
 import st.btu.trading.pillar.storages.PriceHistoryStorage
 
 import java.time.LocalDate
 
-// Shared "<CCY><BASE>=X" FX-rate convention used by analytics.portfolio.PortfolioValuationServiceImpl
-// and tax.TaxServiceImpl: a currency's conversion rate on a given date is approximated by the
-// latest close of that pair in PriceHistoryStorage at or before the date - not the official/CBR
-// rate for that exact instant. See docs/analytics.md and docs/tax.md for where this approximation
-// is documented to each package's own readers.
+/** Looks up the exchange rate of a currency in the stored bars of its rate ticker.
+  *
+  * A rate on a date is approximated by the latest close at or before that date, not the official
+  * rate for that exact instant. The rate ticker is `<CCY><BASE>=X` unless a deployment names
+  * another one for the currency, and its bars are read from the source that ticker is configured to
+  * use.
+  */
 object FxRates {
 
-  def pairTicker(currency: String, baseCurrency: String): Ticker =
-    Ticker(s"$currency${baseCurrency}=X")
+  /** The conventional ticker carrying the rate from `currency` to `baseCurrency`, e.g. `USDRUB=X`.
+    */
+  def pairTicker(currency: Currency, baseCurrency: Currency): Ticker =
+    Ticker(s"${currency.value}${baseCurrency.value}=X")
 
-  // Latest close at or before `date`. `bars` must already be sorted chronologically (ascending) -
-  // see `loadBars` below, which guarantees that for both of this function's callers.
+  /** The ticker whose bars carry `currency`'s rate: the one `fxTickers` names for it, otherwise the
+    * conventional pair.
+    */
+  def rateTicker(
+    currency: Currency,
+    baseCurrency: Currency,
+    fxTickers: Map[Currency, Ticker]
+  ): Ticker =
+    fxTickers.getOrElse(currency, pairTicker(currency, baseCurrency))
+
+  /** The latest close at or before `date`. `bars` must already be sorted chronologically
+    * (ascending), as [[loadBars]] returns them.
+    */
   def closeOnOrBefore(bars: Vector[Bar], date: LocalDate): Option[BigDecimal] =
     bars.reverseIterator.find(!_.date.isAfter(date)).map(_.close)
 
-  // One currency's bars for the `<currency><baseCurrency>=X` pair, chronologically sorted, over
-  // [from, to].
-  def loadBars[F[_]: Functor](
+  /** `currency`'s rate bars over `[from, to]`, chronologically sorted, read from the source its
+    * rate ticker is configured to use.
+    */
+  def loadBars[F[_]: Monad](
     priceHistory: PriceHistoryStorage[F],
-    currency: String,
-    baseCurrency: String,
-    source: Source,
+    sources: MarketDataSources[F],
+    fxTickers: Map[Currency, Ticker],
+    currency: Currency,
+    baseCurrency: Currency,
     from: LocalDate,
     to: LocalDate
   ): F[Vector[Bar]] =
-    priceHistory
-      .bars(pairTicker(currency, baseCurrency), source, from, to)
-      .map(_.toVector.sortBy(_.date.toEpochDay))
+    ConfiguredBars.load(
+      priceHistory,
+      sources,
+      rateTicker(currency, baseCurrency, fxTickers),
+      from,
+      to
+    )
 }

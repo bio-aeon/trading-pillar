@@ -4,11 +4,10 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.alerts.StrategyBindingId
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.{Quote, Source, Ticker}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.paper.*
-import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
 import st.btu.trading.pillar.strategy.Side
 import st.btu.trading.pillar.testkit.{Fakes, MarketDataFakes, PaperFakes}
 
@@ -18,6 +17,7 @@ class PaperHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val accountId = AccountId(1)
+  private val usd = Currency("USD")
   private val ticker = Ticker("AAPL")
   private val now = ZonedDateTime.of(2026, 1, 15, 12, 0, 0, 0, ZoneOffset.UTC)
 
@@ -31,8 +31,7 @@ class PaperHandlerSpec extends Specification with CatsEffect {
       tgGateway <- Fakes.tgGateway()
       paperStorage <- PaperFakes.paperStorage(account.toList, positions, orders)
       marketData <- MarketDataFakes.marketDataSource(quotes = quotes)
-      watchlist <- MarketDataFakes.watchlistStorage()
-      sources = new MarketDataSourcesImpl[IO](List(marketData), watchlist, marketData.source)
+      sources <- MarketDataFakes.marketDataSources(yahoo = Some(marketData))
     } yield (new PaperHandler[IO](tgGateway, paperStorage, sources, accountId), tgGateway)
 
   private def filledOrder(
@@ -84,10 +83,10 @@ class PaperHandlerSpec extends Specification with CatsEffect {
         )
         for {
           handlerAndGateway <- buildHandler(
-            account = Some(PaperAccount(accountId, 1000, "USD")),
+            account = Some(PaperAccount(accountId, 1000, usd)),
             positions = List(position),
             orders = orders,
-            quotes = Map(ticker -> IO.pure(Some(Quote(ticker, 100, "USD", now, Source.Yahoo))))
+            quotes = Map(ticker -> IO.pure(Some(Quote(ticker, 100, usd, now, Source.Yahoo))))
           )
           (handler, tgGateway) = handlerAndGateway
           _ <- handler.handle(chatId, Nil)
@@ -106,7 +105,7 @@ class PaperHandlerSpec extends Specification with CatsEffect {
         val position = PaperPosition(accountId, ticker, 10L, 90, now)
         for {
           handlerAndGateway <- buildHandler(
-            account = Some(PaperAccount(accountId, 1000, "USD")),
+            account = Some(PaperAccount(accountId, 1000, usd)),
             positions = List(position),
             quotes = Map.empty
           )
@@ -122,7 +121,7 @@ class PaperHandlerSpec extends Specification with CatsEffect {
 
       "reports no positions and no orders when both are empty" >> {
         for {
-          handlerAndGateway <- buildHandler(account = Some(PaperAccount(accountId, 500, "USD")))
+          handlerAndGateway <- buildHandler(account = Some(PaperAccount(accountId, 500, usd)))
           (handler, tgGateway) = handlerAndGateway
           _ <- handler.handle(chatId, Nil)
           messages <- tgGateway.sentMessages

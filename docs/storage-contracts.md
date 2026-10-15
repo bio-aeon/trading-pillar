@@ -13,6 +13,10 @@ value can live in a JSON column or in plain JSON text, and decimal values are be
 fixed-point decimals rather than floating point (the library itself rounds prices to six decimal
 places).
 
+A stored currency column holds the `value` of a `models.domain.Currency`, and the library reads it
+back with `Currency(text)`, which normalises the code: a code stored in lower case (`rub`) reads
+back as `RUB`, and `GBp` stays `GBp`. Persist `Currency.value` and read it through `Currency(...)`.
+
 ## `AccountStorage[F[_]]`
 
 ```scala
@@ -65,19 +69,26 @@ such as `price_history` with `symbol`, `date`, `source`, `open`, `high`, `low`, 
 ```scala
 trait InstrumentStorage[F[_]] {
   def find(ticker: Ticker): F[Option[InstrumentInfo]]
-  def findByFigi(figi: String): F[Option[InstrumentInfo]]
   def upsert(info: InstrumentInfo): F[Unit]
 }
 ```
 
 Written by the library: `PriceHistorySyncService` calls `upsert`, refreshing a ticker's metadata
-when it is missing or stale - see [`market-data.md`](market-data.md). Metadata is keyed by ticker,
-not FIGI, because Yahoo has no FIGIs; `figi` is an optional Tinkoff cross-reference. `findByFigi` looks
-up by that optional field rather than by the key; it backs the portfolio valuation pipeline's
-FIGI → ticker/currency resolution (see [`analytics.md`](analytics.md#portfolio-valuation)). A
-relational implementation could use a table such as `instrument_metadata` with the ticker (`symbol`)
-as primary key, `name`, `instrument_type`, `currency`, `exchange`, `timezone`, a nullable `figi` and
-`updated_at`.
+when it is missing, stale, or was read from a source or board other than the one being synced - see
+[`market-data.md`](market-data.md). Metadata is keyed by ticker, not FIGI, because Yahoo has no
+FIGIs; `figi` is an optional Tinkoff cross-reference that nothing looks up by, `source` says which
+source the row was read from, since two sources can describe one ticker differently (in another
+currency, say), and `board` says which board it was read on. The sync also reads `find` to compare
+that origin with the adapter's, and refetches the ticker's whole window when they differ. The
+portfolio valuation pipeline reads it through `find` for a position's price currency and uses a row
+only when its `source` is the ticker's configured one (see
+[`analytics.md`](analytics.md#portfolio-valuation)); resolving a FIGI to a ticker is the job of
+`InstrumentDirectory`, backed by `BrokerInstrumentStorage` below. A relational implementation could
+use a table such as `instrument_metadata` with the ticker (`symbol`) as primary key, `source`
+(`yahoo` | `tinkoff`, the `Source` values), a nullable `class_code` (the board; null for a source
+without boards), `name`, `instrument_type`, `currency`, `exchange`, `timezone`, a nullable `figi`
+and `updated_at`. A `tinkoff` row with no `class_code` counts as a changed origin, so the next sync
+of its ticker refetches the window once and rewrites the row.
 
 ## `WatchlistStorage[F[_]]`
 
@@ -85,7 +96,6 @@ as primary key, `name`, `instrument_type`, `currency`, `exchange`, `timezone`, a
 trait WatchlistStorage[F[_]] {
   def allEnabled: F[List[WatchlistItem]]
   def byAccount(accountId: AccountId): F[List[WatchlistItem]]
-  def findByTicker(ticker: Ticker): F[Option[WatchlistItem]]   // any account's item for this ticker, enabled or not - used by MarketDataSources.forTicker
   def add(item: WatchlistItem): F[Unit]
   def remove(accountId: AccountId, ticker: Ticker): F[Boolean]   // true if a row was removed
 }
@@ -94,8 +104,10 @@ trait WatchlistStorage[F[_]] {
 Written by the library through `add` and `remove`, which back the `/watchlist add` and
 `/watchlist rm` Telegram commands. The consumer can also manage items by other means (for example
 operator tooling, including switching one off with `enabled`), since the library re-reads the
-watchlist on every sync. `allEnabled` drives `PriceHistorySyncProcess`. A relational implementation
-could use a table such as `watchlist_items` with `account_id`, `symbol`, `source`, `enabled`
+watchlist on every sync. `allEnabled` drives `PriceHistorySyncProcess`; `byAccount` backs `/watchlist`
+and the commands that read the account's tickers. A watchlist item does not say where its ticker's
+data comes from - that is a setting of the ticker, see `TickerSourceStorage` below. A relational
+implementation could use a table such as `watchlist_items` with `account_id`, `symbol`, `enabled`
 (default true), a nullable `note`, `created_at` and a unique key on `(account_id, symbol)`.
 
 ## `DividendStorage[F[_]]`
@@ -103,17 +115,57 @@ could use a table such as `watchlist_items` with `account_id`, `symbol`, `source
 ```scala
 trait DividendStorage[F[_]] {
   def upsert(events: List[DividendEvent]): F[Int]
-  def byTicker(ticker: Ticker, from: LocalDate, to: LocalDate): F[List[DividendEvent]]
-  def upcoming(tickers: List[Ticker], from: LocalDate): F[List[DividendEvent]]   // exDate >= from
+  def byTicker(ticker: Ticker, source: Source, from: LocalDate, to: LocalDate): F[List[DividendEvent]]
+  def upcoming(tickers: List[SourcedTicker], from: LocalDate): F[List[DividendEvent]]   // exDate >= from
 }
 ```
 
 Written by the library: `PriceHistorySyncServiceImpl.syncSymbol` calls `upsert`, which must be keyed
 on `(ticker, exDate, source)` so the overlap window re-fetched on every sync replaces events instead
-of duplicating them - see [`market-data.md`](market-data.md#dividends). Read for `/dividends` (see
-[`telegram-commands.md`](telegram-commands.md)), the analysis service and `/export`. A relational
-implementation could use a table such as `dividends` with `symbol`, `ex_date`, `source`, `amount`, a
-nullable `currency`, `updated_at` and a unique key on `(symbol, ex_date, source)`.
+of duplicating them - see [`market-data.md`](market-data.md#dividends). Events of different sources
+for one ticker coexist, so a read names the source: `byTicker` takes it, and `upcoming` takes each
+ticker paired with the one source to read it from (`SourcedTicker`). Read for `/dividends` (see
+[`telegram-commands.md`](telegram-commands.md)), the analysis service and `/export`, each ticker
+from the source it is configured to use. A relational implementation could use a table such as
+`dividends` with `symbol`, `ex_date`, `source`, `amount`, a nullable `currency`, `updated_at` and a
+unique key on `(symbol, ex_date, source)`; a read filters on `source` as well as `symbol`.
+
+## `TickerSourceStorage[F[_]]`
+
+```scala
+trait TickerSourceStorage[F[_]] {
+  def find(ticker: Ticker): F[Option[TickerSource]]
+  def all: F[List[TickerSource]]
+  def upsert(entry: TickerSource): F[Unit]
+  def delete(ticker: Ticker): F[Boolean]   // true if a setting was removed
+}
+```
+
+The per-ticker source settings. Read by the library: `MarketDataSourcesImpl` calls `find` on every
+lookup, and a ticker with no setting uses the router's default (see
+[`market-data.md`](market-data.md#routing-multiple-sources-marketdatasources)); `/source` lists the
+settings through `all`. Written by the library: `/source` and `/watchlist add` call `upsert`, and
+`/source SYM default` calls `delete`. The consumer can also manage settings by other means, since
+the library re-reads them on every lookup. A relational implementation could use a table such as
+`ticker_sources` with the ticker (`symbol`) as primary key, `source` (`yahoo` | `tinkoff`, the
+`Source` values), a nullable `class_code` that only a `tinkoff` row may set (a
+`SourceSetting.Tinkoff` with no board stores NULL) and `updated_at`.
+
+## `BrokerInstrumentStorage[F[_]]`
+
+```scala
+trait BrokerInstrumentStorage[F[_]] {
+  def find(figi: Figi): F[Option[BrokerInstrument]]
+  def upsert(instrument: BrokerInstrument): F[Unit]
+}
+```
+
+Broker reference data keyed by FIGI. Read and written by the library through `TcsInstrumentDirectory`,
+which answers a FIGI from `find` when it can and otherwise fetches it from the broker and stores it
+with `upsert`, so a FIGI the broker knows is fetched once - see
+[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). A relational
+implementation could use a table such as `broker_instruments` with the FIGI (`figi`) as primary key,
+`ticker`, `class_code`, `name`, `instrument_type`, `currency` and `updated_at`.
 
 ## `BacktestRunStorage[F[_]]`
 
@@ -204,7 +256,7 @@ A relational implementation could use a table such as `alert_history` with `rule
 
 ```scala
 trait PortfolioValuationStorage[F[_]] {
-  def upsert(accountId: AccountId, currency: String, points: Vector[ValuationPoint]): F[Int]
+  def upsert(accountId: AccountId, currency: Currency, points: Vector[ValuationPoint]): F[Int]
   def series(accountId: AccountId, from: LocalDate, to: LocalDate): F[Vector[ValuationPoint]]   // chronological
   def latest(accountId: AccountId): F[Option[ValuationPoint]]
 }
@@ -276,8 +328,10 @@ Three kinds of data (full contract in [`paper-trading.md`](paper-trading.md#pape
 | `AccountStorage` | `accounts` | none | `allAccounts` |
 | `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` | `saveOperations` | `lastOperation`, `operationsByDtRange` |
 | `PriceHistoryStorage` | `price_history` | `upsertBars` | `lastBarDate`, `bars`, `latestBars` |
-| `InstrumentStorage` | `instrument_metadata` | `upsert` | `find`, `findByFigi` |
-| `WatchlistStorage` | `watchlist_items` | `add`, `remove` | `allEnabled`, `byAccount`, `findByTicker` |
+| `InstrumentStorage` | `instrument_metadata` | `upsert` | `find` |
+| `WatchlistStorage` | `watchlist_items` | `add`, `remove` | `allEnabled`, `byAccount` |
+| `TickerSourceStorage` | `ticker_sources` | `upsert`, `delete` | `find`, `all` |
+| `BrokerInstrumentStorage` | `broker_instruments` | `upsert` | `find` |
 | `DividendStorage` | `dividends` | `upsert` | `byTicker`, `upcoming` |
 | `BacktestRunStorage` | `backtest_runs` | `save` | `get`, `recent` |
 | `StrategyBindingStorage` | `strategy_bindings` | none | `allEnabled`, `byAccount` |

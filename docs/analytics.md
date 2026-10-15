@@ -135,19 +135,23 @@ accounting, not portfolio-valuation statistics, and have no analytics-library eq
 
 Package `st.btu.trading.pillar.analytics.portfolio`. Turns an account's executed
 `TcsPortfolioOperation`s plus the stored daily closes (`PriceHistoryStorage`) into a daily NAV
-series.
+series. A FIGI on an operation is mapped to its ticker through
+[`InstrumentDirectory`](market-data.md#instrument-directory-instrumentdirectory), and a ticker's
+closes are read from the source the ticker is configured to use.
 
 ```scala
 final case class ValuationPoint(date: LocalDate, value: BigDecimal, invested: BigDecimal, cashFlow: BigDecimal)
-final case class ValuationSeries(accountId: AccountId, currency: String, points: Vector[ValuationPoint],
+final case class ValuationSeries(accountId: AccountId, currency: Currency, points: Vector[ValuationPoint],
                                  unpricedInstruments: Set[String], unmappedFigis: Set[String])
-final case class ValuationConfig(baseCurrency: String = "RUB", fxSource: Source = Source.Yahoo, priceLookback: Int = 10)
+final case class ValuationConfig(baseCurrency: Currency = Currency("RUB"), fxTickers: Map[Currency, Ticker] = Map.empty,
+                                 priceLookback: Int = 10)
 
 trait PortfolioValuationService[F[_]] {
   def dailySeries(accountId: AccountId, from: LocalDate, to: LocalDate): F[ValuationSeries]
 }
 object PortfolioValuationServiceImpl {
-  def create[F[_]: Monad](operations: TcsPortfolioOperationStorage[F], instruments: InstrumentStorage[F],
+  def create[F[_]: Monad](operations: TcsPortfolioOperationStorage[F], directory: InstrumentDirectory[F],
+                          instruments: InstrumentStorage[F], sources: MarketDataSources[F],
                           priceHistory: PriceHistoryStorage[F], config: ValuationConfig): PortfolioValuationService[F]
 }
 ```
@@ -176,35 +180,59 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
 6. **Value**: `cash + Σ quantity × last known close on or before the date`. Bars for every ticker
    with a nonzero position are fetched once per `dailySeries` call, over
    `[from - priceLookback, to]` - `priceLookback` (default 10 days) is how far before `from` a
-   carried-forward close may come from. The source tried is Yahoo, then Tinkoff, whichever has
-   bars for that ticker (`InstrumentInfo` carries no explicit `source` field today, so there is
-   nothing to resolve "from the instrument" yet - this fallback chain is the whole of that rule
-   for now).
+   carried-forward close may come from. A ticker's bars come **only from the source the ticker is
+   configured to use** (`MarketDataSources.settingFor(ticker).source`): bars another source stored
+   for the same ticker are never mixed in or used as a fallback, so a ticker with no bars on its
+   own source is unpriced rather than priced from the other one.
 7. **Currency conversion**: a non-base-currency position or cash balance is converted with the
-   latest `"<CCY><baseCurrency>=X"` close (e.g. `"USDRUB=X"`) on or before the date, read from
-   `config.fxSource` the same way ticker bars are (once per currency per call, over
-   `[from - priceLookback, to]`). No FX rate on or before the date → that balance/position is
-   **excluded** from `value` for that date and the currency code (cash) or ticker (position) is
-   added to `unpricedInstruments`. A currency bucket that nets to exactly `0` is never flagged
-   (nothing was actually excluded). The ticker-naming convention and the "latest close on or before
-   a date" lookup itself live in `analytics.FxRates`, shared with `tax.TaxServiceImpl` - see
-   [`tax.md`](tax.md#fx-conversion).
-8. **Unpriced vs. unmapped**: a FIGI on a buy/sell operation with no `InstrumentStorage.findByFigi`
-   mapping at all goes in `unmappedFigis` (checked once per `dailySeries` call, independent of any
+   latest close on or before the date of that currency's **rate ticker** - the ticker
+   `config.fxTickers` names for the currency, otherwise the conventional `"<CCY><baseCurrency>=X"`
+   pair (e.g. `"USDRUB=X"`). The rate ticker's bars are read like any other ticker's: from the
+   source *that ticker* is configured to use (once per currency per call, over
+   `[from - priceLookback, to]`). A rate that a Tinkoff currency instrument carries, such as
+   `USD000UTSTOM` on the `CETS` board, is used by naming that ticker for the currency in
+   `fxTickers` and setting the ticker to `SourceSetting.Tinkoff(Some(ClassCode("CETS")))`. With
+   no FX rate on or before the date, that balance/position is **excluded** from `value` for that
+   date and the currency code (cash) or ticker (position) is added to `unpricedInstruments`. A currency
+   bucket that nets to exactly `0` is never flagged (nothing was actually excluded). The
+   rate-ticker convention and the "latest close on or before a date" lookup itself live in
+   `analytics.FxRates`, shared with `tax.TaxServiceImpl` - see [`tax.md`](tax.md#fx-conversion).
+8. **Unpriced vs. unmapped**: a FIGI on a buy/sell operation that `InstrumentDirectory.byFigi`
+   does not know goes in `unmappedFigis` (checked once per `dailySeries` call, independent of any
    one date) and its position never contributes to `value`. A *mapped* ticker with no close known
    on or before some date is excluded from `value` on that date only and goes in
    `unpricedInstruments` - same set as an FX-conversion failure, since both mean "this ticker/
    currency's contribution to `value` could not be priced".
+9. **Price currency and metadata**: a mapped position's price currency is the `currency` of the
+   `InstrumentInfo` stored for its ticker (`InstrumentStorage.find`) when that metadata was read
+   from the ticker's configured source (`InstrumentInfo.source` equals
+   `MarketDataSources.settingFor(ticker).source`), which makes it the currency that source reports
+   bars in. Metadata read from another source - what a ticker keeps until its next sync after its
+   source is switched - is ignored, like metadata that is not stored: the broker's
+   `BrokerInstrument.currency` applies. `name` and `instrumentType` fall back to the broker's record
+   the same way; `exchange` has no broker counterpart and is `None` without usable metadata.
+10. **Currency codes** are `models.domain.Currency` values, whose only constructor normalises its
+    argument: whitespace around the code is trimmed, and a code with no upper-case letter, which is
+    how the Tinkoff API spells ISO 4217 codes (`rub`, `usd`), is upper-cased (`RUB`, `USD`). Any
+    other code is kept as given, because Yahoo marks a minor unit by case: `GBp` is pence and is not
+    folded into `GBP`, pounds, so a position priced in `GBp` finds no rate and is reported unpriced
+    rather than valued as if it were in pounds. Operations, instruments, quotes, `baseCurrency` and
+    the keys of `fxTickers` all carry that type, so codes compare exactly by construction and no
+    service normalises one: `rub` cash and a `RUB` base are one currency, and `USD` metadata with
+    `usd` cash is one currency, converted once. The outputs carry `Currency` values:
+    `ValuationSeries.currency`, `PositionSnapshot.currency` and `PositionValue.currency`.
+    `unpricedInstruments` holds plain strings, since it mixes tickers with the `value` of a
+    currency.
 
 ### Storage, process and commands
 
-`InstrumentStorage.findByFigi(figi: String): F[Option[InstrumentInfo]]` resolves a
-`TcsPortfolioOperation.figi` to a ticker/currency (the FIGI is `InstrumentInfo`'s optional
-Tinkoff cross-reference column, not its primary key).
+`InstrumentDirectory.byFigi(figi: Figi): F[Option[BrokerInstrument]]` resolves a
+`TcsPortfolioOperation.figi` to its ticker (and, as a fallback, its currency, name and type); see
+[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory).
 
 ```scala
 trait PortfolioValuationStorage[F[_]] {
-  def upsert(accountId: AccountId, currency: String, points: Vector[ValuationPoint]): F[Int]
+  def upsert(accountId: AccountId, currency: Currency, points: Vector[ValuationPoint]): F[Int]
   def series(accountId: AccountId, from: LocalDate, to: LocalDate): F[Vector[ValuationPoint]]   // chronological
   def latest(accountId: AccountId): F[Option[ValuationPoint]]
 }
@@ -234,9 +262,9 @@ day-by-day fold would produce for that date.
 
 ```scala
 final case class PositionValue(figi: Figi, ticker: Option[Ticker], name: Option[String],
-                               instrumentType: Option[String], currency: Option[String], exchange: Option[String],
+                               instrumentType: Option[String], currency: Option[Currency], exchange: Option[String],
                                quantity: Int, price: Option[BigDecimal], value: Option[BigDecimal], weight: Option[BigDecimal])
-final case class PositionSnapshot(date: LocalDate, currency: String, positions: Vector[PositionValue],
+final case class PositionSnapshot(date: LocalDate, currency: Currency, positions: Vector[PositionValue],
                                   cash: BigDecimal, total: BigDecimal, unpriced: Int)
 ```
 
@@ -246,19 +274,21 @@ uses) also delegates to, so both entry points price a position identically:
 1. **Positions**: every FIGI with a nonzero net quantity as of `date` (the same accumulation
    `dailySeries` uses) gets one `PositionValue`; a fully closed position (net quantity `0`) is
    omitted entirely, same as `dailySeries` silently skips it.
-2. **Unmapped** (no `InstrumentStorage.findByFigi` mapping at all): `ticker`, `name`,
-   `instrumentType`, `currency` and `exchange` are all `None`, and so are `price`/`value`/`weight`.
+2. **Unmapped** (the directory does not know the FIGI): `ticker`, `name`, `instrumentType`,
+   `currency` and `exchange` are all `None`, and so are `price`/`value`/`weight`.
    `dailySeries` reports this case once per call via `unmappedFigis`; `positionsAsOf` instead folds
    it into the same per-position `unpriced` count as the next case, since both mean "this
    position's contribution to `total` is unknown".
-3. **Mapped**: `ticker`/`name`/`instrumentType`/`currency`/`exchange` come from the resolved
-   `InstrumentInfo`. `price` is the last known close on or before `date`, in the position's own
-   `currency` - **unconverted**, unlike `value`. `value` is `price * quantity`, converted to
-   `PositionSnapshot.currency` (the same `ValuationConfig.baseCurrency` `dailySeries` uses) via the
-   latest `"<CCY><base>=X"` close - `None` when there is no known close at all, or (for a non-base
-   currency) no FX rate on or before `date`; either way this position also counts toward
-   `unpriced`. A base-currency instrument's `price` and per-share contribution to `value` coincide;
-   a foreign one's don't - `value` is never simply `price * quantity` for those.
+3. **Mapped**: `ticker` comes from the directory; `name`/`instrumentType`/`currency`/`exchange`
+   come from the `InstrumentInfo` stored for it from its configured source, with the broker's
+   record filling in the first three when there is none (rule 9 above). `price` is the last known
+   close on or before `date`, in the position's own `currency` - **unconverted**, unlike `value`.
+   `value` is `price * quantity`, converted to `PositionSnapshot.currency` (the same
+   `ValuationConfig.baseCurrency` `dailySeries` uses) via the latest close of the currency's rate
+   ticker (rule 7 above) - `None` when there is no known close at all, or (for a non-base currency)
+   no FX rate on or before `date`; either way this position also counts toward `unpriced`. A
+   base-currency instrument's `price` and per-share contribution to `value` coincide; a foreign
+   one's don't - `value` is never simply `price * quantity` for those.
 4. **Cash**: `cash` is `dailySeries`'s own per-date cash figure - the running sum of every executed
    operation's `amount`, per currency, converted to the base currency (`convertBucket`; an
    inconvertible non-base balance is silently dropped from the sum, same as `dailySeries.value`).
@@ -276,19 +306,21 @@ object Allocation { def of(snapshot: PositionSnapshot): Allocation }
 ```
 
 Every priced position's `weight` is added into three maps, keyed by its own `instrumentType`/
-`currency`/`exchange`, `"unknown"` for a position missing that field - which, since those three
-fields are only ever `None` together (the unmapped case above), means the same positions land in
-`"unknown"` in all three breakdowns. An unpriced position (no `weight`) contributes to none of the
-three - there's nothing to add, its share of `total` being unknown rather than zero - and is
-reflected only in `unpricedWeightUnknown` (`snapshot.unpriced`, carried over as-is). `cashWeight` is
-`cash / total` (`0` for a zero total, not a division error) - cash carries no per-currency
-breakdown of its own (rule 4 above), so it is never folded into `byCurrency`.
+`currency.value`/`exchange`, `"unknown"` for a position missing that field. A priced position is always
+mapped, so its type and currency are known; `exchange` is also `None` when no metadata from its
+ticker's configured source is stored, and such a position lands in `"unknown"` in the exchange
+breakdown only. An unpriced
+position (no `weight`) contributes to none of the three - there's nothing to add, its share of
+`total` being unknown rather than zero - and is reflected only in `unpricedWeightUnknown`
+(`snapshot.unpriced`, carried over as-is). `cashWeight` is `cash / total` (`0` for a zero total, not
+a division error) - cash carries no per-currency breakdown of its own (rule 4 above), so it is never
+folded into `byCurrency`.
 
 `/positions` and `/allocation` (see [`telegram-commands.md`](telegram-commands.md#positions)) call
 `positionsAsOf(accountId, today)` live, unlike `/performance`/`/portfolio` which read the stored
 valuation series (`PortfolioValuationStorage`) - nothing persists positions, so this is always
-computed fresh from `TcsPortfolioOperationStorage`/`InstrumentStorage`/`PriceHistoryStorage` on
-every call.
+computed fresh from `TcsPortfolioOperationStorage`/`InstrumentDirectory`/`InstrumentStorage`/
+`PriceHistoryStorage` on every call.
 
 ### Allocation targets, drift and rebalancing
 
@@ -312,7 +344,10 @@ trait AllocationTargetStorage[F[_]] { def byAccount(accountId: AccountId): F[Lis
 ```
 
 `targetPct`/`driftThresholdPct` are **percentages** (`60` means 60%) - unlike `Allocation`'s own
-weight maps, which are 0-1 fractions.
+weight maps, which are 0-1 fractions. `key` is matched exactly against the keys of the matching
+`Allocation` breakdown, except that the key of a `Currency` target is first read as a `Currency`
+(rule 10 above): targets are entered by hand, and a target entered as `usd` reads the weight of
+`USD`. `Drift.key` and `Suggestion.key` keep the key as entered.
 
 `analytics/portfolio/Rebalancer.scala` is pure (no `F[_]`) and reuses `Allocation`/`PositionSnapshot`
 directly - it has no storage dependency of its own:
@@ -337,7 +372,8 @@ above - but neither function relies on that).
 
 | `dimension` | Actual weight source |
 |---|---|
-| `InstrumentType` / `Currency` / `Exchange` | The matching `Allocation` breakdown map, by `key` |
+| `InstrumentType` / `Exchange` | The matching `Allocation` breakdown map, by `key` |
+| `Currency` | `Allocation.byCurrency`, by `Currency(key).value` (rule 10 above) |
 | `Ticker` | `snapshot.positions`' own weights, grouped by `ticker.value` (summed, in the unlikely case two positions share a ticker) - **not** anything in `Allocation`, which has no ticker breakdown |
 
 **`drift`**: `actualPct = actualWeight * 100`; `driftPct = actualPct - targetPct` (percentage

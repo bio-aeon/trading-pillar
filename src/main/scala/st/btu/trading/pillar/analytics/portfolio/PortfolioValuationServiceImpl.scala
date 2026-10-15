@@ -4,9 +4,10 @@ import cats.Monad
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
-import st.btu.trading.pillar.analytics.{FxRates, OperationHistoryYears}
+import st.btu.trading.pillar.analytics.{ConfiguredBars, FxRates, OperationHistoryYears}
+import st.btu.trading.pillar.gateways.{InstrumentDirectory, MarketDataSources}
 import st.btu.trading.pillar.models.domain.*
-import st.btu.trading.pillar.models.market.{Bar, InstrumentInfo, Source, Ticker}
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.storages.{
   InstrumentStorage,
   PriceHistoryStorage,
@@ -27,12 +28,19 @@ import java.time.{LocalDate, ZoneOffset}
 //    date; `invested` is their running sum, `cashFlow` is just that date's own sum.
 //  - value(date) = cash + Sum(quantity * last known close on or before date), both converted to
 //    `config.baseCurrency` where needed.
+//  - A FIGI is mapped to its ticker by the InstrumentDirectory. The ticker's bars come only from
+//    the source the ticker is configured to use, never from another source as a fallback, and so
+//    do the bars of an FX rate ticker.
+//  - A position's price currency is the one InstrumentStorage holds for its ticker, when that was
+//    read from the ticker's configured source, else the broker's currency for the instrument.
 //  - A non-base cash currency or position with no FX rate is excluded from `value` and the
-//    currency/ticker is recorded in `unpricedInstruments`; a FIGI with no InstrumentStorage
-//    mapping is excluded and recorded in `unmappedFigis`.
+//    currency/ticker is recorded in `unpricedInstruments`; a FIGI the directory does not know is
+//    excluded and recorded in `unmappedFigis`.
 final class PortfolioValuationServiceImpl[F[_]] private (
   operations: TcsPortfolioOperationStorage[F],
+  directory: InstrumentDirectory[F],
   instruments: InstrumentStorage[F],
+  sources: MarketDataSources[F],
   priceHistory: PriceHistoryStorage[F],
   config: ValuationConfig
 )(implicit F: Monad[F])
@@ -47,17 +55,17 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       for {
         ops <- loadExecutedOperations(accountId, from, to)
         figis = positionFigis(ops)
-        figiToInfo <- resolveInstruments(figis)
-        tickerBars <- loadTickerBars(figiToInfo.values.map(_.ticker).toSet, from, to)
-        fxBars <- loadFxBars(neededCurrencies(ops, figiToInfo), from, to)
-        ctx = PricingContext(figiToInfo, tickerBars, fxBars, config.baseCurrency)
+        held <- resolveInstruments(figis)
+        tickerBars <- loadTickerBars(held.values, from, to)
+        fxBars <- loadFxBars(neededCurrencies(ops, held), from, to)
+        ctx = PricingContext(held, tickerBars, fxBars, config.baseCurrency)
         (points, unpriced) = buildSeries(from, to, ops, ctx)
       } yield ValuationSeries(
         accountId,
         config.baseCurrency,
         points,
         unpriced,
-        (figis -- figiToInfo.keySet).map(_.value)
+        (figis -- held.keySet).map(_.value)
       )
 
   // Same loading/pricing pipeline as dailySeries, narrowed to a single date: loadExecutedOperations
@@ -67,10 +75,10 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   def positionsAsOf(accountId: AccountId, date: LocalDate): F[PositionSnapshot] =
     for {
       ops <- loadExecutedOperations(accountId, date, date)
-      figiToInfo <- resolveInstruments(positionFigis(ops))
-      tickerBars <- loadTickerBars(figiToInfo.values.map(_.ticker).toSet, date, date)
-      fxBars <- loadFxBars(neededCurrencies(ops, figiToInfo), date, date)
-      ctx = PricingContext(figiToInfo, tickerBars, fxBars, config.baseCurrency)
+      held <- resolveInstruments(positionFigis(ops))
+      tickerBars <- loadTickerBars(held.values, date, date)
+      fxBars <- loadFxBars(neededCurrencies(ops, held), date, date)
+      ctx = PricingContext(held, tickerBars, fxBars, config.baseCurrency)
       state = applyOps(CashState.empty, ops.map(_._2))
       (cashBase, _) = convertBucket(state.cashByCurrency, date, ctx)
       priced = state.positions.iterator.collect {
@@ -108,54 +116,69 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   private def positionFigis(ops: Vector[(LocalDate, TcsPortfolioOperation)]): Set[Figi] =
     ops.iterator.map(_._2).filter(op => isBuy(op) || isSell(op)).flatMap(_.figi).toSet
 
-  private def resolveInstruments(figis: Set[Figi]): F[Map[Figi, InstrumentInfo]] =
+  private def resolveInstruments(figis: Set[Figi]): F[Map[Figi, HeldInstrument]] =
     figis.toVector
-      .traverse(figi => instruments.findByFigi(figi.value).map(figi -> _))
-      .map(_.collect { case (figi, Some(info)) => figi -> info }.toMap)
+      .traverse(figi => resolveInstrument(figi).map(figi -> _))
+      .map(_.collect { case (figi, Some(held)) => figi -> held }.toMap)
+
+  private def resolveInstrument(figi: Figi): F[Option[HeldInstrument]] =
+    directory.byFigi(figi).flatMap {
+      case None => F.pure(None)
+      case Some(broker) =>
+        for {
+          stored <- instruments.find(broker.ticker)
+          source <- MarketDataSources.sourceOf(sources, broker.ticker)
+        } yield Some(HeldInstrument.of(broker, source, stored))
+    }
 
   private def neededCurrencies(
     ops: Vector[(LocalDate, TcsPortfolioOperation)],
-    figiToInfo: Map[Figi, InstrumentInfo]
-  ): Set[String] = {
-    val cashCurrencies = ops.iterator.map(_._2.currency.value).toSet
-    val positionCurrencies = figiToInfo.values.iterator.map(_.currency).toSet
+    held: Map[Figi, HeldInstrument]
+  ): Set[Currency] = {
+    val cashCurrencies = ops.iterator.map(_._2.currency).toSet
+    val positionCurrencies = held.values.iterator.map(_.currency).toSet
     (cashCurrencies ++ positionCurrencies) - config.baseCurrency
   }
 
+  // One load per ticker, although a ticker held on two boards has two figis.
   private def loadTickerBars(
-    tickers: Set[Ticker],
+    held: Iterable[HeldInstrument],
     from: LocalDate,
     to: LocalDate
   ): F[Map[Ticker, Vector[Bar]]] = {
     val lookbackFrom = from.minusDays(config.priceLookback.toLong)
-    tickers.toVector.traverse(t => barsFor(t, lookbackFrom, to).map(t -> _)).map(_.toMap)
-  }
-
-  // Yahoo, then Tinkoff, whichever has bars for this ticker. InstrumentInfo carries no explicit
-  // `source` field today, so there is nothing to resolve "from the instrument" yet; this fallback
-  // chain is the whole of that rule for now.
-  private def barsFor(ticker: Ticker, from: LocalDate, to: LocalDate): F[Vector[Bar]] =
-    priceHistory.bars(ticker, Source.Yahoo, from, to).flatMap { yahoo =>
-      if (yahoo.nonEmpty) F.pure(sortedByDate(yahoo))
-      else priceHistory.bars(ticker, Source.Tinkoff, from, to).map(sortedByDate)
-    }
-
-  private def loadFxBars(
-    currencies: Set[String],
-    from: LocalDate,
-    to: LocalDate
-  ): F[Map[String, Vector[Bar]]] = {
-    val lookbackFrom = from.minusDays(config.priceLookback.toLong)
-    currencies.toVector
-      .traverse { ccy =>
-        FxRates
-          .loadBars(priceHistory, ccy, config.baseCurrency, config.fxSource, lookbackFrom, to)
-          .map(ccy -> _)
+    held
+      .map(h => h.ticker -> h.source)
+      .toMap
+      .toVector
+      .traverse { case (ticker, source) =>
+        ConfiguredBars.loadFrom(priceHistory, source, ticker, lookbackFrom, to).map(ticker -> _)
       }
       .map(_.toMap)
   }
 
-  private def sortedByDate(bars: List[Bar]): Vector[Bar] = bars.toVector.sortBy(_.date.toEpochDay)
+  private def loadFxBars(
+    currencies: Set[Currency],
+    from: LocalDate,
+    to: LocalDate
+  ): F[Map[Currency, Vector[Bar]]] = {
+    val lookbackFrom = from.minusDays(config.priceLookback.toLong)
+    currencies.toVector
+      .traverse { ccy =>
+        FxRates
+          .loadBars(
+            priceHistory,
+            sources,
+            config.fxTickers,
+            ccy,
+            config.baseCurrency,
+            lookbackFrom,
+            to
+          )
+          .map(ccy -> _)
+      }
+      .map(_.toMap)
+  }
 
   // Single pass over [from, to]: operations dated before `from` are folded into the initial
   // running state (so positions/cash/invested are complete at `from`); operations within the
@@ -177,7 +200,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
           val todaysOps = withinByDate.getOrElse(date, Vector.empty).map(_._2)
           val newState = applyOps(state, todaysOps)
           val todaysFlow =
-            todaysOps.filter(isFlow).groupMapReduce(_.currency.value)(_.amount)(_ + _)
+            todaysOps.filter(isFlow).groupMapReduce(_.currency)(_.amount)(_ + _)
 
           val (cashBase, cashUnpriced) = convertBucket(newState.cashByCurrency, date, ctx)
           val (investedBase, investedUnpriced) =
@@ -198,7 +221,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
 
   private def applyOps(state: CashState, ops: Vector[TcsPortfolioOperation]): CashState =
     ops.foldLeft(state) { (s, op) =>
-      val currency = op.currency.value
+      val currency = op.currency
       val cash2 =
         s.cashByCurrency.updated(currency, s.cashByCurrency.getOrElse(currency, Zero) + op.amount)
       val invested2 =
@@ -220,7 +243,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   // nonzero balance and no FX rate is dropped from the sum and reported in the unpriced set. A
   // zero balance is never reported (nothing was actually excluded).
   private def convertBucket(
-    byCurrency: Map[String, BigDecimal],
+    byCurrency: Map[Currency, BigDecimal],
     date: LocalDate,
     ctx: PricingContext
   ): (BigDecimal, Set[String]) =
@@ -229,7 +252,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       else
         fxRateOnOrBefore(currency, date, ctx) match {
           case Some(rate) => (sum + amount * rate, unpriced)
-          case None => (sum, unpriced + currency)
+          case None => (sum, unpriced + currency.value)
         }
     }
 
@@ -257,31 +280,32 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   // Per-position pricing/FX logic shared by valuePositions (dailySeries) and positionsAsOf: prices
   // one figi/quantity pair as of `date`. `price` is the last known close in the instrument's own
   // currency (unconverted); `value` is that price times `qty`, converted to ctx.baseCurrency - None
-  // when the figi has no InstrumentStorage mapping, no known close on or before `date`, or (for a
-  // non-base currency) no FX rate on or before `date`. `weight` is always None here; it depends on
-  // a snapshot-wide total only positionsAsOf computes.
+  // when the directory does not know the figi, no close is known on or before `date`, or (for a
+  // non-base currency) no FX rate is known on or before `date`. `weight` is always None here; it
+  // depends on a snapshot-wide total only positionsAsOf computes.
   private def valueOnePosition(
     figi: Figi,
     qty: Int,
     date: LocalDate,
     ctx: PricingContext
   ): PositionValue =
-    ctx.figiToInfo.get(figi) match {
+    ctx.held.get(figi) match {
       case None => PositionValue(figi, None, None, None, None, None, qty, None, None, None)
-      case Some(info) =>
-        val price = ctx.tickerBars.get(info.ticker).flatMap(FxRates.closeOnOrBefore(_, date))
+      case Some(instrument) =>
+        val price =
+          ctx.tickerBars.get(instrument.ticker).flatMap(FxRates.closeOnOrBefore(_, date))
         val value = price.flatMap { close =>
           val raw = close * qty
-          if (info.currency == ctx.baseCurrency) Some(raw)
-          else fxRateOnOrBefore(info.currency, date, ctx).map(raw * _)
+          if (instrument.currency == ctx.baseCurrency) Some(raw)
+          else fxRateOnOrBefore(instrument.currency, date, ctx).map(raw * _)
         }
         PositionValue(
           figi,
-          Some(info.ticker),
-          info.name,
-          Some(info.instrumentType),
-          Some(info.currency),
-          Some(info.exchange),
+          Some(instrument.ticker),
+          Some(instrument.name),
+          Some(instrument.instrumentType),
+          Some(instrument.currency),
+          instrument.exchange,
           qty,
           price,
           value,
@@ -293,7 +317,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
     if (total == Zero) None else Some(value / total)
 
   private def fxRateOnOrBefore(
-    currency: String,
+    currency: Currency,
     date: LocalDate,
     ctx: PricingContext
   ): Option[BigDecimal] =
@@ -321,8 +345,8 @@ object PortfolioValuationServiceImpl {
   // Running, not-yet-base-converted state as of some date: cash and cumulative external flow, per
   // operation currency, plus the cumulative position per FIGI.
   private final case class CashState(
-    cashByCurrency: Map[String, BigDecimal],
-    investedByCurrency: Map[String, BigDecimal],
+    cashByCurrency: Map[Currency, BigDecimal],
+    investedByCurrency: Map[Currency, BigDecimal],
     positions: Map[Figi, Int]
   )
 
@@ -330,19 +354,54 @@ object PortfolioValuationServiceImpl {
     val empty: CashState = CashState(Map.empty, Map.empty, Map.empty)
   }
 
+  private final class HeldInstrument private (
+    broker: BrokerInstrument,
+    val source: Source,
+    info: Option[InstrumentInfo]
+  ) {
+    def ticker: Ticker = broker.ticker
+    def currency: Currency = info.fold(broker.currency)(_.currency)
+    def name: String = info.flatMap(_.name).getOrElse(broker.name)
+    def instrumentType: String = info.fold(broker.instrumentType)(_.instrumentType)
+    def exchange: Option[String] = info.map(_.exchange)
+  }
+
+  private object HeldInstrument {
+
+    // Metadata read from another source describes the instrument as that source does, in another
+    // currency perhaps, so it counts as missing.
+    def of(
+      broker: BrokerInstrument,
+      source: Source,
+      stored: Option[InstrumentInfo]
+    ): HeldInstrument =
+      new HeldInstrument(broker, source, stored.filter(_.source == source))
+  }
+
   private final case class PricingContext(
-    figiToInfo: Map[Figi, InstrumentInfo],
+    held: Map[Figi, HeldInstrument],
     tickerBars: Map[Ticker, Vector[Bar]],
-    fxBars: Map[String, Vector[Bar]],
-    baseCurrency: String
+    fxBars: Map[Currency, Vector[Bar]],
+    baseCurrency: Currency
   )
 
-  /** Wires a `PortfolioValuationService` backed by the given storages and `config`. */
+  /** Wires a `PortfolioValuationService` that maps FIGIs through `directory`, takes prices from
+    * `priceHistory` as `sources` configures them, and reads price currencies from `instruments`.
+    */
   def create[F[_]: Monad](
     operations: TcsPortfolioOperationStorage[F],
+    directory: InstrumentDirectory[F],
     instruments: InstrumentStorage[F],
+    sources: MarketDataSources[F],
     priceHistory: PriceHistoryStorage[F],
     config: ValuationConfig
   ): PortfolioValuationService[F] =
-    new PortfolioValuationServiceImpl[F](operations, instruments, priceHistory, config)
+    new PortfolioValuationServiceImpl[F](
+      operations,
+      directory,
+      instruments,
+      sources,
+      priceHistory,
+      config
+    )
 }

@@ -12,6 +12,11 @@ trait MarketDataSource[F[_]] {
   /** The broker or provider this instance serves data from. */
   def source: Source
 
+  /** The board this source looks tickers up on, for a source that tells boards apart; `None`
+    * otherwise.
+    */
+  def board: Option[ClassCode]
+
   /** Daily bars for `ticker` between `since` and `until`, chronological.
     *
     * @return

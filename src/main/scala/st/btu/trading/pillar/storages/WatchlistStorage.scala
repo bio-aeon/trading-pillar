@@ -12,11 +12,6 @@ trait WatchlistStorage[F[_]] {
   /** This account's watchlist items. */
   def byAccount(accountId: AccountId): F[List[WatchlistItem]]
 
-  /** Any watchlist item carrying `ticker`, across every account, regardless of enabled status. Used
-    * to route a ticker to the market data source its watchlist entry uses.
-    */
-  def findByTicker(ticker: Ticker): F[Option[WatchlistItem]]
-
   /** Adds `item` to its account's watchlist. */
   def add(item: WatchlistItem): F[Unit]
 

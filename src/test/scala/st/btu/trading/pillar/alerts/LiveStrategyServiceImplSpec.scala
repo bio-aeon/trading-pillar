@@ -5,7 +5,6 @@ import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.market.{Bar, Ticker}
 import st.btu.trading.pillar.strategy.StrategySignal
-import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
 import st.btu.trading.pillar.strategy.reference.MovingAverageCrossoverStrategy
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import st.btu.trading.pillar.testkit.{AlertFakes, MarketDataFakes, StrategyFakes}
@@ -29,8 +28,7 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
     for {
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       marketData <- MarketDataFakes.marketDataSource()
-      watchlist <- MarketDataFakes.watchlistStorage()
-      sources = new MarketDataSourcesImpl[IO](List(marketData), watchlist, marketData.source)
+      sources <- MarketDataFakes.marketDataSources(yahoo = Some(marketData))
       service <- LiveStrategyServiceImpl.create[IO, IO](priceHistory, sources)
     } yield service
   }

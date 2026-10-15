@@ -1,7 +1,7 @@
 package st.btu.trading.pillar.storages
 
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 
 import java.time.LocalDate
 
@@ -13,7 +13,7 @@ trait PortfolioValuationStorage[F[_]] {
     * @return
     *   the number of points written
     */
-  def upsert(accountId: AccountId, currency: String, points: Vector[ValuationPoint]): F[Int]
+  def upsert(accountId: AccountId, currency: Currency, points: Vector[ValuationPoint]): F[Int]
 
   /** `accountId`'s valuation points between `from` and `to`, chronological and inclusive of both
     * bounds.

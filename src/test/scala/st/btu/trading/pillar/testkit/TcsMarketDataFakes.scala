@@ -5,6 +5,7 @@ import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import ru.tinkoff.piapi.contract.v1.instruments.*
 import ru.tinkoff.piapi.contract.v1.marketdata.*
+import st.btu.trading.pillar.models.market.{ClassCode, Ticker}
 
 // Fakes implementing the generated Fs2Grpc service traits directly (ctx type Unit, matching
 // TcsMarketDataSource.create), so TcsMarketDataSourceSpec never touches a real gRPC channel.
@@ -21,21 +22,36 @@ object TcsMarketDataFakes {
     def getDividendsCalls: IO[List[GetDividendsRequest]]
   }
 
-  // Keyed by InstrumentRequest.id (the ticker string TcsMarketDataSource requests by) /
-  // GetDividendsRequest.figi (the FIGI resolved via getInstrumentBy).
+  // A ticker as looked up on one board; the key of byBoard.
+  final case class OnBoard(classCode: ClassCode, ticker: Ticker)
+
+  // A ticker lookup is answered from byBoard, keyed by the request's class code and ticker, and
+  // otherwise from byTicker, keyed by the ticker alone; a FIGI lookup is answered from byFigi.
+  // Dividends are keyed by GetDividendsRequest.figi (the FIGI resolved via getInstrumentBy).
   def instrumentsService(
     byTicker: Map[String, IO[InstrumentResponse]] = Map.empty,
-    dividends: Map[String, IO[GetDividendsResponse]] = Map.empty
+    dividends: Map[String, IO[GetDividendsResponse]] = Map.empty,
+    byBoard: Map[OnBoard, IO[InstrumentResponse]] = Map.empty,
+    byFigi: Map[String, IO[InstrumentResponse]] = Map.empty
   ): IO[FakeInstrumentsService] =
     for {
       callsRef <- Ref.of[IO, List[InstrumentRequest]](List.empty)
       dividendsCallsRef <- Ref.of[IO, List[GetDividendsRequest]](List.empty)
     } yield new FakeInstrumentsService {
-      def getInstrumentBy(request: InstrumentRequest, ctx: Unit): IO[InstrumentResponse] =
-        callsRef.update(_ :+ request) >> byTicker.getOrElse(
-          request.id,
+      def getInstrumentBy(request: InstrumentRequest, ctx: Unit): IO[InstrumentResponse] = {
+        val response = request.idType match {
+          case InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI => byFigi.get(request.id)
+          case InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER =>
+            byBoard
+              .get(OnBoard(ClassCode(request.classCode), Ticker(request.id)))
+              .orElse(byTicker.get(request.id))
+          case other =>
+            Some(IO.raiseError(new UnsupportedOperationException(s"no fake lookup by $other")))
+        }
+        callsRef.update(_ :+ request) >> response.getOrElse(
           IO.raiseError(new NoSuchElementException(s"no fake instrument for ${request.id}"))
         )
+      }
 
       def getInstrumentByCalls: IO[List[InstrumentRequest]] = callsRef.get
 

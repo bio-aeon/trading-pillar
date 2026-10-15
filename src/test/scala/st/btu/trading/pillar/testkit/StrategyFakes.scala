@@ -1,7 +1,7 @@
 package st.btu.trading.pillar.testkit
 
 import cats.effect.{IO, Ref}
-import st.btu.trading.pillar.models.market.{Bar, Source, Ticker}
+import st.btu.trading.pillar.models.market.{Bar, Source, SourcedTicker, Ticker}
 import st.btu.trading.pillar.storages.BacktestRunStorage
 import st.btu.trading.pillar.strategy.backtest.{
   BacktestConfig,
@@ -100,54 +100,68 @@ object StrategyFakes {
 
   trait FakeBacktestService extends BacktestService[IO] {
     def calls: IO[List[StrategyId]]
+
+    // The source each single-ticker run (`run`, `runStrategy`) was asked to read, in call order.
+    def readSources: IO[List[Source]]
+
+    // The tickers, each with its source, of every portfolio run, in call order.
+    def portfolioTickers: IO[List[List[SourcedTicker]]]
   }
 
   // `result` is invoked (and may fail) per call, so a single fake can script both success and the
   // StrategyNotFound/Failed error paths. `runStrategy` (the ad hoc/params= path) is scripted the
   // same way, keyed off the given Strategy's own id.
   def backtestService(result: StrategyId => IO[BacktestRun]): IO[FakeBacktestService] =
-    Ref.of[IO, List[StrategyId]](List.empty).map { callsRef =>
-      new FakeBacktestService {
-        def run(
-          strategyId: StrategyId,
-          ticker: Ticker,
-          source: Source,
-          from: LocalDate,
-          to: LocalDate,
-          config: BacktestConfig
-        ): IO[BacktestRun] =
-          for {
-            _ <- callsRef.update(_ :+ strategyId)
-            run <- result(strategyId)
-          } yield run
+    for {
+      callsRef <- Ref.of[IO, List[StrategyId]](List.empty)
+      sourcesRef <- Ref.of[IO, List[Source]](List.empty)
+      portfoliosRef <- Ref.of[IO, List[List[SourcedTicker]]](List.empty)
+    } yield new FakeBacktestService {
+      def run(
+        strategyId: StrategyId,
+        ticker: Ticker,
+        source: Source,
+        from: LocalDate,
+        to: LocalDate,
+        config: BacktestConfig
+      ): IO[BacktestRun] =
+        for {
+          _ <- callsRef.update(_ :+ strategyId)
+          _ <- sourcesRef.update(_ :+ source)
+          run <- result(strategyId)
+        } yield run
 
-        def runStrategy(
-          strategy: Strategy,
-          ticker: Ticker,
-          source: Source,
-          from: LocalDate,
-          to: LocalDate,
-          config: BacktestConfig
-        ): IO[BacktestRun] =
-          for {
-            _ <- callsRef.update(_ :+ strategy.id)
-            run <- result(strategy.id)
-          } yield run
+      def runStrategy(
+        strategy: Strategy,
+        ticker: Ticker,
+        source: Source,
+        from: LocalDate,
+        to: LocalDate,
+        config: BacktestConfig
+      ): IO[BacktestRun] =
+        for {
+          _ <- callsRef.update(_ :+ strategy.id)
+          _ <- sourcesRef.update(_ :+ source)
+          run <- result(strategy.id)
+        } yield run
 
-        def runPortfolio(
-          strategyId: StrategyId,
-          tickers: List[Ticker],
-          source: Source,
-          from: LocalDate,
-          to: LocalDate,
-          config: BacktestConfig
-        ): IO[BacktestRun] =
-          for {
-            _ <- callsRef.update(_ :+ strategyId)
-            run <- result(strategyId)
-          } yield run
+      def runPortfolio(
+        strategyId: StrategyId,
+        tickers: List[SourcedTicker],
+        from: LocalDate,
+        to: LocalDate,
+        config: BacktestConfig
+      ): IO[BacktestRun] =
+        for {
+          _ <- callsRef.update(_ :+ strategyId)
+          _ <- portfoliosRef.update(_ :+ tickers)
+          run <- result(strategyId)
+        } yield run
 
-        def calls: IO[List[StrategyId]] = callsRef.get
-      }
+      def calls: IO[List[StrategyId]] = callsRef.get
+
+      def readSources: IO[List[Source]] = sourcesRef.get
+
+      def portfolioTickers: IO[List[List[SourcedTicker]]] = portfoliosRef.get
     }
 }

@@ -5,7 +5,7 @@ import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import cats.{Functor, MonadThrow}
-import st.btu.trading.pillar.models.market.{Source, Ticker}
+import st.btu.trading.pillar.models.market.{Source, SourcedTicker, Ticker}
 import st.btu.trading.pillar.storages.{BacktestRunStorage, PriceHistoryStorage}
 import st.btu.trading.pillar.strategy.{Strategy, StrategyId, StrategyRegistry}
 import tofu.logging.{Logging, Logs}
@@ -47,8 +47,7 @@ final class BacktestServiceImpl[F[_]: Logging] private (
 
   def runPortfolio(
     strategyId: StrategyId,
-    tickers: List[Ticker],
-    source: Source,
+    tickers: List[SourcedTicker],
     from: LocalDate,
     to: LocalDate,
     config: BacktestConfig
@@ -58,20 +57,19 @@ final class BacktestServiceImpl[F[_]: Logging] private (
         case Some(s) => F.pure(s)
         case None => F.raiseError[Strategy](BacktestServiceError.StrategyNotFound(strategyId))
       }
-      run <- runPortfolioAndPersist(strategy, tickers, source, from, to, config)
+      run <- runPortfolioAndPersist(strategy, tickers, from, to, config)
     } yield run
 
   private def runPortfolioAndPersist(
     strategy: Strategy,
-    tickers: List[Ticker],
-    source: Source,
+    tickers: List[SourcedTicker],
     from: LocalDate,
     to: LocalDate,
     config: BacktestConfig
   ): F[BacktestRun] =
     for {
       barsByTicker <- tickers
-        .traverse(t => priceHistory.bars(t, source, from, to).map(t -> _))
+        .traverse(t => priceHistory.bars(t.ticker, t.source, from, to).map(t.ticker -> _))
         .map(_.toMap)
       portfolioResult <- BacktestEngine.runPortfolio(strategy, barsByTicker, config) match {
         case Right(r) => F.pure(r)

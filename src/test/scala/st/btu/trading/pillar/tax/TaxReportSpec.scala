@@ -1,7 +1,7 @@
 package st.btu.trading.pillar.tax
 
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.testkit.AnalyticsFakes
 
 import java.time.{LocalDate, ZoneOffset}
@@ -9,6 +9,8 @@ import java.time.{LocalDate, ZoneOffset}
 class TaxReportSpec extends Specification {
 
   private val accountId = AccountId(1)
+  private val rub = Currency("RUB")
+  private val usd = Currency("USD")
 
   private def rg(
     figi: String,
@@ -35,7 +37,7 @@ class TaxReportSpec extends Specification {
       currency = currency
     )
 
-  private val noRate: (String, LocalDate) => Option[BigDecimal] = (_, _) => None
+  private val noRate: (Currency, LocalDate) => Option[BigDecimal] = (_, _) => None
 
   "TaxReport" >> {
     "annual" >> {
@@ -51,7 +53,7 @@ class TaxReportSpec extends Specification {
         report.exemptGains must_== BigDecimal(0)
         report.taxableGains must_== BigDecimal(600)
         report.estimatedTax must_== BigDecimal(600) * BigDecimal("0.13")
-        report.currency must_== "RUB"
+        report.currency must_== rub
         report.unconverted must_== 0
       }
 
@@ -114,8 +116,8 @@ class TaxReportSpec extends Specification {
           op("OPERATION_TYPE_BUY", -900, LocalDate.of(2024, 1, 1), Some("FUS"), currency = "USD"),
           op("OPERATION_TYPE_BUY", -900, LocalDate.of(2024, 1, 1), Some("FEU"), currency = "EUR")
         )
-        val fxRate: (String, LocalDate) => Option[BigDecimal] =
-          (ccy, _) => if (ccy == "USD") Some(BigDecimal(90)) else None
+        val fxRate: (Currency, LocalDate) => Option[BigDecimal] =
+          (ccy, _) => if (ccy == usd) Some(BigDecimal(90)) else None
 
         val report = TaxReport.annual(year, ledger, ops, fxRate)
 

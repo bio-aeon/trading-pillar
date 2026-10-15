@@ -1,7 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.strategy.Side
 
@@ -25,7 +25,7 @@ class RebalancerSpec extends Specification {
       ticker.map(Ticker(_)),
       name = None,
       instrumentType = instrumentType,
-      currency = currency,
+      currency = currency.map(Currency(_)),
       exchange = exchange,
       quantity = 1,
       price = None,
@@ -37,7 +37,8 @@ class RebalancerSpec extends Specification {
     positions: Vector[PositionValue],
     cash: BigDecimal,
     total: BigDecimal
-  ): PositionSnapshot = PositionSnapshot(date, "RUB", positions, cash, total, unpriced = 0)
+  ): PositionSnapshot =
+    PositionSnapshot(date, Currency("RUB"), positions, cash, total, unpriced = 0)
 
   private def target(
     dimension: Dimension,
@@ -114,6 +115,23 @@ class RebalancerSpec extends Specification {
             BigDecimal(30),
             BigDecimal(-10),
             breached = true
+          )
+        )
+      }
+
+      "reads the weight of USD for a currency target keyed usd, keeping the key as entered" >> {
+        val targets = List(target(Dimension.Currency, "usd", targetPct = BigDecimal(30)))
+
+        val result = Rebalancer.drift(Allocation.of(diversified), diversified, targets)
+
+        result must_== List(
+          Drift(
+            Dimension.Currency,
+            "usd",
+            BigDecimal(30),
+            BigDecimal(30),
+            BigDecimal(0),
+            breached = false
           )
         )
       }

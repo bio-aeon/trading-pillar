@@ -1,5 +1,6 @@
 package st.btu.trading.pillar.services.analysis
 
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.Ticker
 
 import java.time.ZonedDateTime
@@ -12,7 +13,7 @@ import java.time.ZonedDateTime
 final case class StockAnalysis(
   ticker: Ticker,
   price: Option[BigDecimal],
-  currency: Option[String],
+  currency: Option[Currency],
   asOf: Option[ZonedDateTime],
   instrumentType: Option[String],
   exchange: Option[String],

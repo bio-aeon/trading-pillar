@@ -1,5 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
+import st.btu.trading.pillar.models.domain.Currency
+
 import java.time.LocalDate
 
 /** A point-in-time view of an account's holdings as of `date`, in `currency`.
@@ -17,7 +19,7 @@ import java.time.LocalDate
   */
 final case class PositionSnapshot(
   date: LocalDate,
-  currency: String,
+  currency: Currency,
   positions: Vector[PositionValue],
   cash: BigDecimal,
   total: BigDecimal,

@@ -1,7 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.Figi
+import st.btu.trading.pillar.models.domain.{Currency, Figi}
 
 import java.time.LocalDate
 
@@ -23,7 +23,7 @@ class AllocationSpec extends Specification {
       ticker = None,
       name = None,
       instrumentType = instrumentType,
-      currency = currency,
+      currency = currency.map(Currency(_)),
       exchange = exchange,
       quantity = 1,
       price = None,
@@ -36,7 +36,7 @@ class AllocationSpec extends Specification {
     cash: BigDecimal,
     total: BigDecimal,
     unpriced: Int
-  ): PositionSnapshot = PositionSnapshot(date, "RUB", positions, cash, total, unpriced)
+  ): PositionSnapshot = PositionSnapshot(date, Currency("RUB"), positions, cash, total, unpriced)
 
   "Allocation" >> {
     "of" >> {

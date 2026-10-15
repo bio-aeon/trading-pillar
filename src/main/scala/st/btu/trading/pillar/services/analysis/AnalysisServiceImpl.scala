@@ -53,7 +53,7 @@ final class AnalysisServiceImpl[F[_]] private (
     for {
       today <- todayUtc
       bars <- priceHistory.bars(ticker, source, today.minusDays(LookbackDays.toLong), today)
-      events <- dividends.byTicker(ticker, today.minusYears(1), today)
+      events <- dividends.byTicker(ticker, source, today.minusYears(1), today)
     } yield fromData(ticker, today, quote, info, bars.sortBy(_.date.toEpochDay).toVector, events)
 
   private def fromData(
