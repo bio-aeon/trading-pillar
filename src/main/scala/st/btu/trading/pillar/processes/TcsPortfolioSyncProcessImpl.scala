@@ -49,11 +49,20 @@ final class TcsPortfolioSyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
     val tracedSync =
       TraceIds.next[F].flatMap(uuid => syncF.local(_.copy(traceId = uuid, accountId = accountId)))
 
-    ProcessLoop.restarting("tcs-portfolio-sync", 2.minutes, systemAlerts)(tracedSync)
+    ProcessLoop.restarting(
+      "tcs-portfolio-sync",
+      TcsPortfolioSyncProcessImpl.SyncInterval,
+      systemAlerts
+    )(tracedSync)
   }
 }
 
 object TcsPortfolioSyncProcessImpl {
+
+  /** How long the process waits after syncing an account's operations before it syncs them again,
+    * and after a crash before it restarts.
+    */
+  val SyncInterval: FiniteDuration = 2.minutes
 
   /** Same as the overload taking `systemAlerts`, with no system alerts raised. */
   def resource[I[_]: Sync, F[_]: Async: GenUUID](

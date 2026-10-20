@@ -37,7 +37,7 @@ strategy is registered.
 | `models.domain` | `Account`, `Command`, `Portfolio`, `TcsPortfolioOperation`, opaque types (`AccountId`, `Figi`, ...) |
 | `models.market` | `Ticker`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.binance` | Telegram, Tinkoff and Binance wire/domain types |
-| `gateways` | `TgGateway` (Telegram Bot API), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
+| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
 | `gateways.news` | `NewsSource`, `YahooNewsSource`, `NewsItem` - per-ticker headlines, backs `/news` |
 | `facades` | `TcsFacade` - high-level Tinkoff gRPC API (portfolio, operations) |
@@ -52,8 +52,9 @@ strategy is registered.
 | `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
 | `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
-| `services.commands` | `CommandParser`, `CommandHandler`, and the command handlers, in the order `/help` lists them: ping/info built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
+| `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping/info built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
 | `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess`, `PriceHistorySyncProcess`, `AnalyticsProcess` (recomputes portfolio valuations and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
+| `mcp` | MCP server for AI agents: `McpTools` (`ticker_status`, `live_quote`, `bot_query`, `bot_backtest`, `bot_command`), `McpToolBuilder` (the conventions of a tool, for the consumer's own tools too), `McpToolServer`, `McpHttpServer` behind a bearer token (`McpHttpConfig`, `AccessToken`), `EffectBridge`; see [`docs/mcp.md`](docs/mcp.md) |
 | `data` | `ProcessContext`, `TraceIds`, `UtcClock` - the trace/account context threaded through every process via `tofu.WithLocal`, and a UTC-normalized clock helper |
 | `storages` | Storage traits a consumer implements; see [`docs/storage-contracts.md`](docs/storage-contracts.md) |
 | `security` | AES-256 (OpenSSL-compatible) and HMAC-SHA256 helpers |
@@ -61,7 +62,8 @@ strategy is registered.
 Full docs: [market data](docs/market-data.md) · [strategies](docs/strategies.md) ·
 [backtesting](docs/backtesting.md) · [analytics](docs/analytics.md) · [alerts](docs/alerts.md) ·
 [paper trading](docs/paper-trading.md) · [tax](docs/tax.md) ·
-[Telegram commands](docs/telegram-commands.md) · [storage contracts](docs/storage-contracts.md)
+[Telegram commands](docs/telegram-commands.md) · [storage contracts](docs/storage-contracts.md) ·
+[MCP server](docs/mcp.md)
 
 ## Quick start
 
@@ -361,5 +363,7 @@ trading-pillar change the consumer needs to see.
   only against test fakes. Yahoo Finance no longer serves MOEX (Russian exchange) data; MOEX symbols
   (e.g. `SBER`) are served instead through `TcsMarketDataSource` (Tinkoff Invest gRPC) - see
   [`docs/market-data.md`](docs/market-data.md).
+- The MCP server for AI agents: implemented and covered by the test suite, which sends its requests
+  through the HTTP routes in memory; not yet used in production.
 - Binance: a minimal gateway, one signed `allOrders` request returning raw JSON. No process uses it,
   and the gateway has no tests.

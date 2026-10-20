@@ -5,8 +5,8 @@ import st.btu.trading.pillar.models.market.{ClassCode, Source, SourceSetting}
 import java.util.Locale
 
 // How the /source and /watchlist handlers read and word a ticker's source setting, so both
-// commands name sources the same way.
-private[commands] object SourceSettings {
+// commands, and anything else that reports a setting, name sources the same way.
+private[pillar] object SourceSettings {
 
   // The word that removes a ticker's own setting.
   private val DefaultChoice = "default"

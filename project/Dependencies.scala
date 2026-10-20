@@ -8,8 +8,10 @@ object Dependencies {
     val sttp = "3.10.1"
     val enumeratum = "1.7.3"
     val tofu = "0.14.3"
-    val circe = "0.14.15"
-    val fs2 = "3.10.2"
+    val circe = "0.14.16"
+    val fs2 = "3.14.0"
+    val mcp = "0.4.1"
+    val http4s = "0.23.38"
     val scalapb = "0.11.15"
     val grpc = "1.64.0"
     val specs2 = "4.20.5"
@@ -27,6 +29,9 @@ object Dependencies {
   val circeGeneric = "io.circe" %% "circe-generic" % Versions.circe
   val circeParser = "io.circe" %% "circe-parser" % Versions.circe
   val fs2Core = "co.fs2" %% "fs2-core" % Versions.fs2
+  val mcpServer = "ch.linkyard.mcp" %% "mcp-server" % Versions.mcp
+  val mcpServerHttp4s = "ch.linkyard.mcp" %% "mcp-server-http4s" % Versions.mcp
+  val http4sEmberServer = "org.http4s" %% "http4s-ember-server" % Versions.http4s
   val scalapbRuntime = "com.thesamet.scalapb" %% "scalapb-runtime" % Versions.scalapb
   val grpcNetty = "io.grpc" % "grpc-netty-shaded" % Versions.grpc
   val yfinance4s = "io.github.coinductive" %% "yfinance4s" % Versions.yfinance4s

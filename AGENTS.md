@@ -42,14 +42,15 @@ Package root `st.btu.trading.pillar`:
 | Package | Contents |
 |---|---|
 | `models` | `domain` (accounts, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
-| `gateways` | `TgGateway`, `MarketDataSource`, the `MarketDataSources` router and the `InstrumentDirectory` port; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
+| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router and the `InstrumentDirectory` port; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
 | `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing) |
 | `paper`, `tax`, `charts` | paper broker; FIFO tax lots and the annual estimate; equity-curve PNG |
-| `services` | sync and command services; `commands` (one handler per Telegram command); `analysis` |
+| `services` | sync and command services; `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync, price-history sync, analytics |
+| `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |
 | `storages` | persistence ports that consumers implement |
 | `data`, `security` | process context, UTC clock, trace ids; HMAC and AES helpers |
 
@@ -142,8 +143,9 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 ## Documentation
 
 `docs/` is the behavioural reference: `market-data.md`, `strategies.md`, `backtesting.md`,
-`analytics.md`, `alerts.md`, `paper-trading.md`, `tax.md`, `telegram-commands.md` and
-`storage-contracts.md`. Update the matching page in the same change as the behaviour, signature or
-command it describes. The quick-start snippets in `README.md` must compile: paste a changed
-snippet into a temporary file under `src/test/scala`, run `sbt Test/compile`, then delete the file.
+`analytics.md`, `alerts.md`, `paper-trading.md`, `tax.md`, `telegram-commands.md`,
+`storage-contracts.md` and `mcp.md`. Update the matching page in the same change as the behaviour,
+signature or command it describes. The quick-start snippets in `README.md` must compile: paste a
+changed snippet into a temporary file under `src/test/scala`, run `sbt Test/compile`, then delete
+the file.
 Snippets suspend their side effects, as the code does: `IO.println`, not `println`.

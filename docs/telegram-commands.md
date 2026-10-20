@@ -37,10 +37,14 @@ def resource[I[_]: Sync, F[_]: Async: Throws](
 )(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TgUpdatesProcessImpl[F]]
 ```
 
-`HelpHandler` is built automatically from `(pingHandler :: infoHandler :: extraHandlers).map(_.usage)
-:+ HelpHandler.Usage` - so `/help`'s reply always lists exactly the handlers actually wired in, in
-that order. A handler you don't pass as `extraHandlers` simply doesn't exist for that deployment:
-its command falls through to `"Unknown command. Try /help"`, and it's absent from `/help`'s output.
+`CommandHandlers.standard(tgGateway, tcsFacade, extraHandlers)` assembles that list, and
+`TgUpdatesProcessImpl.resource` uses it: `PingHandler`, `InfoHandler`, `extraHandlers`, then a
+`HelpHandler` built from `(pingHandler :: infoHandler :: extraHandlers).map(_.usage) :+
+HelpHandler.Usage` - so `/help`'s reply always lists exactly the handlers actually wired in, in
+that order. The same function serves the [MCP server](mcp.md), which builds the handlers a second
+time over a gateway that keeps the replies instead of sending them. A handler you don't pass as
+`extraHandlers` simply doesn't exist for that deployment: its command falls through to
+`"Unknown command. Try /help"`, and it's absent from `/help`'s output.
 
 ## `TgGateway.sendDocument`
 

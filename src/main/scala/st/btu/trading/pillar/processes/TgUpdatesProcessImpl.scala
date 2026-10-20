@@ -94,12 +94,9 @@ object TgUpdatesProcessImpl {
     for {
       tgGateway <- Resource.eval(TgGatewayImpl.create[I, F](tgToken, backend))
       tcsFacade <- TcsFacadeImpl.resource[I, F](brokerAccountId, tcsToken)
-      pingHandler = new PingHandler[F](tgGateway)
-      infoHandler = new InfoHandler[F](tgGateway, tcsFacade)
-      baseHandlers = List[CommandHandler[F]](pingHandler, infoHandler) ++ extraHandlers
-      helpHandler = new HelpHandler[F](tgGateway, baseHandlers.map(_.usage) :+ HelpHandler.Usage)
       commandHandleService <- Resource.eval(
-        CommandHandleServiceImpl.create[I, F](tgGateway, baseHandlers :+ helpHandler)
+        CommandHandleServiceImpl
+          .create[I, F](tgGateway, CommandHandlers.standard(tgGateway, tcsFacade, extraHandlers))
       )
       tgUpdatesProcess <- Resource.eval(
         TgUpdatesProcessImpl.create[I, F](tgGateway, commandHandleService)
