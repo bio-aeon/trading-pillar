@@ -8,7 +8,6 @@ documented [below](#multi-ticker-backtests-backtestenginerunportfolio).
 ## `BacktestConfig`
 
 ```scala
-@JsonCodec
 final case class BacktestConfig(initialCash: BigDecimal, commissionRate: BigDecimal, slippageBps: Int)
 ```
 
@@ -75,7 +74,6 @@ commission    = commissionRate * (quantity * fillPrice)
 Every actual fill (buy or sell) is appended to `trades: List[Trade]`:
 
 ```scala
-@JsonCodec
 final case class Trade(date: LocalDate, side: Side, quantity: Long, price: BigDecimal, commission: BigDecimal, reason: String)
 ```
 
@@ -86,7 +84,6 @@ BacktestMetrics`, called once at the end of `simulate` with the *first* bar's `o
 *last* bar's `close`.
 
 ```scala
-@JsonCodec
 final case class BacktestMetrics(
   totalReturn: BigDecimal,
   annualizedReturn: BigDecimal,
@@ -448,7 +445,7 @@ minimum of those returns; `consistency` is the share of them that are strictly p
 ## Persistence and JSON layout
 
 trading-pillar defines the storage *trait* only; `BacktestRunStorage` has no built-in JSON codec
-requirement of its own beyond what `@JsonCodec` derives for `BacktestConfig`/`BacktestMetrics`/
+requirement of its own beyond the circe codecs derived for `BacktestConfig`/`BacktestMetrics`/
 `Trade`/`EquityPoint` (all in `strategy.backtest`) and circe's generic derivation for
 `Map[String, String]`/`List[Trade]`/`List[EquityPoint]`. A relational implementation (suggested
 table `backtest_runs`, see [`storage-contracts.md`](storage-contracts.md#backtestrunstoragef_))

@@ -24,11 +24,11 @@ import tofu.syntax.raise.*
 import java.time.{Instant, ZoneId, ZonedDateTime}
 import scala.concurrent.duration.FiniteDuration
 
-final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessContext]] private (
+final class TcsPortfolioServiceImpl[F[_]: Logging] private (
   initialYearsAgo: Int,
   operationStorage: TcsPortfolioOperationStorage[F],
   tcsFacade: TcsFacade[F]
-)(implicit F: Monad[F], R: Throws[F], clock: Clock[F])
+)(implicit F: Monad[F], R: Throws[F], clock: Clock[F], WC: WithContext[F, ProcessContext])
     extends TcsPortfolioService[F] {
   def syncOperations(
     interval: FiniteDuration,
@@ -116,11 +116,11 @@ final class TcsPortfolioServiceImpl[F[_]: Logging: WithContext[*[_], ProcessCont
 object TcsPortfolioServiceImpl {
 
   /** Wires a `TcsPortfolioService` backed by `tcsFacade` and `operationStorage`. */
-  def create[I[_]: Functor, F[_]: Monad: Clock: WithContext[*[_], ProcessContext]: Throws](
+  def create[I[_]: Functor, F[_]: Monad: Clock: Throws](
     initialYearsAgo: Int,
     operationStorage: TcsPortfolioOperationStorage[F],
     tcsFacade: TcsFacade[F]
-  )(implicit logs: Logs[I, F]): I[TcsPortfolioService[F]] =
+  )(implicit logs: Logs[I, F], WC: WithContext[F, ProcessContext]): I[TcsPortfolioService[F]] =
     logs
       .forService[TcsPortfolioService[F]]
       .map(implicit log =>

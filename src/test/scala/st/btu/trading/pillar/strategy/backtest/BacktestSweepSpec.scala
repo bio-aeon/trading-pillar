@@ -84,12 +84,8 @@ class BacktestSweepSpec extends Specification with CatsEffect {
           points.find(_.params("q") == "broken").map(_.result) must beSome(
             Left(BacktestError.InvalidStrategy("boom"))
           )
-          points.find(_.params("q") == "good").map(_.result) must beSome.like { case r =>
-            r must beRight[BacktestResult]
-          }
-          points.find(_.params("q") == "bad").map(_.result) must beSome.like { case r =>
-            r must beRight[BacktestResult]
-          }
+          points.find(_.params("q") == "good").map(_.result) must beSome(beRight[BacktestResult])
+          points.find(_.params("q") == "bad").map(_.result) must beSome(beRight[BacktestResult])
         }
       }
 

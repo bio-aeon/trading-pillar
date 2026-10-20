@@ -34,7 +34,7 @@ strategy is registered.
 
 | Package | Contents |
 |---|---|
-| `models.domain` | `Account`, `Command`, `Portfolio`, `TcsPortfolioOperation`, newtypes (`AccountId`, `Figi`, ...) |
+| `models.domain` | `Account`, `Command`, `Portfolio`, `TcsPortfolioOperation`, opaque types (`AccountId`, `Figi`, ...) |
 | `models.market` | `Ticker`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.binance` | Telegram, Tinkoff and Binance wire/domain types |
 | `gateways` | `TgGateway` (Telegram Bot API), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
@@ -223,7 +223,7 @@ for {
 Through `BacktestService` (loads bars from `PriceHistoryStorage` and persists the run):
 
 ```scala
-import java.time.LocalDate
+import java.time.{LocalDate, ZoneOffset}
 import st.btu.trading.pillar.models.market.{Source, Ticker}
 import st.btu.trading.pillar.strategy.{StrategyId, StrategyRegistry}
 import st.btu.trading.pillar.strategy.backtest.{BacktestConfig, BacktestServiceImpl}
@@ -242,29 +242,32 @@ def runBacktest(
       priceHistoryStorage,
       backtestRunStorage
     )
+    today <- IO.realTimeInstant.map(LocalDate.ofInstant(_, ZoneOffset.UTC))
     run <- backtestService
       .run(
         StrategyId("ma-cross-50-200"),
         Ticker("AAPL"),
         Source.Yahoo,
-        LocalDate.now.minusYears(2),
-        LocalDate.now,
+        today.minusYears(2),
+        today,
         config
       )
       .run(root)
-    _ = println(s"total return ${run.result.metrics.totalReturn}, trades ${run.result.trades.size}")
+    _ <- IO.println(
+      s"total return ${run.result.metrics.totalReturn}, trades ${run.result.trades.size}"
+    )
   } yield ()
 }
 ```
 
-Or drive the pure engine directly with in-memory bars (no storage, no `F[_]` at all):
+Or drive the pure engine directly with in-memory bars, without storage:
 
 ```scala
 import st.btu.trading.pillar.strategy.backtest.BacktestEngine
 
 BacktestEngine.run(myStrategy, bars, config) match {
-  case Right(result) => println(result.metrics)
-  case Left(error)   => println(s"backtest failed: ${error.message}")
+  case Right(result) => IO.println(result.metrics)
+  case Left(error)   => IO.println(s"backtest failed: ${error.message}")
 }
 ```
 
@@ -337,7 +340,7 @@ paper order can be rejected instead of filled.
 ## Build
 
 - **JDK 21**
-- **Scala 2.13.18**, built with **sbt 1.9.8**
+- **Scala 3.9.0**, built with **sbt 1.9.8**
 
 ```bash
 sbt test          # specs2 + cats-effect-testing; no network access required

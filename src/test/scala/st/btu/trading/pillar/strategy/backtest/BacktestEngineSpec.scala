@@ -77,7 +77,7 @@ class BacktestEngineSpec extends Specification {
           trade.quantity must_== 99L
           trade.commission must_== BigDecimal("9.9")
           val fillPoint = r.equityCurve.find(_.date == d3)
-          fillPoint must beSome.like { case p => p.cash must_== BigDecimal("90.1") }
+          fillPoint must beSome[EquityPoint].like { case p => p.cash must_== BigDecimal("90.1") }
         }
       }
 

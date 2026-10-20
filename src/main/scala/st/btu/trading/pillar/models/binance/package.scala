@@ -1,18 +1,25 @@
 package st.btu.trading.pillar.models
 
 import cats.Show
-import io.estatico.newtype.macros.newtype
 
+/** Binance credential types: `X(value)` wraps a value unchecked and `x.value` unwraps it. */
 package object binance {
-  @newtype final case class ApiKey(value: String)
+
+  /** A Binance API key, sent in the `X-MBX-APIKEY` header of signed requests. */
+  opaque type ApiKey = String
 
   object ApiKey {
-    implicit val show: Show[ApiKey] = deriving
+    def apply(value: String): ApiKey = value
+    extension (apiKey: ApiKey) def value: String = apiKey
+    implicit val show: Show[ApiKey] = Show.catsShowForString
   }
 
-  @newtype final case class SecretKey(value: String)
+  /** A Binance secret key, which signs requests with HMAC-SHA256. */
+  opaque type SecretKey = String
 
   object SecretKey {
-    implicit val show: Show[SecretKey] = deriving
+    def apply(value: String): SecretKey = value
+    extension (secretKey: SecretKey) def value: String = secretKey
+    implicit val show: Show[SecretKey] = Show.catsShowForString
   }
 }

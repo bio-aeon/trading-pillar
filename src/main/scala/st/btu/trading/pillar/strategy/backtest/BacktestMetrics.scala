@@ -1,6 +1,7 @@
 package st.btu.trading.pillar.strategy.backtest
 
-import io.circe.generic.JsonCodec
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
 
 /** Summary performance figures for a finished backtest.
   *
@@ -20,7 +21,6 @@ import io.circe.generic.JsonCodec
   *   fraction: the return of holding from the first bar's open to the last bar's close instead of
   *   trading
   */
-@JsonCodec
 final case class BacktestMetrics(
   totalReturn: BigDecimal,
   annualizedReturn: BigDecimal,
@@ -32,3 +32,10 @@ final case class BacktestMetrics(
   finalEquity: BigDecimal,
   buyAndHoldReturn: BigDecimal
 )
+
+object BacktestMetrics {
+
+  /** The JSON form a stored backtest run keeps its metrics in. Renaming a field breaks stored runs.
+    */
+  implicit val codecForBacktestMetrics: Codec.AsObject[BacktestMetrics] = deriveCodec
+}

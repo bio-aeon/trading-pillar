@@ -4,7 +4,9 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.domain.{AccountId, Currency, TcsPortfolioOperation}
+import st.btu.trading.pillar.models.domain.Figi.value
 import st.btu.trading.pillar.models.market.*
+import st.btu.trading.pillar.models.market.Ticker.value
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, MarketDataFakes}
 import st.btu.trading.pillar.testkit.AnalyticsFakes.operation
 import st.btu.trading.pillar.testkit.MarketDataFakes.brokerInstrument

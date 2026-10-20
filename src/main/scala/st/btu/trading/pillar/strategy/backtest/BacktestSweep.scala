@@ -37,7 +37,7 @@ object BacktestSweep {
   def rank(points: List[SweepPoint], by: BacktestMetrics => BigDecimal): List[SweepPoint] =
     points
       .collect { case p @ SweepPoint(_, Right(result)) => p -> by(result.metrics) }
-      .sortBy(_._2)(Ordering[BigDecimal].reverse)
+      .sortBy(_._2)(using Ordering[BigDecimal].reverse)
       .map(_._1)
 
   private def evaluate(

@@ -17,9 +17,9 @@ trait Strategy {
 }
 ```
 
-`StrategyId` is `@newtype case class StrategyId(value: String)` - a stable identifier used in
-Telegram commands (`/backtest <strategyId> ...`), in `StrategyBinding`s and in persisted backtest
-runs.
+`StrategyId` is an opaque type over `String` (`StrategyId(value)`, `id.value`) - a stable
+identifier used in Telegram commands (`/backtest <strategyId> ...`), in `StrategyBinding`s and in
+persisted backtest runs.
 
 **User strategies never live in trading-pillar.** The library ships at most a handful of reference
 strategies (`strategy.reference`) as examples and test fixtures; a consumer application implements

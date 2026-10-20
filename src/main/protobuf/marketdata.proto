@@ -14,19 +14,11 @@ import "common.proto";
 
 // Vendored from upstream:
 // https://raw.githubusercontent.com/RussianInvestments/investAPI/main/src/docs/contracts/marketdata.proto
-// Deviations from upstream:
-// 1. The `import "google/api/field_behavior.proto";` and every
-//    `[(google.api.field_behavior) = REQUIRED]` field option were dropped. That proto (part of
-//    googleapis' common annotation protos, not shipped by our protobuf/grpc/scalapb dependencies)
-//    only carries documentation metadata about field requiredness; it does not change the wire
-//    format, generated Scala types or field numbers.
-// 2. Every `[deprecated = true]` field option (on the legacy `figi` fields superseded by
-//    `instrument_id`) was dropped too. scalapb's generated code for a deprecated field
-//    (lenses, equals/toString, serialization) references that field internally and is itself
-//    marked `@deprecated`, which trips `-Xfatal-warnings` on the generated sources regardless of
-//    whether our own code ever reads the field - we don't (TcsMarketDataSource uses
-//    `instrument_id` everywhere). The option is documentation-only and doesn't change wire
-//    format, field numbers or types.
+// Deviation from upstream: the `import "google/api/field_behavior.proto";` and every
+// `[(google.api.field_behavior) = REQUIRED]` field option were dropped. That proto (part of
+// googleapis' common annotation protos, not shipped by our protobuf/grpc/scalapb dependencies)
+// only carries documentation metadata about field requiredness; it does not change the wire
+// format, generated Scala types or field numbers.
 // See common.proto for the InstrumentStatus, PingRequest and PingDelaySettings types this file
 // needed that were moved there from the same upstream revision.
 
@@ -145,7 +137,7 @@ enum SubscriptionInterval {
 
 //Запрос изменения статус подписки на свечи.
 message CandleInstrument {
-  string figi = 1; // Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  string figi = 1 [deprecated = true]; // Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   SubscriptionInterval interval = 2; //Интервал свечей. Двухчасовые и четырехчасовые свечи в стриме отсчитываются с 0:00 по UTC.
   string instrument_id = 3; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`.
 }
@@ -194,7 +186,7 @@ message SubscribeOrderBookRequest {
 
 //Запрос подписки на стаканы.
 message OrderBookInstrument {
-  string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   int32 depth = 2; //Глубина стакана.
   string instrument_id = 3; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`.
   OrderBookType order_book_type = 4; //Тип стакана. Значение по умолчанию — `ORDERBOOK_TYPE_ALL`, стакан биржевой и дилера.
@@ -238,7 +230,7 @@ message SubscribeTradesRequest {
 
 //Запрос подписки на поток обезличенных сделок.
 message TradeInstrument {
-  string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте instrument_id`.
+  string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте instrument_id`.
   string instrument_id = 2; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`.
 }
 
@@ -270,7 +262,7 @@ message SubscribeInfoRequest {
 
 //Запрос подписки на торговый статус.
 message InfoInstrument {
-  string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте instrument_id`.
+  string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте instrument_id`.
   string instrument_id = 2; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`.
 }
 
@@ -300,7 +292,7 @@ message SubscribeLastPriceRequest {
 
 //Запрос подписки на последнюю цену.
 message LastPriceInstrument {
-  string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте instrument_id`.
+  string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте instrument_id`.
   string instrument_id = 2; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`.
 }
 
@@ -397,7 +389,7 @@ message TradingStatus {
 
 //Запрос исторических свечей.
 message GetCandlesRequest {
-  optional string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  optional string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   google.protobuf.Timestamp from = 2; //Начало запрашиваемого периода по UTC.
   google.protobuf.Timestamp to = 3; //Окончание запрашиваемого периода по UTC.
   CandleInterval interval = 4; //Интервал запрошенных свечей.
@@ -460,7 +452,7 @@ message HistoricCandle {
 
 //Запрос получения цен последних сделок.
 message GetLastPricesRequest {
-  repeated string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  repeated string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   repeated string instrument_id = 2; //Массив идентификаторов инструмента. Принимает значения `figi`, `instrument_uid` или `ticker + '_' + class_code`.
   LastPriceType last_price_type = 3; //Тип запрашиваемой последней цены.
   optional InstrumentStatus instrument_status = 9; //Статус запрашиваемых инструментов. [Возможные значения](#instrumentstatus).
@@ -492,7 +484,7 @@ message OpenInterest {
 
 //Запрос стакана.
 message GetOrderBookRequest {
-  optional string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  optional string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   int32 depth = 2; //Глубина стакана.
   optional string instrument_id = 3; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`.
 }
@@ -517,7 +509,7 @@ message GetOrderBookResponse {
 
 //Запрос получения торгового статуса.
 message GetTradingStatusRequest {
-  optional string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  optional string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   optional string instrument_id = 2; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`
 }
 
@@ -547,7 +539,7 @@ message GetTradingStatusResponse {
 
 //Запрос обезличенных сделок за последний час.
 message GetLastTradesRequest {
-  optional string figi = 1; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
+  optional string figi = 1 [deprecated = true]; //Deprecated FIGI-идентификатор инструмента. Используйте `instrument_id`.
   google.protobuf.Timestamp from = 2; //Начало запрашиваемого периода по UTC.
   google.protobuf.Timestamp to = 3; //Окончание запрашиваемого периода по UTC.
   optional string instrument_id = 4; //Идентификатор инструмента. Принимает значение `figi`, `instrument_uid` или `ticker + '_' + class_code`

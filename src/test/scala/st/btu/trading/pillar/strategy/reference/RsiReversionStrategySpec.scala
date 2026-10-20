@@ -3,6 +3,7 @@ package st.btu.trading.pillar.strategy.reference
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.market.{Bar, Ticker}
 import st.btu.trading.pillar.strategy.{Side, Strategy}
+import st.btu.trading.pillar.strategy.StrategyId.value
 import st.btu.trading.pillar.strategy.backtest.{BacktestConfig, BacktestEngine, BacktestResult}
 import st.btu.trading.pillar.testkit.StrategyFakes
 

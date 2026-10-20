@@ -1,6 +1,7 @@
 package st.btu.trading.pillar.strategy.backtest
 
-import io.circe.generic.JsonCodec
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
 
 /** Backtest and paper-simulation parameters.
   *
@@ -11,9 +12,16 @@ import io.circe.generic.JsonCodec
   * @param slippageBps
   *   fill-price slippage in basis points, against the bar's open on both sides
   */
-@JsonCodec
 final case class BacktestConfig(
   initialCash: BigDecimal,
   commissionRate: BigDecimal,
   slippageBps: Int
 )
+
+object BacktestConfig {
+
+  /** The JSON form a stored backtest run keeps its configuration in. Renaming a field breaks stored
+    * runs.
+    */
+  implicit val codecForBacktestConfig: Codec.AsObject[BacktestConfig] = deriveCodec
+}

@@ -2,6 +2,7 @@ package st.btu.trading.pillar.strategy.reference
 
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.market.{Bar, Ticker}
+import st.btu.trading.pillar.strategy.StrategyId.value
 import st.btu.trading.pillar.strategy.backtest.{BacktestConfig, BacktestEngine, BacktestResult}
 import st.btu.trading.pillar.strategy.*
 import st.btu.trading.pillar.testkit.StrategyFakes
@@ -55,7 +56,7 @@ class MovingAverageCrossoverStrategySpec extends Specification {
 
         val result = strategy.proximity(ctx, liveBar)
 
-        result must beSome.like { case p => p.side must_== Side.Buy }
+        result must beSome[PreSignal].like { case p => p.side must_== Side.Buy }
       }
 
       "returns nothing when the fast/slow SMA distance, including the live bar, is outside the threshold" >> {

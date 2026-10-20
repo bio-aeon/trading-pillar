@@ -7,6 +7,7 @@ import st.btu.trading.pillar.alerts.{FailureTracker, FailureTrackerImpl, SystemA
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.market.{MarketDataError, Source, Ticker, WatchlistItem}
+import st.btu.trading.pillar.models.market.Ticker.value
 import st.btu.trading.pillar.services.{PriceHistorySyncConfig, PriceHistorySyncService, SyncReport}
 import st.btu.trading.pillar.storages.WatchlistStorage
 import st.btu.trading.pillar.testkit.{AlertFakes, MarketDataFakes}

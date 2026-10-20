@@ -102,13 +102,16 @@ object PriceHistorySyncProcessImpl {
   // F needs Async (not just Temporal) here, purely to allocate the alertingRef Ref during
   // construction; the class itself (and everything it does per tick) only ever needs Temporal.
   /** Wires the price-history sync process backed by the given watchlist and sync service. */
-  def create[I[_]: Sync, F[_]: Async: GenUUID: WithLocal[*[_], ProcessContext]](
+  def create[I[_]: Sync, F[_]: Async: GenUUID](
     watchlist: WatchlistStorage[F],
     syncService: PriceHistorySyncService[F],
     config: PriceHistorySyncConfig,
     systemAlerts: SystemAlerts[F],
     failureTracker: FailureTracker[F]
-  )(implicit logs: Logs[I, F]): I[PriceHistorySyncProcessImpl[F]] =
+  )(implicit
+    logs: Logs[I, F],
+    WL: WithLocal[F, ProcessContext]
+  ): I[PriceHistorySyncProcessImpl[F]] =
     for {
       alertingRef <- Ref.in[I, F, Set[Ticker]](Set.empty)
       process <- logs

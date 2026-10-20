@@ -1,11 +1,11 @@
 package st.btu.trading.pillar.alerts
 
-import io.circe.generic.JsonCodec
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
 
 /** How close the price must get to a [[PriceCrossed]] rule's threshold before a `PreTarget` alert
   * is raised. Stored alert rules hold it in the JSON form of its circe codec.
   */
-@JsonCodec
 sealed trait Proximity
 
 object Proximity {
@@ -20,4 +20,9 @@ object Proximity {
     * passes it into `AlertEngine.evaluatePriceRule`.
     */
   final case class Atr(multiplier: BigDecimal, period: Int) extends Proximity
+
+  /** The JSON form stored price rules hold: one object keyed by the case name, such as
+    * `{"Percent":{"p":1}}`. Renaming a case or a field breaks stored rules.
+    */
+  implicit val codecForProximity: Codec.AsObject[Proximity] = deriveCodec
 }

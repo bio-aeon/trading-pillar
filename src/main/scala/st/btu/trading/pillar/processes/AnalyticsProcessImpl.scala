@@ -117,7 +117,7 @@ object AnalyticsProcessImpl {
 
   /** Wires the analytics process backed by the given storages, valuation service and dispatcher.
     */
-  def create[I[_]: Functor, F[_]: Temporal: GenUUID: WithLocal[*[_], ProcessContext]](
+  def create[I[_]: Functor, F[_]: Temporal: GenUUID](
     accounts: AccountStorage[F],
     valuationService: PortfolioValuationService[F],
     valuations: PortfolioValuationStorage[F],
@@ -126,7 +126,7 @@ object AnalyticsProcessImpl {
     systemAlerts: SystemAlerts[F],
     config: AnalyticsConfig,
     channels: List[String]
-  )(implicit logs: Logs[I, F]): I[AnalyticsProcessImpl[F]] =
+  )(implicit logs: Logs[I, F], WL: WithLocal[F, ProcessContext]): I[AnalyticsProcessImpl[F]] =
     logs
       .forService[AnalyticsProcess[F]]
       .map(implicit log =>

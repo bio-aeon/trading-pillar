@@ -6,6 +6,7 @@ import io.grpc.Status
 import org.specs2.mutable.Specification
 import ru.tinkoff.piapi.contract.v1.instruments.{Instrument, InstrumentIdType, InstrumentResponse}
 import st.btu.trading.pillar.models.domain.{Currency, Figi}
+import st.btu.trading.pillar.models.domain.Figi.value
 import st.btu.trading.pillar.models.market.{BrokerInstrument, ClassCode, MarketDataError, Ticker}
 import st.btu.trading.pillar.testkit.{MarketDataFakes, TcsMarketDataFakes}
 
@@ -69,7 +70,7 @@ class TcsInstrumentDirectorySpec extends Specification with CatsEffect {
           after <- IO.realTimeInstant
           stored <- built.storage.all
         } yield {
-          found must beSome.like { case instrument =>
+          found must beSome[BrokerInstrument].like { case instrument =>
             instrument.figi must_== figi
             instrument.ticker must_== Ticker("SBER")
             instrument.classCode must_== ClassCode("TQBR")

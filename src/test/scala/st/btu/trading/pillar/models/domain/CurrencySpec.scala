@@ -1,6 +1,7 @@
 package st.btu.trading.pillar.models.domain
 
 import org.specs2.mutable.Specification
+import st.btu.trading.pillar.models.domain.Currency.value
 
 class CurrencySpec extends Specification {
 

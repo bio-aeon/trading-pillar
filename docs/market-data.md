@@ -13,9 +13,9 @@ All in `st.btu.trading.pillar.models.market`:
 
 | Type | Shape | Notes |
 |---|---|---|
-| `Ticker` | `@newtype case class Ticker(value: String)` | Named `Ticker`, not `Symbol`, to avoid shadowing `scala.Symbol`. |
+| `Ticker` | `opaque type Ticker = String` | Named `Ticker`, not `Symbol`, to avoid shadowing `scala.Symbol`. |
 | `Source` | enum: `Yahoo`, `Tinkoff`, `Binance` (`enumeratum` `StringEnumEntry`, values `"yahoo"`/`"tinkoff"`/`"binance"`) | `Yahoo` and `Tinkoff` each have a `MarketDataSource` implementation (see below); `Binance` does not yet. |
-| `ClassCode` | `@newtype case class ClassCode(value: String)` | A broker's code for a trading board, e.g. `"TQBR"`. |
+| `ClassCode` | `opaque type ClassCode = String` | A broker's code for a trading board, e.g. `"TQBR"`. |
 | `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])` | Where one ticker's data comes from. `Tinkoff(None)` means the Tinkoff adapter's default board. `Binance` has no setting, so a ticker cannot be set to it. |
 | `TickerSource` | `TickerSource(ticker, setting: SourceSetting)` | The setting stored for a ticker. A ticker with none uses the router's default setting. |
 | `SourcedTicker` | `SourcedTicker(ticker, source: Source)` | A ticker paired with the source its stored data is read from; the key `DividendStorage.upcoming` takes. |

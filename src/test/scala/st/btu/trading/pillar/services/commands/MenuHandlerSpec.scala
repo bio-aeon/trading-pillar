@@ -25,12 +25,13 @@ class MenuHandlerSpec extends Specification with CatsEffect {
           keyboards must haveSize(1)
           val keyboard = keyboards.head
           keyboard.chatId must_== chatId
+          val buttons: List[InlineButton] = keyboard.rows.flatten
           // Every button's callback data round-trips as the literal command text.
-          keyboard.rows.flatten must contain(InlineButton("/portfolio", "/portfolio"))
-          keyboard.rows.flatten must contain(InlineButton("/paper", "/paper"))
-          keyboard.rows.flatten.map(_.callbackData) must_== keyboard.rows.flatten.map(_.text)
+          buttons must contain(InlineButton("/portfolio", "/portfolio"))
+          buttons must contain(InlineButton("/paper", "/paper"))
+          buttons.map(_.callbackData) must_== buttons.map(_.text)
           // Every advertised command is present exactly once, and rows have at most 2 buttons.
-          keyboard.rows.flatten.map(_.text) must_== List(
+          buttons.map(_.text) must_== List(
             "/portfolio",
             "/positions",
             "/performance",

@@ -20,7 +20,8 @@ import ru.tinkoff.piapi.contract.v1.marketdata.{
 }
 import st.btu.trading.pillar.gateways.tcs.TcsMarketDataSource.TcsMarketDataConfig
 import st.btu.trading.pillar.models.domain.Currency
-import st.btu.trading.pillar.models.market.{ClassCode, MarketDataError, Source, Ticker}
+import st.btu.trading.pillar.models.market.*
+import st.btu.trading.pillar.models.market.Ticker.value
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import st.btu.trading.pillar.testkit.TcsMarketDataFakes
 import st.btu.trading.pillar.testkit.TcsMarketDataFakes.OnBoard
@@ -221,7 +222,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           marketData <- TcsMarketDataFakes.marketDataService()
           source <- buildSource(instruments, marketData)
           info <- source.instrumentInfo(ticker)
-        } yield info must beSome.like { case i =>
+        } yield info must beSome[InstrumentInfo].like { case i =>
           i.source must_== Source.Tinkoff
           i.name must beSome("Sberbank")
           i.instrumentType must_== "share"

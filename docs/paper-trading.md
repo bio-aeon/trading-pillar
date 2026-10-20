@@ -28,7 +28,7 @@ carrier of those signals.
 ```scala
 final case class PaperAccount(accountId: AccountId, cash: BigDecimal, currency: Currency)
 
-@newtype final case class PaperOrderId(value: Long)
+opaque type PaperOrderId = Long
 
 sealed abstract class PaperOrderStatus(val value: String) extends StringEnumEntry
 object PaperOrderStatus extends StringEnum[PaperOrderStatus] {

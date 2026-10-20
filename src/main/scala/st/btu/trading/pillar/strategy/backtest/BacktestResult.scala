@@ -1,13 +1,13 @@
 package st.btu.trading.pillar.strategy.backtest
 
-import io.circe.generic.JsonCodec
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.strategy.{Side, StrategyId}
 
 import java.time.LocalDate
 
 /** One filled order from a backtest or paper simulation. */
-@JsonCodec
 final case class Trade(
   date: LocalDate,
   side: Side,
@@ -17,15 +17,36 @@ final case class Trade(
   reason: String
 )
 
+object Trade {
+
+  /** The JSON form of one entry of the trade log a stored backtest run keeps. Renaming a field
+    * breaks stored runs.
+    */
+  implicit val codecForTrade: Codec.AsObject[Trade] = deriveCodec
+}
+
 /** One day's mark-to-market equity, cash and position size in a backtest's equity curve. */
-@JsonCodec
 final case class EquityPoint(date: LocalDate, equity: BigDecimal, cash: BigDecimal, quantity: Long)
+
+object EquityPoint {
+
+  /** The JSON form of one point of the equity curve a stored backtest run keeps. Renaming a field
+    * breaks stored runs.
+    */
+  implicit val codecForEquityPoint: Codec.AsObject[EquityPoint] = deriveCodec
+}
 
 /** A signal that was never filled, with `reason` explaining why - including a signal produced on
   * the series' last bar, which has no next bar to fill against.
   */
-@JsonCodec
 final case class SkippedSignal(date: LocalDate, reason: String)
+
+object SkippedSignal {
+
+  /** The JSON form for a storage that keeps a run's skipped signals; storages may leave them out.
+    */
+  implicit val codecForSkippedSignal: Codec.AsObject[SkippedSignal] = deriveCodec
+}
 
 /** The outcome of running one strategy over one ticker's bars between `dateFrom` and `dateTo`. */
 final case class BacktestResult(

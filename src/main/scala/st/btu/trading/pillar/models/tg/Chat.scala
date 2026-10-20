@@ -1,6 +1,10 @@
 package st.btu.trading.pillar.models.tg
 
-import io.circe.generic.JsonCodec
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
 
-@JsonCodec
 final case class Chat(id: ChatId)
+
+object Chat {
+  implicit val codecForChat: Codec.AsObject[Chat] = deriveCodec
+}

@@ -84,13 +84,13 @@ object TgUpdatesProcessImpl {
     * handlers plus `extraHandlers`, and the command router, holding the Tinkoff gRPC channel (for
     * `/info`) open for the resource's lifetime.
     */
-  def resource[I[_]: Sync, F[_]: Async: Throws: Lift[*[_], I]](
+  def resource[I[_]: Sync, F[_]: Async: Throws](
     tgToken: tg.Token,
     brokerAccountId: tcs.BrokerAccountId,
     tcsToken: tcs.Token,
     backend: SttpBackend[F, Any],
     extraHandlers: List[CommandHandler[F]] = Nil
-  )(implicit logs: Logs[I, F]): Resource[I, TgUpdatesProcessImpl[F]] =
+  )(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TgUpdatesProcessImpl[F]] =
     for {
       tgGateway <- Resource.eval(TgGatewayImpl.create[I, F](tgToken, backend))
       tcsFacade <- TcsFacadeImpl.resource[I, F](brokerAccountId, tcsToken)

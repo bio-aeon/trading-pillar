@@ -5,6 +5,7 @@ import cats.effect.testing.specs2.CatsEffect
 import io.github.coinductive.yfinance4s.models.{Ticker as YfTicker, YFinanceError}
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.market.{MarketDataError, Ticker}
+import st.btu.trading.pillar.models.market.Ticker.value
 import st.btu.trading.pillar.testkit.NewsFakes
 
 import java.time.{ZoneOffset, ZonedDateTime}

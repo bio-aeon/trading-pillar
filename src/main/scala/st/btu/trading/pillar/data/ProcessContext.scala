@@ -1,8 +1,10 @@
 package st.btu.trading.pillar.data
 
-import derevo.derive
 import st.btu.trading.pillar.models.domain.AccountId
-import tofu.logging.derivation.loggable
+import tofu.logging.Loggable
+import tofu.logging.derivation.derived
 
-@derive(loggable)
-final case class ProcessContext(traceId: String, accountId: AccountId)
+/** What a process step runs in and logs with: the trace id that ties the step's log entries
+  * together, and the account the step acts for.
+  */
+final case class ProcessContext(traceId: String, accountId: AccountId) derives Loggable

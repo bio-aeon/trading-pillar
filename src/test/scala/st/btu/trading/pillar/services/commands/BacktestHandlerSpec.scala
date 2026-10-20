@@ -6,6 +6,7 @@ import org.specs2.mutable.Specification
 import st.btu.trading.pillar.gateways.MarketDataSources
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tg.ChatId
+import st.btu.trading.pillar.strategy.StrategyId.value
 import st.btu.trading.pillar.strategy.backtest.*
 import st.btu.trading.pillar.strategy.reference.MovingAverageCrossoverStrategy
 import st.btu.trading.pillar.strategy.{

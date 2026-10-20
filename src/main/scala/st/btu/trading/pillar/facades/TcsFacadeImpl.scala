@@ -98,6 +98,12 @@ object TcsFacadeImpl {
       channel <- TcsGrpc.channel[I]
       instrumentsGrpc <- InstrumentsServiceFs2Grpc.stubResource[F](channel).mapK(liftFI.liftF)
       operationsGrpc <- OperationsServiceFs2Grpc.stubResource[F](channel).mapK(liftFI.liftF)
-      case implicit0(log: Logging[F]) <- Resource.eval(logs.forService[TcsFacade[F]])
-    } yield new TcsFacadeImpl[F](brokerAccountId, token, instrumentsGrpc, operationsGrpc)
+      facade <- Resource.eval(
+        logs
+          .forService[TcsFacade[F]]
+          .map(implicit log =>
+            new TcsFacadeImpl[F](brokerAccountId, token, instrumentsGrpc, operationsGrpc)
+          )
+      )
+    } yield facade
 }

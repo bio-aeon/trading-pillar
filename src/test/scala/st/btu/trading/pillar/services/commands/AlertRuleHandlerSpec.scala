@@ -4,6 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.alerts.{PriceCrossed, Proximity}
+import st.btu.trading.pillar.alerts.AlertRuleId.value
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId

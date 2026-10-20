@@ -135,7 +135,7 @@ Band width per variant, as used by `AlertEngine.evaluatePriceRule`:
 
 ### JSON shape (circe, exactly as the code encodes it)
 
-`Proximity` is `@JsonCodec sealed trait` - circe's generic coproduct derivation, **no**
+`Proximity`'s codec comes from circe's generic coproduct derivation (`deriveCodec`) with **no**
 discriminator field config, so each case wraps its fields in an object keyed by the exact
 case-class name:
 
@@ -152,7 +152,6 @@ column). Leave the value out (or store JSON `null`) to disable pre-target alerts
 ## `QuietHours`
 
 ```scala
-@JsonCodec
 final case class QuietHours(start: LocalTime, end: LocalTime, zone: ZoneId)
 ```
 

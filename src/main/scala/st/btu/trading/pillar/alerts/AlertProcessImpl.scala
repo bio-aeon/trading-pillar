@@ -191,7 +191,7 @@ final class AlertProcessImpl[F[_]: Temporal: Logging: GenUUID](
 object AlertProcessImpl {
 
   /** Wires the alert process backed by the given bindings, rules, registry and dispatcher. */
-  def create[I[_]: Sync, F[_]: Async: GenUUID: WithLocal[*[_], ProcessContext]](
+  def create[I[_]: Sync, F[_]: Async: GenUUID](
     strategyBindings: StrategyBindingStorage[F],
     alertRules: AlertRuleStorage[F],
     registry: StrategyRegistry[F],
@@ -202,7 +202,7 @@ object AlertProcessImpl {
     paperBroker: PaperBroker[F],
     systemAlerts: SystemAlerts[F],
     config: AlertProcessConfig
-  )(implicit logs: Logs[I, F]): I[AlertProcessImpl[F]] =
+  )(implicit logs: Logs[I, F], WL: WithLocal[F, ProcessContext]): I[AlertProcessImpl[F]] =
     for {
       previousQuotes <- Ref.in[I, F, Map[Ticker, Quote]](Map.empty)
       process <- logs

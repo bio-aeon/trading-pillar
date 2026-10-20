@@ -139,7 +139,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
         } yield {
           order.status must_== PaperOrderStatus.Rejected
           order.quantity must_== 0L
-          order.reason must beSome.like { case r => r must contain("No paper account") }
+          order.reason must beSome[String].like { case r => r must contain("No paper account") }
         }
       }
 
@@ -168,7 +168,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
           )
         } yield {
           order.status must_== PaperOrderStatus.Rejected
-          order.reason must beSome.like { case r => r must contain("zero quantity") }
+          order.reason must beSome[String].like { case r => r must contain("zero quantity") }
         }
       }
 
@@ -188,7 +188,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
           )
         } yield {
           order.status must_== PaperOrderStatus.Rejected
-          order.reason must beSome.like { case r => r must contain("zero quantity") }
+          order.reason must beSome[String].like { case r => r must contain("zero quantity") }
         }
       }
 
@@ -204,7 +204,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
           )
         } yield {
           order.status must_== PaperOrderStatus.Rejected
-          order.reason must beSome.like { case r => r must contain("Insufficient cash") }
+          order.reason must beSome[String].like { case r => r must contain("Insufficient cash") }
         }
       }
 
@@ -223,7 +223,7 @@ class PaperBrokerImplSpec extends Specification with CatsEffect {
           )
         } yield {
           order.status must_== PaperOrderStatus.Rejected
-          order.reason must beSome.like { case r => r must contain("without a position") }
+          order.reason must beSome[String].like { case r => r must contain("without a position") }
         }
       }
 

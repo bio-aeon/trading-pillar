@@ -5,7 +5,8 @@ import cats.effect.testing.specs2.CatsEffect
 import io.github.coinductive.yfinance4s.models.{Ticker as YfTicker, YFinanceError}
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.domain.Currency
-import st.btu.trading.pillar.models.market.{MarketDataError, Source, Ticker}
+import st.btu.trading.pillar.models.market.{InstrumentInfo, MarketDataError, Source, Ticker}
+import st.btu.trading.pillar.models.market.Ticker.value
 import st.btu.trading.pillar.testkit.MarketDataFakes
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import tofu.logging.{Logging, Logs}
@@ -200,7 +201,7 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
           api <- MarketDataFakes.yahooApi(metadata = Map(ticker.value -> IO.pure(usMetadata)))
           source <- buildSource(api)
           info <- source.instrumentInfo(ticker)
-        } yield info must beSome.like { case i =>
+        } yield info must beSome[InstrumentInfo].like { case i =>
           i.source must_== Source.Yahoo
           i.name must beNone
           i.instrumentType must_== "EQUITY"

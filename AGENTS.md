@@ -17,9 +17,10 @@ published snapshot, so run `sbt publishLocal` after a change they need to see.
 
 ## Build and verify
 
-- JDK 21, sbt 1.9.8 (`project/build.properties`), Scala 2.13.18 compiled with `-Xsource:3`.
+- JDK 21, sbt 1.9.8 (`project/build.properties`), Scala 3.9.0.
 - Every dependency resolves from Maven Central; versions live in `project/Dependencies.scala`.
-- `-Xfatal-warnings` is on, together with `-deprecation` and `-feature`: any warning fails the build.
+- `-Werror` is on, together with `-deprecation` and `-feature`: any warning fails the build. Only
+  the warnings of the generated Tinkoff stubs are filtered out.
 - Stubs for the Tinkoff API are generated from `src/main/protobuf` during compilation.
 
 ```bash
@@ -27,7 +28,7 @@ sbt compile
 sbt test                                  # whole suite, no network access needed
 sbt "testOnly *BacktestEngineSpec"        # one spec
 sbt scalafmtAll                           # format; CI runs scalafmtCheckAll
-sbt clean coverage test coverageReport    # report in target/scala-2.13/scoverage-report
+sbt clean coverage test coverageReport    # report in target/scala-3.9.0/scoverage-report
 sbt publishLocal
 ```
 
@@ -69,6 +70,8 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   deterministic. Effects live in the services, processes and adapters around them.
 - **Wiring.** Implementations expose `create[I[_], F[_]](...)(implicit logs: Logs[I, F]): I[...]`
   (tofu logging), or a `resource` returning `Resource[I, ...]` when something must be released.
+  Evidence beyond a plain type class of `F`, such as `Lift[F, I]` or
+  `WithLocal[F, ProcessContext]`, is an implicit parameter next to `logs`, not a context bound.
 - **Processes** are fs2 streams. Self-restarting loops use `ProcessLoop.restarting`, which logs a
   crash, raises a `process-crashed:<name>` system alert and restarts after the backoff. Take a
   fresh `TraceIds.next` per iteration and read "now" and "today" through `UtcClock`.
@@ -103,8 +106,11 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   narrowest scope. Values that differ per deployment go into the config case classes consumers
   pass in, such as `PriceHistorySyncConfig` or `TcsMarketDataConfig`.
 - Closed sets are sealed traits or enumeratum enums, matched exhaustively without `case _`.
-  Identifiers and codes get newtypes (`Ticker`, `Figi`, `AccountId`), and no `Boolean` parameter
-  selects behaviour.
+  Identifiers and codes get opaque types (`Ticker`, `Figi`, `AccountId`), declared in the package
+  object of the package that owns them with `apply`, a `value` extension and their `Show` and
+  `Loggable` instances in the companion. No `Boolean` parameter selects behaviour.
+- Circe codecs of models are `implicit val codecForX: Codec.AsObject[X] = deriveCodec` in the
+  companion (`deriveDecoder` and `deriveEncoder` when `X` has a type parameter).
 - Comment only what the code cannot say: a reason, an invariant, an external constraint. No
   narration and no change history, and no references to plans, tickets or work items; those belong
   in commit messages.
@@ -119,6 +125,11 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   Identifiers go in context headings and behaviour in the leaves. No "should", no exception class
   names, no call counts, one behaviour per example, and error paths grouped under their own
   context.
+- Inside a specs2 `Specification`, `x.value` on an opaque type does not resolve, because specs2's
+  own `value` conversions are ambiguous. Import the accessor explicitly, for example
+  `import st.btu.trading.pillar.models.market.Ticker.value`.
+- Give `beSome`, `beRight` and `beLeft` their type argument before `.like`, as in
+  `beSome[Quote].like { ... }`: Scala 3 infers `Nothing` otherwise.
 - Test this project's logic: transformations, conditionals, orderings, boundaries and error paths.
   Do not test library behaviour such as derived codecs or enum lookups, or that a value equals the
   literal it was built from.
@@ -135,3 +146,4 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 `storage-contracts.md`. Update the matching page in the same change as the behaviour, signature or
 command it describes. The quick-start snippets in `README.md` must compile: paste a changed
 snippet into a temporary file under `src/test/scala`, run `sbt Test/compile`, then delete the file.
+Snippets suspend their side effects, as the code does: `IO.println`, not `println`.

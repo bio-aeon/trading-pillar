@@ -1,15 +1,20 @@
 package st.btu.trading.pillar
 
 import cats.Show
-import io.estatico.newtype.macros.newtype
 import tofu.logging.Loggable
 
+/** Paper-trading identifier type: `PaperOrderId(value)` wraps a value unchecked and `id.value`
+  * unwraps it.
+  */
 package object paper {
 
-  @newtype final case class PaperOrderId(value: Long)
+  /** The id a storage gives a stored [[PaperOrder]]. */
+  opaque type PaperOrderId = Long
 
   object PaperOrderId {
-    implicit val show: Show[PaperOrderId] = deriving
-    implicit val loggable: Loggable[PaperOrderId] = deriving
+    def apply(value: Long): PaperOrderId = value
+    extension (orderId: PaperOrderId) def value: Long = orderId
+    implicit val show: Show[PaperOrderId] = Show.catsShowForLong
+    implicit val loggable: Loggable[PaperOrderId] = Loggable.longLoggable
   }
 }

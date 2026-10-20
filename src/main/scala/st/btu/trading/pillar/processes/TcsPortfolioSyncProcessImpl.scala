@@ -56,13 +56,17 @@ final class TcsPortfolioSyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
 object TcsPortfolioSyncProcessImpl {
 
   /** Same as the overload taking `systemAlerts`, with no system alerts raised. */
-  def resource[I[_]: Sync, F[_]: Async: GenUUID: Lift[*[_], I]: WithLocal[*[_], ProcessContext]](
+  def resource[I[_]: Sync, F[_]: Async: GenUUID](
     brokerAccountId: tcs.BrokerAccountId,
     tcsToken: tcs.Token,
     initialYearsAgo: Int,
     accountStorage: AccountStorage[F],
     tcsPortfolioOperationStorage: TcsPortfolioOperationStorage[F]
-  )(implicit logs: Logs[I, F]): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
+  )(implicit
+    logs: Logs[I, F],
+    liftFI: Lift[F, I],
+    WL: WithLocal[F, ProcessContext]
+  ): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
     resource[I, F](
       brokerAccountId,
       tcsToken,
@@ -75,14 +79,18 @@ object TcsPortfolioSyncProcessImpl {
   /** Wires the Tinkoff portfolio sync process, authenticated as `brokerAccountId`, holding its gRPC
     * channel open for the resource's lifetime.
     */
-  def resource[I[_]: Sync, F[_]: Async: GenUUID: Lift[*[_], I]: WithLocal[*[_], ProcessContext]](
+  def resource[I[_]: Sync, F[_]: Async: GenUUID](
     brokerAccountId: tcs.BrokerAccountId,
     tcsToken: tcs.Token,
     initialYearsAgo: Int,
     accountStorage: AccountStorage[F],
     tcsPortfolioOperationStorage: TcsPortfolioOperationStorage[F],
     systemAlerts: SystemAlerts[F]
-  )(implicit logs: Logs[I, F]): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
+  )(implicit
+    logs: Logs[I, F],
+    liftFI: Lift[F, I],
+    WL: WithLocal[F, ProcessContext]
+  ): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
     for {
       tcsFacade <- TcsFacadeImpl.resource[I, F](brokerAccountId, tcsToken)
       tcsPortfolioService <- Resource.eval(
@@ -95,19 +103,25 @@ object TcsPortfolioSyncProcessImpl {
     } yield tcsPortfolioSyncProcess
 
   /** Same as the overload taking `systemAlerts`, with no system alerts raised. */
-  def create[I[_]: Functor, F[_]: Temporal: GenUUID: WithLocal[*[_], ProcessContext]](
+  def create[I[_]: Functor, F[_]: Temporal: GenUUID](
     accountStorage: AccountStorage[F],
     tcsPortfolioService: TcsPortfolioService[F]
-  )(implicit logs: Logs[I, F]): I[TcsPortfolioSyncProcessImpl[F]] =
+  )(implicit
+    logs: Logs[I, F],
+    WL: WithLocal[F, ProcessContext]
+  ): I[TcsPortfolioSyncProcessImpl[F]] =
     create[I, F](accountStorage, tcsPortfolioService, SystemAlerts.noop[F])
 
   /** Wires the Tinkoff portfolio sync process backed by `accountStorage` and `tcsPortfolioService`.
     */
-  def create[I[_]: Functor, F[_]: Temporal: GenUUID: WithLocal[*[_], ProcessContext]](
+  def create[I[_]: Functor, F[_]: Temporal: GenUUID](
     accountStorage: AccountStorage[F],
     tcsPortfolioService: TcsPortfolioService[F],
     systemAlerts: SystemAlerts[F]
-  )(implicit logs: Logs[I, F]): I[TcsPortfolioSyncProcessImpl[F]] =
+  )(implicit
+    logs: Logs[I, F],
+    WL: WithLocal[F, ProcessContext]
+  ): I[TcsPortfolioSyncProcessImpl[F]] =
     logs
       .forService[TcsPortfolioSyncProcess[F]]
       .map(implicit log =>

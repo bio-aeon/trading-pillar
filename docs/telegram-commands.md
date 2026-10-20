@@ -28,13 +28,13 @@ Package `st.btu.trading.pillar.services.commands` (parsing, router, handlers) an
 consumer constructs and passes in as `extraHandlers`:
 
 ```scala
-def resource[I[_]: Sync, F[_]: Async: Throws: Lift[*[_], I]](
+def resource[I[_]: Sync, F[_]: Async: Throws](
   tgToken: tg.Token,
   brokerAccountId: tcs.BrokerAccountId,
   tcsToken: tcs.Token,
   backend: SttpBackend[F, Any],
   extraHandlers: List[CommandHandler[F]] = Nil
-)(implicit logs: Logs[I, F]): Resource[I, TgUpdatesProcessImpl[F]]
+)(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TgUpdatesProcessImpl[F]]
 ```
 
 `HelpHandler` is built automatically from `(pingHandler :: infoHandler :: extraHandlers).map(_.usage)
