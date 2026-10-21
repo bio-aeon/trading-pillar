@@ -1,9 +1,11 @@
 # trading-pillar
 
-Reusable, broker-agnostic building blocks for trading bots: Telegram bot plumbing, market-data
-gateways, a pluggable strategy/backtesting engine, and a spam-resistant alert pipeline. A consumer
-application wires these pieces together and owns its strategies, storage implementations and
-configuration; nothing account- or credential-specific lives here.
+Reusable building blocks for trading bots: Telegram bot plumbing, market-data gateways, a pluggable
+strategy/backtesting engine, and a spam-resistant alert pipeline. Strategies, backtests, alerts and
+the analytics math don't depend on a broker; the portfolio side (operations sync, valuation, tax
+lots, `/info`) is built on Tinkoff Invest. A consumer application wires these pieces together and
+owns its strategies, storage implementations and configuration; nothing account- or
+credential-specific lives here.
 
 ## Overview
 

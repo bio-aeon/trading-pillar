@@ -175,7 +175,9 @@ names the three effects.
 since no other member includes it.
 
 `new McpToolServer[G](info, instructionText, toolFunctions)` is an `McpServer[G]` that serves a
-fixed list of tools to every caller. Concatenate the groups in a fixed order.
+fixed list of tools to every caller. Concatenate the groups in a fixed order. Take the tool names
+in `instructionText` from `ToolNames`, so that renaming a tool cannot leave the text naming the old
+one.
 
 ### HTTP
 

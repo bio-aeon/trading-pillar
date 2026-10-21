@@ -5,12 +5,16 @@ Guidance for coding agents working in this repository. Documentation for library
 
 ## What this is
 
-`trading-pillar` is a Scala library of broker-agnostic building blocks for trading bots: Telegram
-bot plumbing and command handlers, market-data sources (Yahoo Finance via yfinance4s, Tinkoff
-Invest via gRPC), price-history sync, a pluggable strategy API with a deterministic backtest
-engine, an alert pipeline with anti-spam guards, portfolio analytics, paper trading and a tax
-estimate. It defines ports such as storage traits and alert channels, and leaves persistence,
-configuration, credentials and user strategies to the applications that consume it.
+`trading-pillar` is a Scala library of building blocks for trading bots: Telegram bot plumbing and
+command handlers, market-data sources (Yahoo Finance via yfinance4s, Tinkoff Invest via gRPC),
+price-history sync, a pluggable strategy API with a deterministic backtest engine, an alert
+pipeline with anti-spam guards, portfolio analytics, paper trading and a tax estimate. It defines
+ports such as storage traits and alert channels, and leaves persistence, configuration,
+credentials and user strategies to the applications that consume it.
+
+Strategies, backtests, alerts and the analytics math don't depend on a broker; the portfolio side
+(operations sync, valuation, tax lots, `/info`) is built on Tinkoff Invest. `Source` is a closed
+set of data sources, so supporting another broker's data means changing the library.
 
 The artifact is `st.btu %% trading-pillar % 0.1.0-SNAPSHOT`. Consumers build against a locally
 published snapshot, so run `sbt publishLocal` after a change they need to see.
@@ -115,8 +119,6 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 - Comment only what the code cannot say: a reason, an invariant, an external constraint. No
   narration and no change history, and no references to plans, tickets or work items; those belong
   in commit messages.
-- Prose in comments and docs uses the ASCII hyphen, never em or en dashes. The vendored protos are
-  exempt.
 
 ## Tests
 
