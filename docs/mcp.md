@@ -103,7 +103,7 @@ only. `bot_command` runs any line.
 
 | Effect | Lines |
 |---|---|
-| `Changing` | `/watchlist add SYM ...` and `/watchlist rm SYM`; `/source SYM yahoo`, `/source SYM tinkoff [BOARD]` and `/source SYM default`; `/alert price SYM ...` with a rule that parses and `/alert delete ID` with a numeric id; `/mute` and `/unmute` with any arguments |
+| `Changing` | `/watchlist add SYM ...` and `/watchlist rm SYM`; `/source SYM yahoo`, `/source SYM tinkoff (BOARD)` and `/source SYM default`; `/alert price SYM ...` with a rule that parses and `/alert delete ID` with a numeric id; `/mute` and `/unmute` with any arguments |
 | `Additive` | `/backtest` with a strategy and a ticker, which saves a run |
 | `ReadOnly` | every other command, among them `/sweep` (computes only), `/export` and `/help`; the read forms `/watchlist`, `/source` and `/source SYM`, `/alert rules`; and any line the handler would answer with its usage text alone, such as `/watchlist add` without a symbol or `/backtest` with one argument |
 

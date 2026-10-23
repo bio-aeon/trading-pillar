@@ -26,7 +26,7 @@ final class AlertRuleHandler[F[_]: Monad](
   def command: Command = Command.Alert
 
   def usage: String =
-    "/alert price SYM >|< threshold [proximity=1%|2.5|0.5atr14] [cooldown=15m] [max=N], " +
+    "/alert price SYM >|< threshold (proximity=1%|2.5|0.5atr14) (cooldown=15m) (max=N), " +
       "/alert rules, or /alert delete id"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =

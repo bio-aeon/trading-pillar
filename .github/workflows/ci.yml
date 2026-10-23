@@ -45,8 +45,8 @@ jobs:
       - name: Compile
         run: sbt compile
 
-      - name: Run tests
-        run: sbt test
+      - name: Run tests with coverage
+        run: sbt coverage test
 
       - name: Generate coverage report
         run: sbt coverageReport

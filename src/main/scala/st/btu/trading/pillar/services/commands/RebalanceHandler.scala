@@ -24,7 +24,7 @@ final class RebalanceHandler[F[_]: Monad: Clock](
 
   def command: Command = Command.Rebalance
 
-  def usage: String = "/rebalance [cash=<amount>] - rebalancing suggestions"
+  def usage: String = "/rebalance (cash=<amount>) - rebalancing suggestions"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     parseCash(args) match {

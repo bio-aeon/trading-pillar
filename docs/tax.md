@@ -211,4 +211,4 @@ whose rate is not the conventional pair.
 
 ## Commands
 
-See [`telegram-commands.md`](telegram-commands.md#tax) for `/tax [year]` and `/lots SYM`.
+See [`telegram-commands.md`](telegram-commands.md#tax) for `/tax (year)` and `/lots SYM`.

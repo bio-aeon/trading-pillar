@@ -21,7 +21,7 @@ final class TaxHandler[F[_]: Monad: Clock](
 
   def command: Command = Command.Tax
 
-  def usage: String = "/tax [year] (default: current year) - estimated annual tax report"
+  def usage: String = "/tax (year, default current year) - estimated annual tax report"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     for {

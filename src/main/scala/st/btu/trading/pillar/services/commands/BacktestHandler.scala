@@ -36,13 +36,11 @@ final class BacktestHandler[F[_]: Clock: Logging](
 )(implicit F: MonadThrow[F])
     extends CommandHandler[F] {
 
-  private val DefaultYears = 2
   private val ParamsPrefix = "params="
 
   def command: Command = Command.Backtest
 
-  def usage: String =
-    "/backtest strategyId SYM[,SYM2,...] (years, default 2) (params=key:value,key:value)"
+  def usage: String = BacktestHandler.Usage
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     args match {
@@ -52,7 +50,7 @@ final class BacktestHandler[F[_]: Clock: Logging](
         val years = remaining.headOption
           .flatMap(s => Try(s.toInt).toOption)
           .filter(_ > 0)
-          .getOrElse(DefaultYears)
+          .getOrElse(BacktestHandler.DefaultYears)
         if (symRaw.contains(","))
           runPortfolioOrReject(chatId, strategyId, symRaw, years, paramsToken)
         else {
@@ -241,4 +239,12 @@ final class BacktestHandler[F[_]: Clock: Logging](
 
   private def formatParams(params: Map[String, String]): String =
     params.toList.sortBy(_._1).map { case (k, v) => s"$k=$v" }.mkString(", ")
+}
+
+object BacktestHandler {
+  private val DefaultYears = 2
+
+  private[pillar] val Usage =
+    s"/backtest strategyId SYM (years, default $DefaultYears) (params=key:value,key:value), " +
+      s"or /backtest strategyId SYM1,SYM2,... (years, default $DefaultYears)"
 }

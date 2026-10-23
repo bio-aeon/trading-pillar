@@ -244,7 +244,7 @@ trait PortfolioValuationStorage[F[_]] {
 error isolation (one account's failure never stops the others) and a `process-crashed:analytics`
 `SystemAlerts` alert if the batch loop itself fails (e.g. `AccountStorage.allAccounts` raises).
 
-`/performance [1m|3m|6m|1y|all]` (default `1y`) and `/portfolio` read the *stored* series - see
+`/performance (1m|3m|6m|1y|all, default 1y)` and `/portfolio` read the *stored* series - see
 [`telegram-commands.md`](telegram-commands.md#performance) - via `Performance`/`Risk` with
 `Valuation(point.date, point.value, point.cashFlow)`. Volatility/Sharpe/max drawdown run on the raw
 value series' simple returns (`Returns.simple`), the same convention `strategy.backtest.Metrics`
@@ -399,7 +399,7 @@ driftThresholdPct` (strictly greater than).
   post-deposit target amount. When every target's shortfall is `<= 0` (or there are no targets),
   `suggest` returns nothing and the whole deposit is left unsuggested.
 
-`/drift` and `/rebalance [cash=<amount>]` (see
+`/drift` and `/rebalance (cash=<amount>)` (see
 [`telegram-commands.md`](telegram-commands.md#drift)) call this pipeline live, the same way
 `/positions`/`/allocation` do. `AnalyticsProcessImpl` also calls `Rebalancer.drift` after every
 account's daily recompute and dispatches an `AlertKind.AllocationDrift` alert for each breached

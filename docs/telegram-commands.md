@@ -254,7 +254,8 @@ ma-cross-50-200 - Moving Average Crossover (50/200) (fast=50, slow=200)
 
 ### `/backtest`
 
-Usage: `/backtest strategyId SYM[,SYM2,...] (years, default 2) (params=key:value,key:value)`
+Usage: `/backtest strategyId SYM (years, default 2) (params=key:value,key:value), or /backtest
+strategyId SYM1,SYM2,... (years, default 2)`
 
 ```
 /backtest ma-cross-50-200 AAPL 2
@@ -387,7 +388,7 @@ params= is not supported with multiple tickers.
 
 ### `/sweep`
 
-Usage: `/sweep strategyId SYM [years=2] key=from:to:step [key=from:to:step ...] - parameter sweep, top 5 by Sharpe`
+Usage: `/sweep strategyId SYM (years=N, default 2) key=from:to:step (more key=from:to:step) - parameter sweep, top 5 by Sharpe`
 
 Runs a whole grid of parameter combinations for one `ParameterizedStrategy` against the same stored
 bars (those of the source the symbol is set to use, read without needing an adapter for it, as in
@@ -443,7 +444,7 @@ suppressed (<reason>)"`.
 
 ### `/alert`
 
-Usage: `/alert price SYM >|< threshold [proximity=1%|2.5|0.5atr14] [cooldown=15m] [max=N], /alert
+Usage: `/alert price SYM >|< threshold (proximity=1%|2.5|0.5atr14) (cooldown=15m) (max=N), /alert
 rules, or /alert delete id`
 
 Creates, lists and deletes this account's `PriceCrossed` rules (`AlertRuleStorage.insertPriceRule`/
@@ -550,7 +551,7 @@ shown or counted. Single-account app, same as `/watchlist`: the handler is const
 
 ### `/performance`
 
-Usage: `/performance [1m|3m|6m|1y|all] (default 1y) - portfolio performance`
+Usage: `/performance (1m|3m|6m|1y|all, default 1y) - portfolio performance`
 
 ```
 /performance 3m
@@ -676,7 +677,7 @@ is constructed with a fixed `AccountId`, not derived from the chat, and uses tod
 
 ### `/rebalance`
 
-Usage: `/rebalance [cash=<amount>] - rebalancing suggestions`
+Usage: `/rebalance (cash=<amount>) - rebalancing suggestions`
 
 ```
 /rebalance
@@ -791,7 +792,7 @@ Usage: /screen gainers|losers|active (n, default 10, max 25) - predefined screen
 
 ### `/tax`
 
-Usage: `/tax [year] (default: current year) - estimated annual tax report`
+Usage: `/tax (year, default current year) - estimated annual tax report`
 
 ```
 /tax 2025
@@ -832,7 +833,7 @@ ticker). `Usage: ...` when the ticker is missing.
 
 ### `/export`
 
-Usage: `/export operations|valuations|dividends [year] - download a CSV file`
+Usage: `/export operations|valuations|dividends (year, default current year) - download a CSV file`
 
 ```
 /export operations 2025
@@ -948,25 +949,25 @@ Usage: `/help - list available commands`
 /watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
 /source, /source SYM, /source SYM yahoo, /source SYM tinkoff (BOARD), or /source SYM default
 /strategies - list registered strategies
-/backtest strategyId SYM[,SYM2,...] (years, default 2) (params=key:value,key:value)
-/sweep strategyId SYM [years=2] key=from:to:step [key=from:to:step ...] - parameter sweep, top 5 by Sharpe
+/backtest strategyId SYM (years, default 2) (params=key:value,key:value), or /backtest strategyId SYM1,SYM2,... (years, default 2)
+/sweep strategyId SYM (years=N, default 2) key=from:to:step (more key=from:to:step) - parameter sweep, top 5 by Sharpe
 /alerts (n, default 10) - recent alert history
-/alert price SYM >|< threshold [proximity=1%|2.5|0.5atr14] [cooldown=15m] [max=N], /alert rules, or /alert delete id
+/alert price SYM >|< threshold (proximity=1%|2.5|0.5atr14) (cooldown=15m) (max=N), /alert rules, or /alert delete id
 /mute (minutes, default 60) - pause alert delivery
 /unmute - resume alert delivery
 /dividends - upcoming ex-dates and trailing 12-month totals for the watchlist
-/performance [1m|3m|6m|1y|all] (default 1y) - portfolio performance
+/performance (1m|3m|6m|1y|all, default 1y) - portfolio performance
 /portfolio - latest portfolio valuation
 /positions - current positions by value
 /allocation - allocation by instrument type, currency and exchange
 /drift - allocation targets vs. actual, with drift
-/rebalance [cash=<amount>] - rebalancing suggestions
+/rebalance (cash=<amount>) - rebalancing suggestions
 /paper - virtual paper-trading account
 /news SYM (n, default 5, max 10) - recent news for a ticker
 /screen gainers|losers|active (n, default 10, max 25) - predefined screener
-/tax [year] (default: current year) - estimated annual tax report
+/tax (year, default current year) - estimated annual tax report
 /lots SYM - open FIFO tax lots for a ticker
-/export operations|valuations|dividends [year] - download a CSV file
+/export operations|valuations|dividends (year, default current year) - download a CSV file
 /analyze SYM - price, returns, technicals and dividends for a ticker
 /compare SYM1 SYM2 - compare two tickers side by side
 /menu - inline keyboard for the main read-only commands

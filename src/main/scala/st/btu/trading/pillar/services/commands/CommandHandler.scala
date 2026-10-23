@@ -9,7 +9,10 @@ trait CommandHandler[F[_]] {
   /** The command this handler responds to. */
   def command: Command
 
-  /** Shown by `/help` and reused as the "Usage: ..." reply for malformed arguments. */
+  /** Shown by `/help` and reused as the "Usage: ..." reply for malformed arguments. Like every
+    * reply it passes through the Markdown sanitizer, which drops `[`, `]`, `*` and backticks and
+    * turns `_` into spaces, so optional parts go in parentheses.
+    */
   def usage: String
 
   /** Handles `args` for `chatId`. */

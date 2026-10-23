@@ -39,7 +39,8 @@ final class ExportHandler[F[_]: Monad: Clock](
 
   def command: Command = Command.Export
 
-  def usage: String = "/export operations|valuations|dividends [year] - download a CSV file"
+  def usage: String =
+    "/export operations|valuations|dividends (year, default current year) - download a CSV file"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     args match {

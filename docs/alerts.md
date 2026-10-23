@@ -426,7 +426,7 @@ not itself dispatch anything through `AlertDispatcher`.
 
 ## Commands that touch alerts
 
-`/mute [minutes]`, `/unmute`, `/alerts [n]`, `/alert price ...`/`/alert rules`/`/alert delete <id>`
+`/mute (minutes)`, `/unmute`, `/alerts (n)`, `/alert price ...`/`/alert rules`/`/alert delete <id>`
 (rule management), `/drift` (read-only preview of the same drift computation the process alerts
 from), `/paper` (the paper-trading account fed by paper-mode bindings, see
 [`paper-trading.md`](paper-trading.md)) - see [`telegram-commands.md`](telegram-commands.md).

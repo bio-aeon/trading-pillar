@@ -6,6 +6,7 @@ import com.melvinlow.json.schema.generic.{auto, semiauto}
 import io.circe.Decoder
 import io.circe.generic.semiauto.deriveDecoder
 import io.circe.syntax.*
+import st.btu.trading.pillar.services.commands.BacktestHandler
 
 import semiauto.given
 
@@ -46,8 +47,7 @@ private[mcp] final case class BacktestInput(
 
 private[mcp] object BacktestInput {
   val CommandDescription: String =
-    "A /backtest line: /backtest strategyId SYM[,SYM2,...] (years, default 2) " +
-      "(params=key:value,key:value). Several symbols run as one portfolio. " +
+    s"A /backtest line: ${BacktestHandler.Usage}. Several symbols run as one portfolio. " +
       s"${ToolNames.Query} with /strategies lists the strategy ids."
 
   implicit val schema: JsonSchemaEncoder[BacktestInput] = auto.derived

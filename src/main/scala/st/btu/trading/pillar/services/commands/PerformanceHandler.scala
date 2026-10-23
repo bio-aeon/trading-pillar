@@ -25,7 +25,7 @@ final class PerformanceHandler[F[_]: Monad: Clock](
 
   def command: Command = Command.Performance
 
-  def usage: String = "/performance [1m|3m|6m|1y|all] (default 1y) - portfolio performance"
+  def usage: String = "/performance (1m|3m|6m|1y|all, default 1y) - portfolio performance"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] = {
     val period = args.headOption.flatMap(Period.parse).getOrElse(Period.OneYear)

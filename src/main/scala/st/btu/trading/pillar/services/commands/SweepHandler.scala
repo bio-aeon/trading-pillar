@@ -31,7 +31,8 @@ final class SweepHandler[F[_]: Clock: Async](
   def command: Command = Command.Sweep
 
   def usage: String =
-    "/sweep strategyId SYM [years=2] key=from:to:step [key=from:to:step ...] - parameter sweep, top 5 by Sharpe"
+    s"/sweep strategyId SYM (years=N, default $DefaultYears) key=from:to:step " +
+      s"(more key=from:to:step) - parameter sweep, top $TopN by Sharpe"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     args match {
