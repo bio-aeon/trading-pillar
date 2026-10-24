@@ -2,7 +2,8 @@
 
 Package `st.btu.trading.pillar.models.market` (domain), `gateways.MarketDataSource` (contract),
 `gateways.yahoo` (Yahoo Finance implementation), `gateways.tcs` (Tinkoff Invest implementation),
-`gateways.MarketDataSources` (routes a ticker to the implementation its source setting selects),
+`gateways.MarketDataSources` (routes a ticker to the implementation its source setting selects,
+and to the Yahoo symbol or Tinkoff board that setting names),
 `gateways.InstrumentDirectory` (resolves a broker FIGI to an instrument),
 `services`/`processes` (sync loop), `storages` (persistence contracts - see
 [`storage-contracts.md`](storage-contracts.md)).
@@ -16,33 +17,42 @@ All in `st.btu.trading.pillar.models.market`:
 | `Ticker` | `opaque type Ticker = String` | Named `Ticker`, not `Symbol`, to avoid shadowing `scala.Symbol`. |
 | `Source` | enum: `Yahoo`, `Tinkoff`, `Binance` (`enumeratum` `StringEnumEntry`, values `"yahoo"`/`"tinkoff"`/`"binance"`) | `Yahoo` and `Tinkoff` each have a `MarketDataSource` implementation (see below); `Binance` does not yet. |
 | `ClassCode` | `opaque type ClassCode = String` | A broker's code for a trading board, e.g. `"TQBR"`. |
-| `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])` | Where one ticker's data comes from. `Tinkoff(None)` means the Tinkoff adapter's default board. `Binance` has no setting, so a ticker cannot be set to it. |
+| `YahooSymbol` | `opaque type YahooSymbol = String` | A symbol as Yahoo Finance knows an instrument, e.g. `"VOD.L"`; it can differ from the ticker the instrument goes by elsewhere (`VOD` at the broker). |
+| `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo(symbol: Option[YahooSymbol])`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])` | Where one ticker's data comes from. `Yahoo(None)` looks the ticker up on Yahoo as given and `Yahoo(Some(symbol))` asks Yahoo for `symbol` instead; `Tinkoff(None)` means the Tinkoff adapter's default board. `Binance` has no setting, so a ticker cannot be set to it. |
 | `TickerSource` | `TickerSource(ticker, setting: SourceSetting)` | The setting stored for a ticker. A ticker with none uses the router's default setting. |
 | `SourcedTicker` | `SourcedTicker(ticker, source: Source)` | A ticker paired with the source its stored data is read from; the key `DividendStorage.upcoming` takes. |
 | `BrokerInstrument` | `BrokerInstrument(figi: Figi, ticker, classCode: ClassCode, name: String, instrumentType: String, currency: Currency, updatedAt)` | A broker's own record of an instrument, found by FIGI. `currency` is the currency the instrument settles in. |
 | `Bar` | `Bar(ticker, date: LocalDate, open, high, low, close, adjClose, volume: Long, source)` | One daily OHLCV bar. All prices are `BigDecimal`. |
 | `Quote` | `Quote(ticker, price: BigDecimal, currency: Currency, asOf: ZonedDateTime, source)` | A single live/last price. |
-| `InstrumentInfo` | `InstrumentInfo(ticker, source: Source, board: Option[ClassCode], name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `source` is the source the metadata was read from; two sources can describe one ticker differently, in another currency for instance. `board` is the board it was read on (`None` for Yahoo, which has no boards); one source can describe a ticker differently on each board too. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
+| `InstrumentInfo` | `InstrumentInfo(ticker, origin: SourceSetting, name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `origin` is the setting the metadata was read under, with Tinkoff's board resolved: a Tinkoff adapter always reports `Tinkoff(Some(board))`, a Yahoo one `Yahoo(None)` or `Yahoo(Some(symbol))`. Two origins can describe one ticker differently, in another currency for instance: one source against another, one board against another, one Yahoo symbol against another. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
 | `WatchlistItem` | `WatchlistItem(accountId, ticker, enabled: Boolean, note: Option[String], createdAt)` | Drives the sync process; managed via the `/watchlist` command or the consumer's own tooling. It has no source of its own: which source serves its ticker is the ticker's `SourceSetting`. |
 | `DividendEvent` | `DividendEvent(ticker, exDate: LocalDate, amount: BigDecimal, currency: Option[Currency], source)` | One dividend ex-date event. `currency` is `None` when the source doesn't report one distinct from the instrument's trading currency. |
 | `MarketDataError` | sealed: `NotFound(ticker)`, `RateLimited(retryAfter: Option[FiniteDuration])`, `Transient(message, cause)`, `SourceNotConfigured(source: Source)`, `Other(message, cause)` | Raised (not returned as `Either`) by every `MarketDataSource` method. `SourceNotConfigured` is raised by the router, not by an adapter: a ticker's source has no adapter wired. |
 
 Every `currency` field is a `models.domain.Currency`, whose constructor normalises the code (see
 [`analytics.md`](analytics.md#rules), rule 10). Each adapter builds it from what its source reports,
-so Tinkoff's `rub` arrives as `RUB` and Yahoo's `GBp` stays `GBp`.
+so Tinkoff's `rub` arrives as `RUB`. The Yahoo adapter reports a minor unit such as `GBp` in its major
+currency, `GBP` (see [Minor units](#minor-units)).
+
+The tickers of a stored series, a watchlist, an alert or a backtest are always the bot's own. A
+Yahoo symbol only decides what is asked of Yahoo: every `Bar`, `Quote`, `DividendEvent` and
+`InstrumentInfo` is reported under the ticker, whatever symbol it was fetched as.
 
 ## `MarketDataSource[F[_]]`
 
 ```scala
 trait MarketDataSource[F[_]] {
-  def source: Source
-  def board: Option[ClassCode]  // the board tickers are looked up on; None for a source without boards
+  def origin: SourceSetting  // the setting this instance serves data under; callers read origin.source
   def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): F[List[Bar]]  // chronological
   def latestQuote(ticker: Ticker): F[Option[Quote]]
   def instrumentInfo(ticker: Ticker): F[Option[InstrumentInfo]]
   def dividends(ticker: Ticker, since: LocalDate, until: LocalDate): F[List[DividendEvent]]
 }
 ```
+
+`origin` is the provider together with what the instance looks tickers up by: the resolved board of a
+Tinkoff source, the Yahoo symbol of a Yahoo view (`None` when it looks the ticker up as given). The
+`InstrumentInfo` an instance returns carries the same `origin`.
 
 `dailyBars` and `dividends` raise a `MarketDataError` on failure (network, rate limit, unknown
 ticker, ...) rather than encoding failure in the return type; `dailyBars` returns bars in
@@ -66,15 +76,21 @@ object YahooApi {
 
 `dailyChart` calls `charts.getChart(ticker, Interval.\`1Day\`, since, until)`; `metadata` calls
 `charts.getHistoryMetadata(ticker)` - one request that also backs `latestQuote`
-(`regularMarketPrice`/`regularMarketTime`) and `instrumentInfo`.
+(`regularMarketPrice`/`regularMarketTime`) and `instrumentInfo`. The `ticker` argument of the three
+calls is the symbol Yahoo is asked for, which is the bot's ticker unless the setting names a
+[Yahoo symbol](#yahoo-symbols-yahoosymbols).
 
-`YahooMarketDataSource[F[_]]` implements `MarketDataSource[F]` on top of `YahooApi[F]`:
+`YahooMarketDataSource[F[_]]` implements `MarketDataSource[F]` on top of `YahooApi[F]`, and
+`YahooSymbols[F]` (see [Yahoo symbols](#yahoo-symbols-yahoosymbols)):
 
-- **Metadata caching**: `YahooMetadata` is cached per `Ticker` with a TTL (`DefaultMetadataTtl =
-  6.hours`); a cache miss or expiry triggers a fresh `api.metadata` call. `instrumentInfo` always
-  serves from this cache (so its `figi`/`name` fields are always `None` - Yahoo metadata has
-  neither) and carries `source = Source.Yahoo`. Yahoo has no boards, so `board` is `None`, in the
-  info and on `MarketDataSource.board`.
+- **Metadata caching**: `YahooMetadata` is cached per Yahoo symbol, the one actually asked for, with
+  a TTL (`DefaultMetadataTtl = 6.hours`); a cache miss or expiry triggers a fresh `api.metadata`
+  call. `instrumentInfo` always serves from this cache (so its `figi`/`name` fields are always
+  `None` - Yahoo metadata has neither) and carries `origin = SourceSetting.Yahoo(symbol)`, the same
+  as `MarketDataSource.origin`.
+- **Currency**: `Quote.currency` and `InstrumentInfo.currency` are the currency Yahoo reports for
+  the instrument, with a minor unit replaced by its major currency (see
+  [Minor units](#minor-units)).
 - **Date derivation**: each `YahooQuote.datetime` (UTC) is converted to a `LocalDate` in the
   instrument's *exchange* timezone (`meta.exchangeTimezoneName`), not UTC or the caller's zone.
   When two quotes fall on the same exchange-local date, the later one in the source list wins.
@@ -134,9 +150,57 @@ is converted `Double -> BigDecimal` the same way as OHLC prices
 (`java.math.BigDecimal.valueOf(d)`, scaled to 6 decimals), and errors are mapped through the same
 `YFinanceError -> MarketDataError` table as `dailyBars`/`metadata`.
 
+### Yahoo symbols (`YahooSymbols`)
+
+A broker can list an instrument under a ticker that Yahoo does not know it by: `VOD` at the broker
+is `VOD.L` on Yahoo. A ticker's setting can therefore name the symbol to ask Yahoo for, and the
+source implements `gateways.YahooSymbols`, which is what the router asks for:
+
+```scala
+trait YahooSymbols[F[_]] {
+  def onSymbol(symbol: Option[YahooSymbol]): MarketDataSource[F]
+}
+```
+
+`onSymbol(Some(symbol))` returns a view of the source that asks Yahoo for `symbol`; `onSymbol(None)`
+returns one that asks for the ticker it is given, as the source itself does. A view differs from
+the source in the symbol it sends to `YahooApi` and in nothing else: it reports every bar, quote,
+dividend and `InstrumentInfo` under the ticker it was given, maps a Yahoo error to that ticker
+(`NotFound(ticker)`), and its `origin` is `SourceSetting.Yahoo(symbol)`. All views share the
+source's metadata cache, which is keyed by the Yahoo symbol asked for: two tickers set to one symbol
+share an entry, while one ticker looked up as given and again under a symbol keeps two. News and
+screeners are not affected: `/news` and `/screen` query Yahoo with the ticker as given.
+
+### Minor units
+
+Yahoo quotes some exchanges in a minor unit of a currency and marks it by the case of the currency
+code:
+
+| Yahoo code | Unit | Reported as |
+|---|---|---|
+| `GBp` | pence (London) | `GBP` |
+| `ZAc` | cents (Johannesburg) | `ZAR` |
+| `ILA` | agorot (Tel Aviv) | `ILS` |
+
+For an instrument whose currency Yahoo reports as one of these, the adapter reports the major
+currency and divides by 100:
+
+- bars: open, high, low, close and adjusted close; the volume is unchanged;
+- the quote's price;
+- dividend amounts. A dividend whose own currency is a minor unit is converted the same way. A
+  dividend without a currency of its own is in the instrument's, so it is converted when that is a
+  minor unit and then carries the major currency; otherwise it stays without one. A dividend with a
+  major currency of its own is left alone.
+
+Amounts keep the six-decimal scale after dividing, rounded half up. Valuation, positions and paper
+trading therefore see the unit the broker's operations use (ISO 4217 has no code for pence), and an
+alert threshold for such a ticker is written in the major currency. The case matters: `GBP` is
+pounds and is not divided. The table is Yahoo's convention and lives in the adapter;
+`models.domain.Currency` keeps any code as given.
+
 ## Tinkoff implementation (`TcsMarketDataSource`)
 
-`gateways.tcs.TcsMarketDataSource` is a second `MarketDataSource[F[_]]` (`source = Source.Tinkoff`),
+`gateways.tcs.TcsMarketDataSource` is a second `MarketDataSource[F[_]]` (`origin.source = Source.Tinkoff`),
 built on the Tinkoff Invest gRPC API instead of yfinance4s. It is the source for MOEX-listed tickers
 (e.g. `SBER`) that Yahoo Finance no longer serves - see "Known limitation" below.
 
@@ -164,8 +228,8 @@ Bearer-token `Metadata` interceptor built from a `tcs.Token`):
 
 `instrumentInfo` is built entirely from the cached `Instrument` plus `config.zone.getId` as the
 timezone (Tinkoff's API has no per-instrument timezone field); unlike the Yahoo source, `figi` is
-always populated, `source` is `Source.Tinkoff`, and `board` (here and on `MarketDataSource.board`)
-is the board the source or view looks tickers up on.
+always populated, and `origin` (here and on `MarketDataSource.origin`) is
+`SourceSetting.Tinkoff(Some(board))` for the board the source or view looks tickers up on.
 
 Prices arrive as Tinkoff's `Quotation` (`units` + `nano`, a fixed-point decimal split across two
 integer fields) and are converted to `BigDecimal` as `units + nano / 1e9`, scaled to 6 decimals
@@ -206,12 +270,12 @@ trait TinkoffBoards[F[_]] {
 
 `onBoard(Some(code))` returns a view of the source that looks tickers up on board `code`;
 `onBoard(None)` returns one on `TcsMarketDataConfig.defaultClassCode`, and so does the source
-itself. The view's `MarketDataSource.board` is the board it looks tickers up on, and so is the
-`board` of the metadata it reads. A view differs from the source in the board it sends to
-`GetInstrumentBy` and in nothing else: candles, quotes, dividends and error mapping are the same.
-All views share the source's FIGI cache, which is keyed by `(Ticker, ClassCode)`, so a ticker is
-resolved once per board however many views ask for it, and the same ticker on two boards resolves to
-two instruments.
+itself. The view's `MarketDataSource.origin` is `SourceSetting.Tinkoff(Some(board))` for the board it
+looks tickers up on, and so is the `origin` of the metadata it reads. A view differs from the source
+in the board it sends to `GetInstrumentBy` and in nothing else: candles, quotes, dividends and error
+mapping are the same. All views share the source's FIGI cache, which is keyed by
+`(Ticker, ClassCode)`, so a ticker is resolved once per board however many views ask for it, and the
+same ticker on two boards resolves to two instruments.
 
 Construction:
 
@@ -297,11 +361,12 @@ trait MarketDataSources[F[_]] {
 }
 ```
 
-`MarketDataSourcesImpl(yahoo: Option[MarketDataSource[F]], tinkoff: Option[TinkoffBoards[F]], settings: TickerSourceStorage[F], default: SourceSetting)`:
+`MarketDataSourcesImpl(yahoo: Option[YahooSymbols[F]], tinkoff: Option[TinkoffBoards[F]], settings: TickerSourceStorage[F], default: SourceSetting)`:
 
 - `settingFor` is the setting `TickerSourceStorage.find(ticker)` holds for the ticker, or `default`
-  when it holds none (the README quick start uses `SourceSetting.Yahoo`).
-- `forTicker` matches that setting exhaustively: `SourceSetting.Yahoo` gives the Yahoo adapter and
+  when it holds none (the README quick start uses `SourceSetting.Yahoo(None)`).
+- `forTicker` matches that setting exhaustively: `SourceSetting.Yahoo(symbol)` gives
+  `yahoo.onSymbol(symbol)`, so a ticker set to a Yahoo symbol is looked up as that symbol, and
   `SourceSetting.Tinkoff(classCode)` gives `tinkoff.onBoard(classCode)`, so a ticker set to a board
   is served from that board. When the setting's source has no adapter wired (the option is `None`,
   e.g. no Tinkoff token is configured), it raises `MarketDataError.SourceNotConfigured(source)`,
@@ -343,14 +408,15 @@ unreadable settings storage, fails the call. Then, per symbol:
 
 1. Read the ticker's stored metadata once, with `InstrumentStorage.find`. A failing read is logged
    as a warning and the record counts as absent. The **origin** of the stored data has changed when
-   a record exists and its `source` or `board` differs from the adapter's (`MarketDataSource.source`
-   and `MarketDataSource.board`).
+   a record exists and its `origin` differs from the adapter's (`InstrumentInfo.origin` against
+   `MarketDataSource.origin`): another source, another board, another Yahoo symbol, or a Yahoo
+   symbol added or dropped.
 2. Unless the origin changed, look up `PriceHistoryStorage.lastBarDate(ticker, source)`.
 3. `since = lastBarDate - overlapDays` if bars already exist and the origin did not change, else
    `today - backfillYears` (a full backfill). The `overlapDays` window re-fetches a few recent days
    on every run so a late provider-side correction to a recent bar is picked up. A changed origin
-   refetches the whole window because bars and dividends are stored per source, not per board, so
-   the ones already stored may have been read from another board.
+   refetches the whole window because bars and dividends are stored per source, not per board or
+   Yahoo symbol, so the ones already stored may have been read from another board or symbol.
 4. If `since` is after `today`, no fetch happens (an empty `SyncReport`, `dividends = 0`).
 5. Otherwise `source.dailyBars(ticker, since, today)` is fetched and every bar upserted via
    `PriceHistoryStorage.upsertBars` (keyed by `(ticker, source, date)` - an upsert, so overlap days
@@ -362,16 +428,17 @@ unreadable settings storage, fails the call. Then, per symbol:
    `SyncReport.dividends` is `0` for that run.
 7. Instrument metadata is refreshed if it is missing, older than `metadataRefresh`, or its origin
    changed, **after** the bar (and dividends) sync. The last condition makes switching a ticker's
-   source or board, and switching it back, refresh the metadata on the next sync, instead of
-   leaving the old origin's currency, name and exchange in place until `metadataRefresh` passes.
+   source, board or Yahoo symbol, and switching it back, refresh the metadata on the next sync,
+   instead of leaving the old origin's currency, name and exchange in place until
+   `metadataRefresh` passes.
    The refreshed record is also what marks the new origin as synced: a sync that fails before it
    sees the old origin again and refetches the window again, as does every sync of a ticker whose
    source returns no metadata. A metadata failure is logged as a warning and does not fail
    `syncSymbol`.
 
 The refetch of a changed origin replaces only the days inside the window. Bars older than the
-backfill window that a previous board stored stay in the series, because bars are keyed by
-`(ticker, source, date)` and nothing deletes them.
+backfill window that a previous board or Yahoo symbol stored stay in the series, because bars are
+keyed by `(ticker, source, date)` and nothing deletes them.
 
 `processes.PriceHistorySyncProcessImpl` (mirrors `TcsPortfolioSyncProcessImpl`: `ProcessContext` /
 `tofu.WithLocal`, tofu logging, self-restart on an uncaught loop failure):
@@ -508,7 +575,8 @@ MarketDataError` with the same table `YahooMarketDataSource` uses (`TickerNotFou
 NotFound`, `RateLimited -> RateLimited`, `NetworkError -> Transient`, `DataParseError -> Other`,
 anything else -> `Other`).
 
-See [`telegram-commands.md`](telegram-commands.md#news) for `/news`.
+`/news` searches Yahoo for the ticker as given; a Yahoo symbol in the ticker's setting is not
+applied there. See [`telegram-commands.md`](telegram-commands.md#news) for `/news`.
 
 ## Screener
 

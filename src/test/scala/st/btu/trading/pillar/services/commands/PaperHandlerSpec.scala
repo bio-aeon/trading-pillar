@@ -31,7 +31,9 @@ class PaperHandlerSpec extends Specification with CatsEffect {
       tgGateway <- Fakes.tgGateway()
       paperStorage <- PaperFakes.paperStorage(account.toList, positions, orders)
       marketData <- MarketDataFakes.marketDataSource(quotes = quotes)
-      sources <- MarketDataFakes.marketDataSources(yahoo = Some(marketData))
+      sources <- MarketDataFakes.marketDataSources(yahoo =
+        Some(MarketDataFakes.yahooSymbolsOver(marketData))
+      )
     } yield (new PaperHandler[IO](tgGateway, paperStorage, sources, accountId), tgGateway)
 
   private def filledOrder(

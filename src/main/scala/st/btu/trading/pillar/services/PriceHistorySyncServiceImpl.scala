@@ -44,13 +44,13 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
       stored_? <- storedMetadata(item.ticker)
       lastBarDate_? <-
         if (stored_?.exists(originChanged(_, source))) F.pure(Option.empty[LocalDate])
-        else priceHistory.lastBarDate(item.ticker, source.source)
+        else priceHistory.lastBarDate(item.ticker, source.origin.source)
       since = lastBarDate_?
         .map(_.minusDays(config.overlapDays.toLong))
         .getOrElse(today.minusYears(config.backfillYears.toLong))
       report <-
         if (since.isAfter(today))
-          F.pure(SyncReport(item.ticker, source.source, 0, 0, 0, since, today))
+          F.pure(SyncReport(item.ticker, source.origin.source, 0, 0, 0, since, today))
         else syncBars(source, item.ticker, since, today)
       _ <- refreshMetadataIfStale(source, item.ticker, stored_?)
     } yield report
@@ -65,7 +65,15 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
       bars <- source.dailyBars(ticker, since, until)
       upserted <- priceHistory.upsertBars(bars)
       dividendCount <- syncDividends(source, ticker, since, until)
-    } yield SyncReport(ticker, source.source, bars.size, upserted, dividendCount, since, until)
+    } yield SyncReport(
+      ticker,
+      source.origin.source,
+      bars.size,
+      upserted,
+      dividendCount,
+      since,
+      until
+    )
 
   // Same window as the bars just synced. A dividends failure must not fail the bar sync (which
   // already succeeded by this point): log a warning and report zero dividends synced.
@@ -97,8 +105,8 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
       )
     )(e => warnCause"Failed to refresh instrument metadata for ${ticker.value}" (e))
 
-  // Metadata read from another source or board describes the ticker as that one does, so a change
-  // of origin refreshes it at once, whatever its age.
+  // Metadata read from another source, board or Yahoo symbol describes the ticker as that one does,
+  // so a change of origin refreshes it at once, whatever its age.
   private def stale(
     info: InstrumentInfo,
     source: MarketDataSource[F],
@@ -107,10 +115,11 @@ final class PriceHistorySyncServiceImpl[F[_]: Logging] private (
     originChanged(info, source) ||
       info.updatedAt.isBefore(now.minusNanos(config.metadataRefresh.toNanos))
 
-  // Bars are stored per source, not per board, so those stored under another origin may have been
-  // read from another board: a changed origin refetches the whole window to replace them.
+  // Bars are stored per source, not per board or symbol, so those stored under another origin may
+  // have been read from another board or symbol: a changed origin refetches the whole window to
+  // replace them.
   private def originChanged(info: InstrumentInfo, source: MarketDataSource[F]): Boolean =
-    info.source != source.source || info.board != source.board
+    info.origin != source.origin
 
   private def refreshMetadata(source: MarketDataSource[F], ticker: Ticker): F[Unit] =
     source.instrumentInfo(ticker).flatMap {

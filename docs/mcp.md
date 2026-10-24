@@ -59,15 +59,27 @@ Metadata: read from yahoo, currency RUB, updated 3 days ago
 Metadata origin: differs from the source setting; once an adapter is wired, the sync re-reads the metadata and refetches the bars
 ```
 
+A ticker set to a Yahoo symbol shows it wherever the setting is named:
+
+```
+VOD
+Source setting: yahoo, symbol VOD.L (set for this ticker)
+Adapter: wired (yahoo, symbol VOD.L)
+Watchlist: not on the watchlist
+Stored bars, latest date: yahoo 2026-10-16, tinkoff none
+Metadata: read from yahoo, symbol VOD.L, currency GBP, updated 1 hour ago
+Metadata origin: matches the source setting
+```
+
 - *Source setting* is the setting stored for the ticker, or the default the router falls back to.
 - *Adapter* says whether `MarketDataSources.forTicker` finds an adapter, and for which source and
-  board. A source with no adapter is reported, not raised.
+  board or Yahoo symbol. A source with no adapter is reported, not raised.
 - *Watchlist* shows the entry of the account in `McpPorts.accountId` only.
 - *Stored bars* lists the latest bar date per source a ticker can be set to.
-- *Metadata origin* tells whether the stored metadata was read from the source and board the sync
-  would read it from now. The sync re-reads metadata and refetches the bars when it differs. With
-  no adapter wired the comparison uses the setting, and a Tinkoff setting without a board compares
-  the source alone.
+- *Metadata origin* tells whether the stored metadata was read under the setting the sync would
+  read it under now, the source with its board or Yahoo symbol. The sync re-reads metadata and
+  refetches the bars when it differs. With no adapter wired the comparison uses the setting, and a
+  Tinkoff setting without a board compares the source alone.
 
 ### `live_quote`
 
@@ -103,7 +115,7 @@ only. `bot_command` runs any line.
 
 | Effect | Lines |
 |---|---|
-| `Changing` | `/watchlist add SYM ...` and `/watchlist rm SYM`; `/source SYM yahoo`, `/source SYM tinkoff (BOARD)` and `/source SYM default`; `/alert price SYM ...` with a rule that parses and `/alert delete ID` with a numeric id; `/mute` and `/unmute` with any arguments |
+| `Changing` | `/watchlist add SYM ...` and `/watchlist rm SYM`; `/source SYM yahoo (SYMBOL)`, `/source SYM tinkoff (BOARD)` and `/source SYM default`; `/alert price SYM ...` with a rule that parses and `/alert delete ID` with a numeric id; `/mute` and `/unmute` with any arguments |
 | `Additive` | `/backtest` with a strategy and a ticker, which saves a run |
 | `ReadOnly` | every other command, among them `/sweep` (computes only), `/export` and `/help`; the read forms `/watchlist`, `/source` and `/source SYM`, `/alert rules`; and any line the handler would answer with its usage text alone, such as `/watchlist add` without a symbol or `/backtest` with one argument |
 

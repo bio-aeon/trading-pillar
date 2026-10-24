@@ -375,7 +375,7 @@ object PortfolioValuationServiceImpl {
       source: Source,
       stored: Option[InstrumentInfo]
     ): HeldInstrument =
-      new HeldInstrument(broker, source, stored.filter(_.source == source))
+      new HeldInstrument(broker, source, stored.filter(_.origin.source == source))
   }
 
   private final case class PricingContext(

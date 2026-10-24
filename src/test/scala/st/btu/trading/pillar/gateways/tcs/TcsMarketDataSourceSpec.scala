@@ -223,14 +223,13 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           source <- buildSource(instruments, marketData)
           info <- source.instrumentInfo(ticker)
         } yield info must beSome[InstrumentInfo].like { case i =>
-          i.source must_== Source.Tinkoff
+          i.origin must_== SourceSetting.Tinkoff(Some(tqbr))
           i.name must beSome("Sberbank")
           i.instrumentType must_== "share"
           i.currency must_== Currency("RUB")
           i.exchange must_== "MOEX"
           i.timezone must_== "Europe/Moscow"
           i.figi must beSome(figi)
-          i.board must beSome(tqbr)
         }
       }
     }
@@ -257,7 +256,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
         } yield calls.map(_.classCode) must_== List("TQBR")
       }
 
-      "names the requested board in its metadata and as its own board" >> {
+      "names the requested board in its metadata and as its own origin" >> {
         for {
           instruments <- workingInstruments
           marketData <- TcsMarketDataFakes.marketDataService()
@@ -265,8 +264,8 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           view = source.onBoard(Some(cets))
           info <- view.instrumentInfo(ticker)
         } yield {
-          view.board must beSome(cets)
-          info.flatMap(_.board) must beSome(cets)
+          view.origin must_== SourceSetting.Tinkoff(Some(cets))
+          info.map(_.origin) must beSome(SourceSetting.Tinkoff(Some(cets)))
         }
       }
 
@@ -278,8 +277,8 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           view = source.onBoard(None)
           info <- view.instrumentInfo(ticker)
         } yield {
-          view.board must beSome(tqbr)
-          info.flatMap(_.board) must beSome(tqbr)
+          view.origin must_== SourceSetting.Tinkoff(Some(tqbr))
+          info.map(_.origin) must beSome(SourceSetting.Tinkoff(Some(tqbr)))
         }
       }
 

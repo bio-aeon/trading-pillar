@@ -43,7 +43,8 @@ class AlertProcessImplSpec extends Specification with CatsEffect {
         bindingStorage <- AlertFakes.strategyBindingStorage(bindings)
         ruleStorage <- AlertFakes.alertRuleStorage(rules)
         priceHistory <- MarketDataFakes.priceHistoryStorage()
-        sources <- MarketDataFakes.marketDataSources(yahoo = Some(marketDataSource))
+        sources <- MarketDataFakes
+          .marketDataSources(yahoo = Some(MarketDataFakes.yahooSymbolsOver(marketDataSource)))
         process <- AlertProcessImpl.create[IO, IO](
           bindingStorage,
           ruleStorage,

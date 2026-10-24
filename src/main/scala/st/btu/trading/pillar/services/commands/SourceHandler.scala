@@ -20,7 +20,8 @@ final class SourceHandler[F[_]: Monad](
   def command: Command = Command.Source
 
   def usage: String =
-    "/source, /source SYM, /source SYM yahoo, /source SYM tinkoff (BOARD), or /source SYM default"
+    "/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), or " +
+      "/source SYM default"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     args match {

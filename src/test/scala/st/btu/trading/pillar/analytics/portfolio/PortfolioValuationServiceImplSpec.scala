@@ -57,12 +57,11 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
   private def info(
     ticker: Ticker,
     currency: String = "RUB",
-    source: Source = Source.Yahoo
+    origin: SourceSetting = SourceSetting.Yahoo(None)
   ): InstrumentInfo =
     InstrumentInfo(
       ticker,
-      source,
-      None,
+      origin,
       None,
       "share",
       Currency(currency),
@@ -226,7 +225,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
               ops,
               directory = List(brokerInstrument("F5", aapl)),
               bars = List(bar(aapl, d0, 60)),
-              settings = List(TickerSource(aapl, SourceSetting.Yahoo))
+              settings = List(TickerSource(aapl, SourceSetting.Yahoo(None)))
             )
             series <- service.dailySeries(accountId, d0, d0)
           } yield {
@@ -322,7 +321,8 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
             service <- buildService(
               ops,
               directory = List(brokerInstrument("F7", ddd, currency = "USD")),
-              instruments = Map(ddd -> info(ddd, currency = "RUB", source = Source.Yahoo)),
+              instruments =
+                Map(ddd -> info(ddd, currency = "RUB", origin = SourceSetting.Yahoo(None))),
               bars = bars,
               settings = List(TickerSource(ddd, SourceSetting.Tinkoff(None)))
             )
@@ -442,7 +442,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         "keeps a minor-unit code such as GBp apart from GBP, leaving the position unpriced" >> {
           val vod = Ticker("VOD")
           val ops = depositAndBuy(d0, "F9", quantity = 2, cost = 100)
-          // VOD is quoted in pence; the bars of the rate of pounds must not be used for it.
+          // VOD's metadata is in pence; the bars of the rate of pounds must not be used for it.
           val bars = List(bar(vod, d0, 50), bar(Ticker("GBPRUB=X"), d0, 120))
           for {
             service <- buildService(

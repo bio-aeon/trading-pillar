@@ -35,7 +35,9 @@ class McpToolsSpec extends Specification with CatsEffect {
   private val otherAccountId = AccountId(2)
   private val aapl = Ticker("AAPL")
   private val sber = Ticker("SBER")
+  private val vod = Ticker("VOD")
   private val tqbr = ClassCode("TQBR")
+  private val vodL = YahooSymbol("VOD.L")
   private val createdAt = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
 
   private def answered(text: String): CallTool.Response =
@@ -52,17 +54,16 @@ class McpToolsSpec extends Specification with CatsEffect {
 
   private def metadata(
     ticker: Ticker,
-    source: Source,
-    board: Option[ClassCode],
-    updatedAt: String
+    origin: SourceSetting,
+    updatedAt: String,
+    currency: String = "RUB"
   ): InstrumentInfo =
     InstrumentInfo(
       ticker,
-      source,
-      board,
+      origin,
       None,
       "EQUITY",
-      Currency("RUB"),
+      Currency(currency),
       "MISX",
       "Europe/Moscow",
       None,
@@ -71,7 +72,7 @@ class McpToolsSpec extends Specification with CatsEffect {
 
   // Ports over fresh fakes. The command runner is one that must not be used unless given.
   private def environment(
-    yahoo: Option[MarketDataSource[IO]] = None,
+    yahoo: Option[YahooSymbols[IO]] = None,
     tinkoff: Option[TinkoffBoards[IO]] = None,
     stored: List[TickerSource] = Nil,
     watchlist: List[WatchlistItem] = Nil,
@@ -84,7 +85,7 @@ class McpToolsSpec extends Specification with CatsEffect {
       watchlistStorage <- MarketDataFakes.watchlistStorage(watchlist)
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       instrumentStorage <- MarketDataFakes.instrumentStorage(instruments)
-      sources = new MarketDataSourcesImpl[IO](yahoo, tinkoff, settings, SourceSetting.Yahoo)
+      sources = new MarketDataSourcesImpl[IO](yahoo, tinkoff, settings, SourceSetting.Yahoo(None))
     } yield McpEnvironment(
       McpPorts(
         sources,
@@ -109,7 +110,7 @@ class McpToolsSpec extends Specification with CatsEffect {
       watchlist <- MarketDataFakes.watchlistStorage()
       priceHistory <- MarketDataFakes.priceHistoryStorage()
       instruments <- MarketDataFakes.instrumentStorage()
-      sources = new MarketDataSourcesImpl[IO](None, None, settings, SourceSetting.Yahoo)
+      sources = new MarketDataSourcesImpl[IO](None, None, settings, SourceSetting.Yahoo(None))
       handlers = CommandHandlers.standard[IO](
         gateway,
         tcsFacade,
@@ -241,13 +242,14 @@ class McpToolsSpec extends Specification with CatsEffect {
 
       "reports a Tinkoff board setting with no adapter, bars and metadata of another origin" >> {
         for {
-          yahoo <- MarketDataFakes.marketDataSource(Source.Yahoo)
+          yahoo <- MarketDataFakes.marketDataSource()
           env <- environment(
-            yahoo = Some(yahoo),
+            yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
             stored = List(TickerSource(sber, SourceSetting.Tinkoff(Some(tqbr)))),
             watchlist = List(watchlistItem(sber, accountId, Some("core holding"))),
             bars = List(bar(sber, LocalDate.of(2026, 3, 2), Source.Yahoo)),
-            instruments = Map(sber -> metadata(sber, Source.Yahoo, None, "2026-10-16T10:00:00Z"))
+            instruments =
+              Map(sber -> metadata(sber, SourceSetting.Yahoo(None), "2026-10-16T10:00:00Z"))
           )
           tools <- toolsOver(env)
           response <- McpFakes.call(tickerStatus(tools), "ticker" -> "sber")
@@ -267,8 +269,8 @@ class McpToolsSpec extends Specification with CatsEffect {
 
       "reports the Yahoo default of a ticker with no data" >> {
         for {
-          yahoo <- MarketDataFakes.marketDataSource(Source.Yahoo)
-          env <- environment(yahoo = Some(yahoo))
+          yahoo <- MarketDataFakes.marketDataSource()
+          env <- environment(yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)))
           tools <- toolsOver(env)
           response <- McpFakes.call(tickerStatus(tools), "ticker" -> "AAPL")
         } yield response must_== answered("""AAPL
@@ -281,13 +283,13 @@ class McpToolsSpec extends Specification with CatsEffect {
 
       "reports the adapter's board and matching metadata of a Tinkoff ticker" >> {
         for {
-          tinkoffSource <- MarketDataFakes.marketDataSource(Source.Tinkoff, onBoard = Some(tqbr))
+          tinkoffSource <- MarketDataFakes.marketDataSource(SourceSetting.Tinkoff(Some(tqbr)))
           env <- environment(
             tinkoff = Some(MarketDataFakes.tinkoffBoardsOver(tinkoffSource)),
             stored = List(TickerSource(sber, SourceSetting.Tinkoff(None))),
             bars = List(bar(sber, LocalDate.of(2026, 10, 16), Source.Tinkoff)),
             instruments =
-              Map(sber -> metadata(sber, Source.Tinkoff, Some(tqbr), "2026-10-19T09:00:00Z"))
+              Map(sber -> metadata(sber, SourceSetting.Tinkoff(Some(tqbr)), "2026-10-19T09:00:00Z"))
           )
           tools <- toolsOver(env)
           response <- McpFakes.call(tickerStatus(tools), "ticker" -> "SBER")
@@ -300,11 +302,37 @@ class McpToolsSpec extends Specification with CatsEffect {
             |Metadata origin: matches the source setting""".stripMargin)
       }
 
+      "reports the Yahoo symbol of an aliased ticker in its setting, adapter and metadata" >> {
+        for {
+          env <- environment(
+            yahoo = Some(MarketDataFakes.symbolViews),
+            stored = List(TickerSource(vod, SourceSetting.Yahoo(Some(vodL)))),
+            bars = List(bar(vod, LocalDate.of(2026, 10, 16), Source.Yahoo)),
+            instruments = Map(
+              vod -> metadata(
+                vod,
+                SourceSetting.Yahoo(Some(vodL)),
+                "2026-10-19T09:00:00Z",
+                currency = "GBP"
+              )
+            )
+          )
+          tools <- toolsOver(env)
+          response <- McpFakes.call(tickerStatus(tools), "ticker" -> "vod")
+        } yield response must_== answered("""VOD
+            |Source setting: yahoo, symbol VOD.L (set for this ticker)
+            |Adapter: wired (yahoo, symbol VOD.L)
+            |Watchlist: not on the watchlist
+            |Stored bars, latest date: yahoo 2026-10-16, tinkoff none
+            |Metadata: read from yahoo, symbol VOD.L, currency GBP, updated 1 hour ago
+            |Metadata origin: matches the source setting""".stripMargin)
+      }
+
       "shows only the watchlist entry of the configured account" >> {
         for {
-          yahoo <- MarketDataFakes.marketDataSource(Source.Yahoo)
+          yahoo <- MarketDataFakes.marketDataSource()
           env <- environment(
-            yahoo = Some(yahoo),
+            yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
             watchlist = List(watchlistItem(aapl, otherAccountId, Some("not mine")))
           )
           tools <- toolsOver(env)
@@ -335,8 +363,8 @@ class McpToolsSpec extends Specification with CatsEffect {
 
       def callWith(result: IO[Option[Quote]], ticker: String = "AAPL"): IO[CallTool.Response] =
         for {
-          yahoo <- MarketDataFakes.marketDataSource(Source.Yahoo, quotes = Map(aapl -> result))
-          env <- environment(yahoo = Some(yahoo))
+          yahoo <- MarketDataFakes.marketDataSource(quotes = Map(aapl -> result))
+          env <- environment(yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)))
           tools <- toolsOver(env)
           response <- McpFakes.call(liveQuote(tools), "ticker" -> ticker)
         } yield response
@@ -357,9 +385,9 @@ class McpToolsSpec extends Specification with CatsEffect {
 
       "reports a source with no adapter wired" >> {
         for {
-          yahoo <- MarketDataFakes.marketDataSource(Source.Yahoo)
+          yahoo <- MarketDataFakes.marketDataSource()
           env <- environment(
-            yahoo = Some(yahoo),
+            yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
             stored = List(TickerSource(aapl, SourceSetting.Tinkoff(None)))
           )
           tools <- toolsOver(env)

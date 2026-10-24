@@ -5,10 +5,6 @@ import st.btu.trading.pillar.services.commands.SourceSettings
 
 import java.time.{Duration, Instant, LocalDate}
 
-// Where stored data came from, or where an adapter reads from: a source and, for a source that
-// tells boards apart, a board.
-private[mcp] final case class Origin(source: Source, board: Option[ClassCode])
-
 private[mcp] final case class LastBar(source: Source, date: Option[LocalDate])
 
 // What the bot knows about one ticker, gathered for the report.
@@ -16,7 +12,7 @@ private[mcp] final case class TickerStatus(
   ticker: Ticker,
   storedSetting: Option[TickerSource],
   setting: SourceSetting,
-  adapter: Option[Origin],
+  adapter: Option[SourceSetting],
   watchlistEntry: Option[WatchlistItem],
   lastBars: List[LastBar],
   metadata: Option[InstrumentInfo],
@@ -52,7 +48,7 @@ private[mcp] object TickerStatus {
 
   private def adapterLine(status: TickerStatus): String =
     status.adapter match {
-      case Some(origin) => s"Adapter: wired (${describe(origin)})"
+      case Some(origin) => s"Adapter: wired (${SourceSettings.describe(origin)})"
       case None =>
         s"Adapter: none wired for ${status.setting.source.value}, so the sync skips this ticker"
     }
@@ -75,15 +71,15 @@ private[mcp] object TickerStatus {
     status.metadata match {
       case None => List("Metadata: none stored")
       case Some(info) =>
-        val origin = Origin(info.source, info.board)
         val age = describeAge(Duration.between(info.updatedAt.toInstant, status.now))
+        val origin = SourceSettings.describe(info.origin)
         List(
-          s"Metadata: read from ${describe(origin)}, currency ${info.currency.value}, updated $age",
-          originLine(status, origin)
+          s"Metadata: read from $origin, currency ${info.currency.value}, updated $age",
+          originLine(status, info.origin)
         )
     }
 
-  private def originLine(status: TickerStatus, metadataOrigin: Origin): String =
+  private def originLine(status: TickerStatus, metadataOrigin: SourceSetting): String =
     if (originMatches(status, metadataOrigin)) "Metadata origin: matches the source setting"
     else if (status.adapter.isDefined)
       "Metadata origin: differs from the source setting, " +
@@ -95,7 +91,7 @@ private[mcp] object TickerStatus {
   // The sync compares the metadata with the adapter that serves the ticker. Without an adapter the
   // setting is all there is to compare with, and a Tinkoff setting that names no board leaves the
   // board open.
-  private def originMatches(status: TickerStatus, metadataOrigin: Origin): Boolean = {
+  private def originMatches(status: TickerStatus, metadataOrigin: SourceSetting): Boolean = {
     val expected = status.adapter.orElse(settingOrigin(status.setting))
     expected match {
       case Some(origin) => origin == metadataOrigin
@@ -103,15 +99,11 @@ private[mcp] object TickerStatus {
     }
   }
 
-  private def settingOrigin(setting: SourceSetting): Option[Origin] =
+  private def settingOrigin(setting: SourceSetting): Option[SourceSetting] =
     setting match {
-      case SourceSetting.Yahoo => Some(Origin(Source.Yahoo, None))
-      case SourceSetting.Tinkoff(Some(board)) => Some(Origin(Source.Tinkoff, Some(board)))
+      case SourceSetting.Yahoo(_) | SourceSetting.Tinkoff(Some(_)) => Some(setting)
       case SourceSetting.Tinkoff(None) => None
     }
-
-  private def describe(origin: Origin): String =
-    origin.source.value + origin.board.fold("")(board => s", board ${board.value}")
 
   private def describeAge(age: Duration): String = {
     val nonNegative = if (age.isNegative) Duration.ZERO else age

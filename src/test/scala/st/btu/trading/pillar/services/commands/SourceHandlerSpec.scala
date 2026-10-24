@@ -4,7 +4,7 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
-import st.btu.trading.pillar.models.market.{ClassCode, SourceSetting, Ticker, TickerSource}
+import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{Fakes, MarketDataFakes}
 
@@ -18,11 +18,13 @@ class SourceHandlerSpec extends Specification with CatsEffect {
 
   private val chatId = ChatId(1L)
   private val sber = Ticker("SBER")
+  private val vod = Ticker("VOD")
   private val cets = ClassCode("CETS")
+  private val vodL = YahooSymbol("VOD.L")
 
   private def build(
     stored: List[TickerSource] = Nil,
-    default: SourceSetting = SourceSetting.Yahoo
+    default: SourceSetting = SourceSetting.Yahoo(None)
   ): IO[BuiltSourceHandler] =
     for {
       tgGateway <- Fakes.tgGateway()
@@ -41,7 +43,7 @@ class SourceHandlerSpec extends Specification with CatsEffect {
   private def run(
     args: List[String],
     stored: List[TickerSource] = Nil,
-    default: SourceSetting = SourceSetting.Yahoo
+    default: SourceSetting = SourceSetting.Yahoo(None)
   ): IO[(String, List[TickerSource])] =
     for {
       built <- build(stored, default)
@@ -55,20 +57,22 @@ class SourceHandlerSpec extends Specification with CatsEffect {
 
       "listing" >> {
 
-        "lists the tickers that have a source of their own, ordered by ticker, with their board" >> {
+        "lists the tickers that have a source of their own, ordered by ticker, with their board or Yahoo symbol" >> {
           for {
             (text, _) <- run(
               Nil,
               stored = List(
+                TickerSource(vod, SourceSetting.Yahoo(Some(vodL))),
                 TickerSource(sber, SourceSetting.Tinkoff(Some(ClassCode("TQBR")))),
-                TickerSource(Ticker("AAPL"), SourceSetting.Yahoo),
+                TickerSource(Ticker("AAPL"), SourceSetting.Yahoo(None)),
                 TickerSource(Ticker("GAZP"), SourceSetting.Tinkoff(None))
               )
             )
           } yield text must_==
             """AAPL - yahoo
               |GAZP - tinkoff, default board
-              |SBER - tinkoff, board TQBR""".stripMargin
+              |SBER - tinkoff, board TQBR
+              |VOD - yahoo, symbol VOD.L""".stripMargin
         }
 
         "says that every ticker uses the default when none has a setting" >> {
@@ -87,6 +91,15 @@ class SourceHandlerSpec extends Specification with CatsEffect {
               stored = List(TickerSource(sber, SourceSetting.Tinkoff(Some(cets))))
             )
           } yield text must_== "SBER uses tinkoff, board CETS."
+        }
+
+        "shows the Yahoo symbol of the ticker" >> {
+          for {
+            (text, _) <- run(
+              List("vod"),
+              stored = List(TickerSource(vod, SourceSetting.Yahoo(Some(vodL))))
+            )
+          } yield text must_== "VOD uses yahoo, symbol VOD.L."
         }
 
         "says when the ticker is on the default source" >> {
@@ -108,8 +121,29 @@ class SourceHandlerSpec extends Specification with CatsEffect {
           for {
             (text, after) <- run(List("sber", "yahoo"))
           } yield {
-            after must_== List(TickerSource(sber, SourceSetting.Yahoo))
+            after must_== List(TickerSource(sber, SourceSetting.Yahoo(None)))
             text must_== "SBER now uses yahoo."
+          }
+        }
+
+        "sets a ticker to yahoo under the given symbol, upper-cased" >> {
+          for {
+            (text, after) <- run(List("vod", "yahoo", "vod.l"))
+          } yield {
+            after must_== List(TickerSource(vod, SourceSetting.Yahoo(Some(vodL))))
+            text must_== "VOD now uses yahoo, symbol VOD.L."
+          }
+        }
+
+        "drops the symbol a ticker had when it is set to yahoo without one" >> {
+          for {
+            (text, after) <- run(
+              List("vod", "yahoo"),
+              stored = List(TickerSource(vod, SourceSetting.Yahoo(Some(vodL))))
+            )
+          } yield {
+            after must_== List(TickerSource(vod, SourceSetting.Yahoo(None)))
+            text must_== "VOD now uses yahoo."
           }
         }
 
@@ -147,7 +181,7 @@ class SourceHandlerSpec extends Specification with CatsEffect {
               List("sber", "yahoo"),
               stored = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
             )
-          } yield after must_== List(TickerSource(sber, SourceSetting.Yahoo))
+          } yield after must_== List(TickerSource(sber, SourceSetting.Yahoo(None)))
         }
 
         "recognises the source word regardless of case" >> {
@@ -160,7 +194,7 @@ class SourceHandlerSpec extends Specification with CatsEffect {
       "resetting to the default" >> {
 
         "removes the ticker's setting" >> {
-          val other = TickerSource(Ticker("AAPL"), SourceSetting.Yahoo)
+          val other = TickerSource(Ticker("AAPL"), SourceSetting.Yahoo(None))
           for {
             (text, after) <- run(
               List("sber", "default"),
@@ -176,7 +210,7 @@ class SourceHandlerSpec extends Specification with CatsEffect {
           for {
             (_, after) <- run(
               List("sber", "DEFAULT"),
-              stored = List(TickerSource(sber, SourceSetting.Yahoo))
+              stored = List(TickerSource(sber, SourceSetting.Yahoo(None)))
             )
           } yield after must beEmpty
         }
@@ -190,7 +224,7 @@ class SourceHandlerSpec extends Specification with CatsEffect {
 
       "malformed input" >> {
 
-        val stored = List(TickerSource(sber, SourceSetting.Yahoo))
+        val stored = List(TickerSource(sber, SourceSetting.Yahoo(None)))
 
         def rejects(args: List[String]) =
           for {
@@ -204,8 +238,8 @@ class SourceHandlerSpec extends Specification with CatsEffect {
           rejects(List("sber", "bogus"))
         }
 
-        "rejects a board given for yahoo" >> {
-          rejects(List("sber", "yahoo", "TQBR"))
+        "rejects more than one symbol for yahoo" >> {
+          rejects(List("vod", "yahoo", "VOD.L", "VOD.MX"))
         }
 
         "rejects more than one board for tinkoff" >> {

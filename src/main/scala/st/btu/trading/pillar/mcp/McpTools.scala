@@ -54,10 +54,10 @@ object McpTools {
     title = Some("Ticker status"),
     description = Some(
       "Reports how the bot serves a ticker: the market data source it is set to use, stored or " +
-        "default, with the board; whether an adapter is wired for that source; the account's " +
-        "watchlist entry; the date of the latest stored bar per source; and where the stored " +
-        "instrument metadata was read from, with its currency and age. Use it to find out why a " +
-        "ticker has no data or looks stale. Reads stored data only."
+        "default, with its board or Yahoo symbol; whether an adapter is wired for that source; " +
+        "the account's watchlist entry; the date of the latest stored bar per source; and where " +
+        "the stored instrument metadata was read from, with its currency and age. Use it to find " +
+        "out why a ticker has no data or looks stale. Reads stored data only."
     ),
     effect = Effect.ReadOnly,
     isOpenWorld = false

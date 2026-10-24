@@ -7,7 +7,7 @@ import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.syntax.option.*
 import cats.syntax.traverse.*
-import st.btu.trading.pillar.models.market.{MarketDataError, Source, Ticker}
+import st.btu.trading.pillar.models.market.{MarketDataError, Source, SourceSetting, Ticker}
 
 // Gathers what the bot knows about a ticker from the stores and the router, for the report.
 private[mcp] final class TickerStatusReader[F[_]: Clock](ports: McpPorts[F])(implicit
@@ -35,10 +35,10 @@ private[mcp] final class TickerStatusReader[F[_]: Clock](ports: McpPorts[F])(imp
     )
 
   // None when the setting's source has no adapter wired.
-  private def adapterOrigin(ticker: Ticker): F[Option[Origin]] =
+  private def adapterOrigin(ticker: Ticker): F[Option[SourceSetting]] =
     ports.marketDataSources
       .forTicker(ticker)
-      .map(adapter => Origin(adapter.source, adapter.board).some)
+      .map(_.origin.some)
       .recover { case MarketDataError.SourceNotConfigured(_) => None }
 
   private def lastBar(ticker: Ticker, source: Source): F[LastBar] =

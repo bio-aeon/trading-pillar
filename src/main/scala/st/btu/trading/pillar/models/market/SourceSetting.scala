@@ -11,8 +11,9 @@ sealed trait SourceSetting {
 
 object SourceSetting {
 
-  /** Yahoo Finance, which looks the ticker up as given. */
-  case object Yahoo extends SourceSetting {
+  /** Yahoo Finance, which looks the instrument up as `symbol`, or as the ticker itself when `None`.
+    */
+  final case class Yahoo(symbol: Option[YahooSymbol]) extends SourceSetting {
     def source: Source = Source.Yahoo
   }
 

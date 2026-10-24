@@ -68,7 +68,7 @@ class CommandEffectSpec extends Specification {
             "/source",
             "/source AAPL",
             "/source AAPL fast",
-            "/source AAPL yahoo TQBR",
+            "/source VOD yahoo VOD.L VOD.MX",
             "/source SBER tinkoff TQBR CETS",
             "/source AAPL default now"
           )
@@ -76,6 +76,8 @@ class CommandEffectSpec extends Specification {
         classify(CommandEffect.Changing, "changes")(
           List(
             "/source AAPL yahoo",
+            "/source VOD yahoo VOD.L",
+            "/source VOD YAHOO vod.l",
             "/source SBER tinkoff",
             "/source SBER tinkoff cets",
             "/source AAPL default",

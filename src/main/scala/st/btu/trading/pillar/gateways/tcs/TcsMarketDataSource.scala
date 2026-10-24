@@ -35,9 +35,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
     extends MarketDataSource[F]
     with TinkoffBoards[F] {
 
-  def source: Source = Source.Tinkoff
-
-  def board: Option[ClassCode] = Some(lookupBoard)
+  def origin: SourceSetting = SourceSetting.Tinkoff(Some(lookupBoard))
 
   def onBoard(classCode: Option[ClassCode]): MarketDataSource[F] =
     new TcsMarketDataSource[F](
@@ -78,8 +76,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
     } yield Some(
       InstrumentInfo(
         ticker,
-        Source.Tinkoff,
-        board,
+        origin,
         Some(instrument.name),
         instrument.instrumentType,
         Currency(instrument.currency),

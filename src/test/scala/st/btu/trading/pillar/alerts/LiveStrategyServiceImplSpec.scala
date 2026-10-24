@@ -28,7 +28,9 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
     for {
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       marketData <- MarketDataFakes.marketDataSource()
-      sources <- MarketDataFakes.marketDataSources(yahoo = Some(marketData))
+      sources <- MarketDataFakes.marketDataSources(yahoo =
+        Some(MarketDataFakes.yahooSymbolsOver(marketData))
+      )
       service <- LiveStrategyServiceImpl.create[IO, IO](priceHistory, sources)
     } yield service
   }

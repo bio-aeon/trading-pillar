@@ -9,13 +9,11 @@ import java.time.LocalDate
   */
 trait MarketDataSource[F[_]] {
 
-  /** The broker or provider this instance serves data from. */
-  def source: Source
-
-  /** The board this source looks tickers up on, for a source that tells boards apart; `None`
-    * otherwise.
+  /** The setting this instance serves data under: its provider, and the Yahoo symbol or Tinkoff
+    * board it looks tickers up by. A Tinkoff source always reports its board, never an unresolved
+    * default.
     */
-  def board: Option[ClassCode]
+  def origin: SourceSetting
 
   /** Daily bars for `ticker` between `since` and `until`, chronological.
     *

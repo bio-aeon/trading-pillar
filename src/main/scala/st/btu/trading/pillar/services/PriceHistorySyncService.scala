@@ -9,8 +9,8 @@ trait PriceHistorySyncService[F[_]] {
 
   /** Syncs `item`'s bars and dividends as of `today` from the source its ticker is configured to
     * use: backfills from scratch if nothing is stored yet or the stored metadata was read from
-    * another source or board, otherwise incrementally since the last stored bar. When that source
-    * has no adapter configured nothing is fetched and the report is empty.
+    * another source, board or Yahoo symbol, otherwise incrementally since the last stored bar. When
+    * that source has no adapter configured nothing is fetched and the report is empty.
     */
   def syncSymbol(item: WatchlistItem, today: LocalDate): F[SyncReport]
 }

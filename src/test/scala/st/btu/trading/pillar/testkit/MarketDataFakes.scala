@@ -97,21 +97,18 @@ object MarketDataFakes {
   }
 
   def marketDataSource(
-    src: Source = Source.Yahoo,
+    setting: SourceSetting = SourceSetting.Yahoo(None),
     bars: Map[Ticker, IO[List[Bar]]] = Map.empty,
     quotes: Map[Ticker, IO[Option[Quote]]] = Map.empty,
     info: Map[Ticker, IO[Option[InstrumentInfo]]] = Map.empty,
-    dividendEvents: Map[Ticker, IO[List[DividendEvent]]] = Map.empty,
-    onBoard: Option[ClassCode] = None
+    dividendEvents: Map[Ticker, IO[List[DividendEvent]]] = Map.empty
   ): IO[FakeMarketDataSource] =
     for {
       barsCallsRef <- Ref.of[IO, List[Ticker]](List.empty)
       infoCallsRef <- Ref.of[IO, List[Ticker]](List.empty)
       dividendsCallsRef <- Ref.of[IO, List[Ticker]](List.empty)
     } yield new FakeMarketDataSource {
-      def source: Source = src
-
-      def board: Option[ClassCode] = onBoard
+      def origin: SourceSetting = setting
 
       def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): IO[List[Bar]] =
         barsCallsRef.update(_ :+ ticker) >> bars.getOrElse(ticker, IO.pure(List.empty))
@@ -131,13 +128,9 @@ object MarketDataFakes {
       def dividendsCalls: IO[List[Ticker]] = dividendsCallsRef.get
     }
 
-  // A Tinkoff-flavoured source that only remembers the board it was opened on, for specs that
-  // assert which board the router chose.
-  final case class BoardView(classCode: Option[ClassCode]) extends MarketDataSource[IO] {
-    def source: Source = Source.Tinkoff
-
-    def board: Option[ClassCode] = classCode
-
+  // A source that serves nothing and only remembers the setting it was opened under, for specs that
+  // assert which board or Yahoo symbol the router chose.
+  final case class OriginView(origin: SourceSetting) extends MarketDataSource[IO] {
     def dailyBars(ticker: Ticker, since: LocalDate, until: LocalDate): IO[List[Bar]] =
       IO.pure(List.empty)
 
@@ -150,7 +143,13 @@ object MarketDataFakes {
   }
 
   val boardViews: TinkoffBoards[IO] = new TinkoffBoards[IO] {
-    def onBoard(classCode: Option[ClassCode]): MarketDataSource[IO] = BoardView(classCode)
+    def onBoard(classCode: Option[ClassCode]): MarketDataSource[IO] =
+      OriginView(SourceSetting.Tinkoff(classCode))
+  }
+
+  val symbolViews: YahooSymbols[IO] = new YahooSymbols[IO] {
+    def onSymbol(symbol: Option[YahooSymbol]): MarketDataSource[IO] =
+      OriginView(SourceSetting.Yahoo(symbol))
   }
 
   // Serves every board with the one given source, for specs that assert what that source was asked.
@@ -159,11 +158,18 @@ object MarketDataFakes {
       def onBoard(classCode: Option[ClassCode]): MarketDataSource[IO] = source
     }
 
+  // Serves every Yahoo symbol with the one given source, for specs that assert what that source was
+  // asked.
+  def yahooSymbolsOver(source: MarketDataSource[IO]): YahooSymbols[IO] =
+    new YahooSymbols[IO] {
+      def onSymbol(symbol: Option[YahooSymbol]): MarketDataSource[IO] = source
+    }
+
   def marketDataSources(
-    yahoo: Option[MarketDataSource[IO]] = None,
+    yahoo: Option[YahooSymbols[IO]] = None,
     tinkoff: Option[TinkoffBoards[IO]] = None,
     settings: List[TickerSource] = List.empty,
-    default: SourceSetting = SourceSetting.Yahoo
+    default: SourceSetting = SourceSetting.Yahoo(None)
   ): IO[MarketDataSources[IO]] =
     tickerSourceStorage(settings).map(storage =>
       new MarketDataSourcesImpl[IO](yahoo, tinkoff, storage, default)

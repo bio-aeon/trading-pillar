@@ -26,4 +26,16 @@ package object market {
     implicit val show: Show[ClassCode] = Show.catsShowForString
     implicit val loggable: Loggable[ClassCode] = Loggable.stringValue
   }
+
+  /** A symbol as Yahoo Finance knows an instrument, e.g. `"VOD.L"`: it can differ from the
+    * [[Ticker]] the instrument goes by elsewhere.
+    */
+  opaque type YahooSymbol = String
+
+  object YahooSymbol {
+    def apply(value: String): YahooSymbol = value
+    extension (yahooSymbol: YahooSymbol) def value: String = yahooSymbol
+    implicit val show: Show[YahooSymbol] = Show.catsShowForString
+    implicit val loggable: Loggable[YahooSymbol] = Loggable.stringValue
+  }
 }

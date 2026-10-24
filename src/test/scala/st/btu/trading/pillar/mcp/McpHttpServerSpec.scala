@@ -37,12 +37,17 @@ class McpHttpServerSpec extends Specification with CatsEffect {
   // The tool server of a bot with a Yahoo adapter and nothing stored.
   private def toolServer: IO[McpServer[IO]] =
     for {
-      yahoo <- MarketDataFakes.marketDataSource(Source.Yahoo)
+      yahoo <- MarketDataFakes.marketDataSource()
       settings <- MarketDataFakes.tickerSourceStorage()
       watchlist <- MarketDataFakes.watchlistStorage()
       priceHistory <- MarketDataFakes.priceHistoryStorage()
       instruments <- MarketDataFakes.instrumentStorage()
-      sources = new MarketDataSourcesImpl[IO](Some(yahoo), None, settings, SourceSetting.Yahoo)
+      sources = new MarketDataSourcesImpl[IO](
+        Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
+        None,
+        settings,
+        SourceSetting.Yahoo(None)
+      )
       ports = McpPorts(
         sources,
         settings,

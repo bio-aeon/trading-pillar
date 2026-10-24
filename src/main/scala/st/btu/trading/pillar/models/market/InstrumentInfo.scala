@@ -6,16 +6,14 @@ import java.time.ZonedDateTime
 
 /** Descriptive metadata for `ticker`: name, type, currency, exchange and timezone.
   *
-  * @param source
-  *   the source the metadata was read from; two sources can describe the same ticker differently,
-  *   in another currency for instance
-  * @param board
-  *   the board the metadata was read on, for a source that tells boards apart; `None` otherwise
+  * @param origin
+  *   the setting the metadata was read under, with Tinkoff's board resolved: the source, and the
+  *   board or the Yahoo symbol the instrument was looked up by. Two origins can describe one ticker
+  *   differently, in another currency for instance.
   */
 final case class InstrumentInfo(
   ticker: Ticker,
-  source: Source,
-  board: Option[ClassCode],
+  origin: SourceSetting,
   name: Option[String],
   instrumentType: String,
   currency: Currency,

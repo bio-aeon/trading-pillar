@@ -157,7 +157,7 @@ final class AlertProcessImpl[F[_]: Temporal: Logging: GenUUID](
         case Some(current) =>
           for {
             previous <- previousQuotes.get.map(_.get(rule.ticker))
-            atr <- atrFor(rule, source.source)
+            atr <- atrFor(rule, source.origin.source)
             alerts = AlertEngine.evaluatePriceRule(rule, previous, current, atr)
             _ <- previousQuotes.update(_.updated(rule.ticker, current))
             _ <- dispatchAll(alerts, rule.policy, rule.channels)

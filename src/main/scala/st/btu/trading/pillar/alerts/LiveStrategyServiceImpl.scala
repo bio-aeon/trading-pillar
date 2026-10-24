@@ -33,7 +33,7 @@ final class LiveStrategyServiceImpl[F[_]: Logging] private (
   ): F[LiveEvaluation] =
     for {
       source <- marketDataSources.forTicker(binding.ticker)
-      bars <- priceHistory.latestBars(binding.ticker, source.source, strategy.warmupBars)
+      bars <- priceHistory.latestBars(binding.ticker, source.origin.source, strategy.warmupBars)
       history = BarHistory(bars.toVector)
       (onBarAlerts, signals) <- processNewBar(binding, strategy, history, now)
       proximityAlerts <- evaluateProximity(binding, strategy, source, history, now)
@@ -145,7 +145,7 @@ final class LiveStrategyServiceImpl[F[_]: Logging] private (
             quote.price,
             quote.price,
             0L,
-            source.source
+            source.origin.source
           )
           val ctx = StrategyContext(binding.ticker, history, position, PortfolioView(0, 0))
           strategy.proximity(ctx, provisionalBar).map(toProximityAlert(binding, now, _)).toList

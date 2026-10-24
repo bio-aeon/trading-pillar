@@ -205,7 +205,7 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    currency's contribution to `value` could not be priced".
 9. **Price currency and metadata**: a mapped position's price currency is the `currency` of the
    `InstrumentInfo` stored for its ticker (`InstrumentStorage.find`) when that metadata was read
-   from the ticker's configured source (`InstrumentInfo.source` equals
+   from the ticker's configured source (`InstrumentInfo.origin.source` equals
    `MarketDataSources.settingFor(ticker).source`), which makes it the currency that source reports
    bars in. Metadata read from another source - what a ticker keeps until its next sync after its
    source is switched - is ignored, like metadata that is not stored: the broker's
@@ -216,7 +216,10 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
     how the Tinkoff API spells ISO 4217 codes (`rub`, `usd`), is upper-cased (`RUB`, `USD`). Any
     other code is kept as given, because Yahoo marks a minor unit by case: `GBp` is pence and is not
     folded into `GBP`, pounds, so a position priced in `GBp` finds no rate and is reported unpriced
-    rather than valued as if it were in pounds. Operations, instruments, quotes, `baseCurrency` and
+    rather than valued as if it were in pounds. The Yahoo adapter reports such an instrument in the
+    major currency, converting its prices (`GBp`, `ZAc` and `ILA` become `GBP`, `ZAR` and `ILS`; see
+    [`market-data.md`](market-data.md#minor-units)), so a minor-unit code reaches the valuation only
+    from a source that reports one as such. Operations, instruments, quotes, `baseCurrency` and
     the keys of `fxTickers` all carry that type, so codes compare exactly by construction and no
     service normalises one: `rub` cash and a `RUB` base are one currency, and `USD` metadata with
     `usd` cash is one currency, converted once. The outputs carry `Currency` values:

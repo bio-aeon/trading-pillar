@@ -44,7 +44,7 @@ object MarketDataSources {
 /** A [[MarketDataSources]] over at most one adapter per provider.
   *
   * @param yahoo
-  *   the Yahoo adapter, if one is wired
+  *   the Yahoo adapter, if one is wired, which serves a ticker under the symbol its setting names
   * @param tinkoff
   *   the Tinkoff adapter, if one is wired, which serves a ticker from the board its setting names
   * @param settings
@@ -53,7 +53,7 @@ object MarketDataSources {
   *   the setting of every ticker that has none stored
   */
 final class MarketDataSourcesImpl[F[_]](
-  yahoo: Option[MarketDataSource[F]],
+  yahoo: Option[YahooSymbols[F]],
   tinkoff: Option[TinkoffBoards[F]],
   settings: TickerSourceStorage[F],
   default: SourceSetting
@@ -68,7 +68,8 @@ final class MarketDataSourcesImpl[F[_]](
 
   private def adapterFor(setting: SourceSetting): F[MarketDataSource[F]] =
     setting match {
-      case SourceSetting.Yahoo => configured(yahoo, setting.source)
+      case SourceSetting.Yahoo(symbol) =>
+        configured(yahoo.map(_.onSymbol(symbol)), setting.source)
       case SourceSetting.Tinkoff(classCode) =>
         configured(tinkoff.map(_.onBoard(classCode)), setting.source)
     }

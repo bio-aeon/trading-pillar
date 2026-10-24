@@ -26,6 +26,8 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
   private val cets = ClassCode("CETS")
   private val sberOnTinkoff = TickerSource(Ticker("SBER"), SourceSetting.Tinkoff(None))
   private val usdOnCets = TickerSource(Ticker("USD000UTSTOM"), SourceSetting.Tinkoff(Some(cets)))
+  private val vodOnLondon =
+    TickerSource(Ticker("VOD"), SourceSetting.Yahoo(Some(YahooSymbol("VOD.L"))))
 
   private def item(
     ticker: String,
@@ -39,7 +41,7 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
   private def build(
     items: List[WatchlistItem] = Nil,
     stored: List[TickerSource] = Nil,
-    default: SourceSetting = SourceSetting.Yahoo
+    default: SourceSetting = SourceSetting.Yahoo(None)
   ): IO[BuiltWatchlistHandler] =
     for {
       tgGateway <- Fakes.tgGateway()
@@ -185,7 +187,27 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
             )
             _ <- built.handler.handle(chatId, List("add", "aapl", "yahoo"))
             stored <- built.settings.all
-          } yield stored must_== List(TickerSource(Ticker("AAPL"), SourceSetting.Yahoo))
+          } yield stored must_== List(TickerSource(Ticker("AAPL"), SourceSetting.Yahoo(None)))
+        }
+
+        "keeps the Yahoo symbol a ticker already has when asked for yahoo again" >> {
+          for {
+            built <- build(stored = List(vodOnLondon))
+            _ <- built.handler.handle(chatId, List("add", "vod", "yahoo"))
+            stored <- built.settings.all
+            messages <- built.tgGateway.sentMessages
+          } yield {
+            stored must_== List(vodOnLondon)
+            messages.head.message must_== "Added VOD (yahoo, symbol VOD.L) to the watchlist."
+          }
+        }
+
+        "drops the Yahoo symbol of a ticker that is put on tinkoff" >> {
+          for {
+            built <- build(stored = List(vodOnLondon))
+            _ <- built.handler.handle(chatId, List("add", "vod", "tinkoff"))
+            stored <- built.settings.all
+          } yield stored must_== List(TickerSource(Ticker("VOD"), SourceSetting.Tinkoff(None)))
         }
 
         "keeps the board a ticker already has when asked for tinkoff again" >> {
@@ -210,7 +232,7 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
 
         "puts a ticker that was on yahoo on tinkoff's default board" >> {
           for {
-            built <- build(stored = List(TickerSource(Ticker("SBER"), SourceSetting.Yahoo)))
+            built <- build(stored = List(TickerSource(Ticker("SBER"), SourceSetting.Yahoo(None))))
             _ <- built.handler.handle(chatId, List("add", "sber", "tinkoff"))
             stored <- built.settings.all
           } yield stored must_== List(sberOnTinkoff)

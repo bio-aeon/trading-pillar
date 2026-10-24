@@ -37,7 +37,7 @@ strategy is registered.
 | Package | Contents |
 |---|---|
 | `models.domain` | `Account`, `Command`, `Portfolio`, `TcsPortfolioOperation`, opaque types (`AccountId`, `Figi`, ...) |
-| `models.market` | `Ticker`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
+| `models.market` | `Ticker`, `YahooSymbol`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board or Yahoo symbol), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.binance` | Telegram, Tinkoff and Binance wire/domain types |
 | `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
@@ -152,7 +152,7 @@ def wireSync(
         Some(yahooSource),
         None,
         tickerSourceStorage,
-        SourceSetting.Yahoo
+        SourceSetting.Yahoo(None)
       )
       // A sync failure is infrastructure-level, not per-symbol, so it is raised through the same
       // dispatcher/channels as any other alert; an empty channel list here still records it in

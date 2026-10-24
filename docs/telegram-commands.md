@@ -131,11 +131,13 @@ listing shows it.
 ```
 AAPL (yahoo) - core position
 SBER (tinkoff, board TQBR)
+VOD (yahoo, symbol VOD.L)
 MSFT (yahoo) (disabled)
 ```
 (`Watchlist is empty.` if there are none.) Each line names the source the ticker effectively uses:
 the setting it has of its own, or the default source when it has none. For a Tinkoff setting the
-board follows, `default board` when the setting names none.
+board follows, `default board` when the setting names none; for a Yahoo setting the Yahoo symbol
+follows when it names one.
 
 ```
 /watchlist add aapl core position
@@ -147,9 +149,10 @@ Added AAPL (yahoo) to the watchlist.
 The token right after the symbol is optional and sets the ticker's source: `yahoo` or `tinkoff`,
 matched regardless of case. Without it the ticker's source setting is left as it is, and the reply
 names the source the ticker effectively uses. A token that names neither source is treated as the
-first word of the note instead of being dropped. `yahoo` replaces whatever setting the ticker had;
-`tinkoff` puts a ticker that is not on Tinkoff on the default board and keeps the board of one that
-already is.
+first word of the note instead of being dropped. Asking for the source a ticker is already on keeps
+its board or Yahoo symbol; asking for the other one puts the ticker on it with no board or symbol,
+so `tinkoff` puts a ticker that is on Yahoo on the default board, and `yahoo` puts a ticker that is
+on Tinkoff on Yahoo as given.
 
 ```
 /watchlist add sber tinkoff
@@ -177,13 +180,16 @@ symbol.) Removing a ticker leaves its source setting in place.
 
 ### `/source`
 
-Usage: `/source, /source SYM, /source SYM yahoo, /source SYM tinkoff (BOARD), or /source SYM default`
+Usage: `/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), or /source SYM default`
 
 Shows or changes the market data source of a ticker. The setting belongs to the ticker, not to an
 account or a watchlist, so it applies everywhere the ticker is used: price-history sync, backtests,
 alerts, valuation and dividends. A ticker with no setting of its own uses the default source the
 router is configured with. A board is the broker's class code for a trading venue, such as `TQBR`
-or `CETS`; only Tinkoff has boards.
+or `CETS`; only Tinkoff has boards. A Yahoo symbol is the code Yahoo Finance knows the instrument
+by, such as `VOD.L` for the broker ticker `VOD`; only Yahoo has symbols. With one set, Yahoo is
+asked for the symbol, while the watchlist, alerts, backtests and the stored bars, dividends and
+metadata keep using the ticker. `/news` still searches Yahoo for the ticker as given.
 
 ```
 /source
@@ -192,6 +198,7 @@ or `CETS`; only Tinkoff has boards.
 AAPL - yahoo
 GAZP - tinkoff, default board
 SBER - tinkoff, board TQBR
+VOD - yahoo, symbol VOD.L
 ```
 (One line per ticker that has a setting, ordered by ticker. `No ticker has a source of its own; every
 ticker uses the default.` if there are none.)
@@ -203,12 +210,18 @@ ticker uses the default.` if there are none.)
 SBER uses tinkoff, board TQBR.
 ```
 ```
+/source vod
+```
+```
+VOD uses yahoo, symbol VOD.L.
+```
+```
 /source aapl
 ```
 ```
 AAPL uses the default: yahoo.
 ```
-(The second form is the reply for a ticker with no setting; it names the default source.)
+(The last form is the reply for a ticker with no setting; it names the default source.)
 
 ```
 /source sber yahoo
@@ -216,6 +229,16 @@ AAPL uses the default: yahoo.
 ```
 SBER now uses yahoo.
 ```
+
+```
+/source vod yahoo vod.l
+```
+```
+VOD now uses yahoo, symbol VOD.L.
+```
+
+The symbol is upper-cased. `/source SYM yahoo` without one puts the ticker on Yahoo as given and
+drops a symbol it had.
 
 ```
 /source usd000utstom tinkoff cets
@@ -236,8 +259,8 @@ SBER now uses the default source.
 (`SBER already uses the default source.` if it had no setting.)
 
 The ticker is upper-cased, and `yahoo`, `tinkoff` and `default` are matched regardless of case. Any
-other form - an unknown word, a board after `yahoo`, more than one board, words after `default` -
-replies `Usage: ...` and changes nothing. Not tied to an account, unlike `/watchlist`.
+other form - an unknown word, more than one board or symbol, words after `default` - replies
+`Usage: ...` and changes nothing. Not tied to an account, unlike `/watchlist`.
 
 ### `/strategies`
 
@@ -947,7 +970,7 @@ Usage: `/help - list available commands`
 /ping - health check
 /info - portfolio positions
 /watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
-/source, /source SYM, /source SYM yahoo, /source SYM tinkoff (BOARD), or /source SYM default
+/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), or /source SYM default
 /strategies - list registered strategies
 /backtest strategyId SYM (years, default 2) (params=key:value,key:value), or /backtest strategyId SYM1,SYM2,... (years, default 2)
 /sweep strategyId SYM (years=N, default 2) key=from:to:step (more key=from:to:step) - parameter sweep, top 5 by Sharpe

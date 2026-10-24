@@ -85,19 +85,17 @@ final class WatchlistHandler[F[_]: Monad: Clock](
   private def assign(ticker: Ticker, requested: SourceSetting): F[Unit] =
     sources
       .settingFor(ticker)
-      .flatMap(current => settings.upsert(TickerSource(ticker, keepingBoard(requested, current))))
+      .flatMap(current =>
+        settings.upsert(TickerSource(ticker, keepingBoardOrSymbol(requested, current)))
+      )
 
-  // Asking for tinkoff on a ticker that already resolves to a Tinkoff board, whether set for it or
-  // the router's default, leaves that board in place.
-  private def keepingBoard(requested: SourceSetting, current: SourceSetting): SourceSetting =
-    requested match {
-      case SourceSetting.Yahoo => requested
-      case SourceSetting.Tinkoff(_) =>
-        current match {
-          case onBoard @ SourceSetting.Tinkoff(_) => onBoard
-          case SourceSetting.Yahoo => requested
-        }
-    }
+  // Asking for the source a ticker already resolves to, whether set for it or the router's
+  // default, leaves its Tinkoff board or Yahoo symbol in place.
+  private def keepingBoardOrSymbol(
+    requested: SourceSetting,
+    current: SourceSetting
+  ): SourceSetting =
+    if (requested.source == current.source) current else requested
 
   private def remove(chatId: tg.ChatId, rest: List[String]): F[Unit] =
     rest match {

@@ -28,8 +28,7 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
   private def info(instrumentType: String = "EQUITY", exchange: String = "NASDAQ"): InstrumentInfo =
     InstrumentInfo(
       ticker,
-      Source.Yahoo,
-      None,
+      SourceSetting.Yahoo(None),
       Some("Apple"),
       instrumentType,
       usd,
@@ -79,7 +78,7 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
     for {
       yahoo <- MarketDataFakes.marketDataSource(quotes = quotes, info = infos)
       tinkoff <- MarketDataFakes.marketDataSource(
-        src = Source.Tinkoff,
+        setting = SourceSetting.Tinkoff(None),
         quotes = quotes,
         info = infos
       )
@@ -90,7 +89,7 @@ class AnalysisServiceImplSpec extends Specification with CatsEffect {
         MarketDataFakes.dividendStorage(dividends)
       )(IO.pure)
       sources <- MarketDataFakes.marketDataSources(
-        yahoo = Some(yahoo),
+        yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
         tinkoff = Some(MarketDataFakes.tinkoffBoardsOver(tinkoff)),
         settings = settings
       )

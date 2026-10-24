@@ -22,6 +22,12 @@ private final case class RoutedToTinkoff(
   instruments: MarketDataFakes.FakeInstrumentStorage
 )
 
+private final case class RoutedToYahooSymbol(
+  service: PriceHistorySyncService[IO],
+  priceHistory: MarketDataFakes.FakePriceHistoryStorage,
+  instruments: MarketDataFakes.FakeInstrumentStorage
+)
+
 class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
 
   private implicit val logs: Logs[IO, IO] =
@@ -40,6 +46,9 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
   private val tqbr = ClassCode("TQBR")
   private val tqtf = ClassCode("TQTF")
 
+  private val aaplMx = YahooSymbol("AAPL.MX")
+  private val aaplL = YahooSymbol("AAPL.L")
+
   private val usd = Currency("USD")
   private val rub = Currency("RUB")
 
@@ -57,17 +66,15 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
   private def bar(date: LocalDate, source: Source = Source.Yahoo): Bar =
     Bar(ticker, date, 1, 1, 1, 1, 1, 100, source)
 
-  // AAPL's metadata as `source` describes it on `board`; the currency tells the sources apart.
+  // AAPL's metadata as read under `origin`; the currency tells the origins apart.
   private def metadata(
-    source: Source,
+    origin: SourceSetting,
     currency: Currency,
-    updatedAt: ZonedDateTime = ZonedDateTime.now(ZoneOffset.UTC),
-    board: Option[ClassCode] = None
+    updatedAt: ZonedDateTime = ZonedDateTime.now(ZoneOffset.UTC)
   ): InstrumentInfo =
     InstrumentInfo(
       ticker,
-      source,
-      board,
+      origin,
       None,
       "EQUITY",
       currency,
@@ -98,7 +105,7 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
     dividends: DividendStorage[IO]
   ): IO[PriceHistorySyncService[IO]] =
     MarketDataFakes
-      .marketDataSources(yahoo = Some(source))
+      .marketDataSources(yahoo = Some(MarketDataFakes.yahooSymbolsOver(source)))
       .flatMap(serviceOver(_, priceHistory, instruments, dividends))
 
   // Yahoo is the default source but AAPL is set to Tinkoff, so only the Tinkoff adapter may be
@@ -110,23 +117,45 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
     tinkoffBoard: Option[ClassCode] = None
   ): IO[RoutedToTinkoff] =
     for {
-      yahoo <- MarketDataFakes.marketDataSource(src = Source.Yahoo)
+      yahoo <- MarketDataFakes.marketDataSource()
       tinkoff <- MarketDataFakes.marketDataSource(
-        src = Source.Tinkoff,
+        setting = SourceSetting.Tinkoff(tinkoffBoard),
         bars = Map(ticker -> IO.pure(List(bar(today, Source.Tinkoff)))),
-        info = Map(ticker -> IO.pure(tinkoffMetadata)),
-        onBoard = tinkoffBoard
+        info = Map(ticker -> IO.pure(tinkoffMetadata))
       )
       priceHistory <- MarketDataFakes.priceHistoryStorage(storedBars)
       instruments <- MarketDataFakes.instrumentStorage(storedMetadata)
       dividends <- MarketDataFakes.dividendStorage()
       sources <- MarketDataFakes.marketDataSources(
-        yahoo = Some(yahoo),
+        yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
         tinkoff = Some(MarketDataFakes.tinkoffBoardsOver(tinkoff)),
         settings = List(TickerSource(ticker, SourceSetting.Tinkoff(None)))
       )
       service <- serviceOver(sources, priceHistory, instruments, dividends)
     } yield RoutedToTinkoff(service, yahoo, tinkoff, priceHistory, instruments)
+
+  // AAPL is set to Yahoo under `symbol`, and the adapter that serves it reports that origin.
+  private def routedToYahooSymbol(
+    symbol: Option[YahooSymbol],
+    storedBars: List[Bar] = Nil,
+    storedMetadata: Map[Ticker, InstrumentInfo] = Map.empty,
+    yahooMetadata: Option[InstrumentInfo] = None
+  ): IO[RoutedToYahooSymbol] =
+    for {
+      view <- MarketDataFakes.marketDataSource(
+        setting = SourceSetting.Yahoo(symbol),
+        bars = Map(ticker -> IO.pure(List(bar(today)))),
+        info = Map(ticker -> IO.pure(yahooMetadata))
+      )
+      priceHistory <- MarketDataFakes.priceHistoryStorage(storedBars)
+      instruments <- MarketDataFakes.instrumentStorage(storedMetadata)
+      dividends <- MarketDataFakes.dividendStorage()
+      sources <- MarketDataFakes.marketDataSources(
+        yahoo = Some(MarketDataFakes.yahooSymbolsOver(view)),
+        settings = List(TickerSource(ticker, SourceSetting.Yahoo(symbol)))
+      )
+      service <- serviceOver(sources, priceHistory, instruments, dividends)
+    } yield RoutedToYahooSymbol(service, priceHistory, instruments)
 
   "PriceHistorySyncServiceImpl" >> {
     "syncSymbol" >> {
@@ -198,7 +227,7 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
       }
 
       "leaves metadata updated recently from the same source alone" >> {
-        val freshInfo = metadata(Source.Yahoo, usd)
+        val freshInfo = metadata(SourceSetting.Yahoo(None), usd)
         for {
           source <- MarketDataFakes.marketDataSource(
             bars = Map(ticker -> IO.pure(List.empty)),
@@ -215,7 +244,7 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
 
       "refreshes instrument metadata when missing or stale, without failing the sync" >> {
         val staleInfo =
-          metadata(Source.Yahoo, usd, ZonedDateTime.now(ZoneOffset.UTC).minusDays(2))
+          metadata(SourceSetting.Yahoo(None), usd, ZonedDateTime.now(ZoneOffset.UTC).minusDays(2))
         val freshInfo = staleInfo.copy(updatedAt = ZonedDateTime.now(ZoneOffset.UTC))
         for {
           source <- MarketDataFakes.marketDataSource(
@@ -238,8 +267,8 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
       "metadata read from another source" >> {
 
         "refreshes it although it was updated recently, when the ticker moved to Yahoo" >> {
-          val tinkoffInfo = metadata(Source.Tinkoff, rub)
-          val yahooInfo = metadata(Source.Yahoo, usd)
+          val tinkoffInfo = metadata(SourceSetting.Tinkoff(Some(tqbr)), rub)
+          val yahooInfo = metadata(SourceSetting.Yahoo(None), usd)
           for {
             source <- MarketDataFakes.marketDataSource(
               bars = Map(ticker -> IO.pure(List.empty)),
@@ -255,8 +284,8 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
         }
 
         "refreshes it although it was updated recently, when the ticker moved to Tinkoff" >> {
-          val yahooInfo = metadata(Source.Yahoo, usd)
-          val tinkoffInfo = metadata(Source.Tinkoff, rub)
+          val yahooInfo = metadata(SourceSetting.Yahoo(None), usd)
+          val tinkoffInfo = metadata(SourceSetting.Tinkoff(Some(tqbr)), rub)
           for {
             routed <- routedToTinkoff(
               storedMetadata = Map(ticker -> yahooInfo),
@@ -273,8 +302,8 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
         "changed" >> {
 
           "refetches the whole window and refreshes the metadata when the board changed" >> {
-            val storedInfo = metadata(Source.Tinkoff, rub, board = Some(tqbr))
-            val refreshedInfo = metadata(Source.Tinkoff, rub, board = Some(tqtf))
+            val storedInfo = metadata(SourceSetting.Tinkoff(Some(tqbr)), rub)
+            val refreshedInfo = metadata(SourceSetting.Tinkoff(Some(tqtf)), rub)
             for {
               routed <- routedToTinkoff(
                 storedBars = List(bar(lastStoredBar, Source.Tinkoff)),
@@ -294,15 +323,55 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
             for {
               routed <- routedToTinkoff(
                 storedBars = List(bar(lastStoredBar, Source.Tinkoff)),
-                storedMetadata = Map(ticker -> metadata(Source.Yahoo, usd)),
+                storedMetadata = Map(ticker -> metadata(SourceSetting.Yahoo(None), usd)),
                 tinkoffBoard = Some(tqbr)
               )
               report <- routed.service.syncSymbol(item, today)
             } yield report.since must_== windowStart
           }
 
+          "refetches the whole window and refreshes the metadata when only the Yahoo symbol changed" >> {
+            val storedInfo = metadata(SourceSetting.Yahoo(None), usd)
+            val refreshedInfo = metadata(SourceSetting.Yahoo(Some(aaplMx)), usd)
+            for {
+              routed <- routedToYahooSymbol(
+                Some(aaplMx),
+                storedBars = List(bar(lastStoredBar)),
+                storedMetadata = Map(ticker -> storedInfo),
+                yahooMetadata = Some(refreshedInfo)
+              )
+              report <- routed.service.syncSymbol(item, today)
+              stored <- routed.instruments.all
+            } yield {
+              report.since must_== windowStart
+              stored.get(ticker) must beSome(refreshedInfo)
+            }
+          }
+
+          "refetches the whole window when the Yahoo symbol was dropped" >> {
+            for {
+              routed <- routedToYahooSymbol(
+                None,
+                storedBars = List(bar(lastStoredBar)),
+                storedMetadata = Map(ticker -> metadata(SourceSetting.Yahoo(Some(aaplMx)), usd))
+              )
+              report <- routed.service.syncSymbol(item, today)
+            } yield report.since must_== windowStart
+          }
+
+          "refetches the whole window when the Yahoo symbol was replaced by another" >> {
+            for {
+              routed <- routedToYahooSymbol(
+                Some(aaplL),
+                storedBars = List(bar(lastStoredBar)),
+                storedMetadata = Map(ticker -> metadata(SourceSetting.Yahoo(Some(aaplMx)), usd))
+              )
+              report <- routed.service.syncSymbol(item, today)
+            } yield report.since must_== windowStart
+          }
+
           "refetches the whole window when the ticker moved from Tinkoff to Yahoo" >> {
-            val storedInfo = metadata(Source.Tinkoff, rub, board = Some(tqbr))
+            val storedInfo = metadata(SourceSetting.Tinkoff(Some(tqbr)), rub)
             for {
               source <- MarketDataFakes.marketDataSource(bars =
                 Map(ticker -> IO.pure(List(bar(today))))
@@ -318,8 +387,26 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
 
         "unchanged" >> {
 
+          "syncs incrementally and keeps fresh metadata when it was read under the same Yahoo symbol" >> {
+            val storedInfo = metadata(SourceSetting.Yahoo(Some(aaplMx)), usd)
+            val ifReadAgain = metadata(SourceSetting.Yahoo(Some(aaplMx)), rub)
+            for {
+              routed <- routedToYahooSymbol(
+                Some(aaplMx),
+                storedBars = List(bar(lastStoredBar)),
+                storedMetadata = Map(ticker -> storedInfo),
+                yahooMetadata = Some(ifReadAgain)
+              )
+              report <- routed.service.syncSymbol(item, today)
+              stored <- routed.instruments.all
+            } yield {
+              report.since must_== incrementalStart
+              stored.get(ticker) must beSome(storedInfo)
+            }
+          }
+
           "syncs incrementally when the metadata has the same source and board" >> {
-            val storedInfo = metadata(Source.Tinkoff, rub, board = Some(tqbr))
+            val storedInfo = metadata(SourceSetting.Tinkoff(Some(tqbr)), rub)
             for {
               routed <- routedToTinkoff(
                 storedBars = List(bar(lastStoredBar, Source.Tinkoff)),
@@ -367,7 +454,7 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
           yahoo <- MarketDataFakes.marketDataSource()
           // Only a Yahoo adapter is wired, but the ticker is set to Tinkoff.
           sources <- MarketDataFakes.marketDataSources(
-            yahoo = Some(yahoo),
+            yahoo = Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
             settings = List(TickerSource(ticker, SourceSetting.Tinkoff(None)))
           )
           service <- serviceOver(sources, priceHistory, instruments, dividends)
@@ -391,10 +478,10 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
           yahoo <- MarketDataFakes.marketDataSource()
           brokenSettings <- MarketDataFakes.failingTickerSourceStorage(lookupFailure)
           sources = new MarketDataSourcesImpl[IO](
-            Some(yahoo),
+            Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
             None,
             brokenSettings,
-            SourceSetting.Yahoo
+            SourceSetting.Yahoo(None)
           )
           service <- serviceOver(sources, priceHistory, instruments, dividends)
           result <- service.syncSymbol(item, today).attempt

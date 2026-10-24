@@ -31,7 +31,7 @@ final class AnalysisServiceImpl[F[_]] private (
       found <- fetchQuoteAndInfo(source, ticker)
       result <- found match {
         case None => F.pure(StockAnalysis.empty(ticker))
-        case Some((quote, info)) => buildAnalysis(source.source, ticker, quote, info)
+        case Some((quote, info)) => buildAnalysis(source.origin.source, ticker, quote, info)
       }
     } yield result
 

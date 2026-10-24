@@ -74,21 +74,36 @@ trait InstrumentStorage[F[_]] {
 ```
 
 Written by the library: `PriceHistorySyncService` calls `upsert`, refreshing a ticker's metadata
-when it is missing, stale, or was read from a source or board other than the one being synced - see
+when it is missing, stale, or was read under an origin other than the one being synced - see
 [`market-data.md`](market-data.md). Metadata is keyed by ticker, not FIGI, because Yahoo has no
-FIGIs; `figi` is an optional Tinkoff cross-reference that nothing looks up by, `source` says which
-source the row was read from, since two sources can describe one ticker differently (in another
-currency, say), and `board` says which board it was read on. The sync also reads `find` to compare
-that origin with the adapter's, and refetches the ticker's whole window when they differ. The
-portfolio valuation pipeline reads it through `find` for a position's price currency and uses a row
-only when its `source` is the ticker's configured one (see
+FIGIs; `figi` is an optional Tinkoff cross-reference that nothing looks up by. `origin` says which
+setting the row was read under: the source, since two sources can describe one ticker differently
+(in another currency, say), and what that source looked the ticker up by, the Tinkoff board or the
+Yahoo symbol, since a board or a symbol can describe it differently too. The sync also reads `find`
+to compare that origin with the adapter's, and refetches the ticker's whole window when they differ.
+The portfolio valuation pipeline reads it through `find` for a position's price currency and uses a
+row only when its origin's source is the ticker's configured one (see
 [`analytics.md`](analytics.md#portfolio-valuation)); resolving a FIGI to a ticker is the job of
 `InstrumentDirectory`, backed by `BrokerInstrumentStorage` below. A relational implementation could
 use a table such as `instrument_metadata` with the ticker (`symbol`) as primary key, `source`
-(`yahoo` | `tinkoff`, the `Source` values), a nullable `class_code` (the board; null for a source
-without boards), `name`, `instrument_type`, `currency`, `exchange`, `timezone`, a nullable `figi`
-and `updated_at`. A `tinkoff` row with no `class_code` counts as a changed origin, so the next sync
-of its ticker refetches the window once and rewrites the row.
+(`yahoo` | `tinkoff`, the `Source` values), a nullable `class_code` (the board; null unless the
+origin is a Tinkoff board), a nullable `yahoo_symbol` (the Yahoo symbol; null unless the origin is
+Yahoo under a symbol), `name`, `instrument_type`, `currency`, `exchange`, `timezone`, a nullable
+`figi` and `updated_at`.
+
+`InstrumentInfo.origin` maps to those columns as follows, and back:
+
+| `origin` | `source` | `class_code` | `yahoo_symbol` |
+|---|---|---|---|
+| `SourceSetting.Yahoo(None)` | `yahoo` | NULL | NULL |
+| `SourceSetting.Yahoo(Some(symbol))` | `yahoo` | NULL | `symbol` |
+| `SourceSetting.Tinkoff(Some(board))` | `tinkoff` | `board` | NULL |
+| `SourceSetting.Tinkoff(None)` | `tinkoff` | NULL | NULL |
+
+The sync compares the whole origin with the adapter's. A Tinkoff adapter always reports a board, so
+a `tinkoff` row with no `class_code` never matches: the next sync of its ticker refetches the window
+once and rewrites the row. A `yahoo` row matches only when its `yahoo_symbol` is the symbol the
+ticker's setting names, so adding, changing or dropping that symbol refetches the window once.
 
 ## `WatchlistStorage[F[_]]`
 
@@ -149,7 +164,9 @@ settings through `all`. Written by the library: `/source` and `/watchlist add` c
 the library re-reads them on every lookup. A relational implementation could use a table such as
 `ticker_sources` with the ticker (`symbol`) as primary key, `source` (`yahoo` | `tinkoff`, the
 `Source` values), a nullable `class_code` that only a `tinkoff` row may set (a
-`SourceSetting.Tinkoff` with no board stores NULL) and `updated_at`.
+`SourceSetting.Tinkoff` with no board stores NULL), a nullable `yahoo_symbol` that only a `yahoo` row
+may set (a `SourceSetting.Yahoo` with no symbol, which looks the ticker up as given, stores NULL) and
+`updated_at`.
 
 ## `BrokerInstrumentStorage[F[_]]`
 

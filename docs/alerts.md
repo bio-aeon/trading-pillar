@@ -270,7 +270,7 @@ final case class LiveEvaluation(alerts: List[Alert], signals: List[StrategySigna
 
 `LiveStrategyServiceImpl.evaluate`, per binding, per poll:
 
-1. Load `PriceHistoryStorage.latestBars(binding.ticker, marketDataSource.source,
+1. Load `PriceHistoryStorage.latestBars(binding.ticker, marketDataSource.origin.source,
    strategy.warmupBars)` into a `BarHistory`.
 2. **onBar path**: if `history.size >= strategy.warmupBars` and there is a latest bar, look up this
    binding's in-memory state (`lastBarDate`, shadow `position`). If `lastBarDate` is already `>=`

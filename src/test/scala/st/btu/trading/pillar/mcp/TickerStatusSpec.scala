@@ -9,19 +9,21 @@ import java.time.{Instant, LocalDate, ZoneOffset, ZonedDateTime}
 class TickerStatusSpec extends Specification {
 
   private val ticker = Ticker("SBER")
+  private val vod = Ticker("VOD")
   private val tqbr = ClassCode("TQBR")
   private val cets = ClassCode("CETS")
+  private val vodL = YahooSymbol("VOD.L")
+  private val vodMx = YahooSymbol("VOD.MX")
   private val now = Instant.parse("2026-10-19T10:00:00Z")
 
   private def metadataFrom(
-    source: Source,
-    board: Option[ClassCode],
-    updatedAt: String = "2026-10-19T09:00:00Z"
+    origin: SourceSetting,
+    updatedAt: String = "2026-10-19T09:00:00Z",
+    forTicker: Ticker = ticker
   ): InstrumentInfo =
     InstrumentInfo(
-      ticker,
-      source,
-      board,
+      forTicker,
+      origin,
       None,
       "EQUITY",
       Currency("RUB"),
@@ -32,16 +34,17 @@ class TickerStatusSpec extends Specification {
     )
 
   private def status(
-    setting: SourceSetting = SourceSetting.Yahoo,
+    setting: SourceSetting = SourceSetting.Yahoo(None),
     stored: Boolean = false,
-    adapter: Option[Origin] = None,
+    adapter: Option[SourceSetting] = None,
     entry: Option[WatchlistItem] = None,
     metadata: Option[InstrumentInfo] = None,
-    lastBars: List[LastBar] = List(LastBar(Source.Yahoo, None), LastBar(Source.Tinkoff, None))
+    lastBars: List[LastBar] = List(LastBar(Source.Yahoo, None), LastBar(Source.Tinkoff, None)),
+    forTicker: Ticker = ticker
   ): TickerStatus =
     TickerStatus(
-      ticker,
-      Option.when(stored)(TickerSource(ticker, setting)),
+      forTicker,
+      Option.when(stored)(TickerSource(forTicker, setting)),
       setting,
       adapter,
       entry,
@@ -69,9 +72,9 @@ class TickerStatusSpec extends Specification {
       "source setting" >> {
 
         "tells a setting stored for the ticker from the default" >> {
-          (line(render(status(SourceSetting.Yahoo, stored = true)), "Source setting") must_==
+          (line(render(status(SourceSetting.Yahoo(None), stored = true)), "Source setting") must_==
             "Source setting: yahoo (set for this ticker)") and
-            (line(render(status(SourceSetting.Yahoo)), "Source setting") must_==
+            (line(render(status(SourceSetting.Yahoo(None))), "Source setting") must_==
               "Source setting: yahoo (none set for this ticker, so the default)")
         }
 
@@ -81,18 +84,33 @@ class TickerStatusSpec extends Specification {
             "Source setting"
           ) must_== "Source setting: tinkoff, board TQBR (set for this ticker)"
         }
+
+        "names the Yahoo symbol of a Yahoo setting" >> {
+          line(
+            render(status(SourceSetting.Yahoo(Some(vodL)), stored = true, forTicker = vod)),
+            "Source setting"
+          ) must_== "Source setting: yahoo, symbol VOD.L (set for this ticker)"
+        }
       }
 
       "adapter" >> {
 
         "names the source and board of a wired adapter" >> {
-          (line(render(status(adapter = Some(Origin(Source.Yahoo, None)))), "Adapter") must_==
-            "Adapter: wired (yahoo)") and
+          (line(
+            render(status(adapter = Some(SourceSetting.Yahoo(None)))),
+            "Adapter"
+          ) must_== "Adapter: wired (yahoo)") and
             (line(
-              render(status(adapter = Some(Origin(Source.Tinkoff, Some(tqbr))))),
+              render(status(adapter = Some(SourceSetting.Tinkoff(Some(tqbr))))),
               "Adapter"
-            ) must_==
-              "Adapter: wired (tinkoff, board TQBR)")
+            ) must_== "Adapter: wired (tinkoff, board TQBR)")
+        }
+
+        "names the Yahoo symbol of a wired adapter" >> {
+          line(
+            render(status(adapter = Some(SourceSetting.Yahoo(Some(vodL))), forTicker = vod)),
+            "Adapter"
+          ) must_== "Adapter: wired (yahoo, symbol VOD.L)"
         }
 
         "says the sync skips the ticker when no adapter is wired" >> {
@@ -150,17 +168,29 @@ class TickerStatusSpec extends Specification {
           line(
             render(
               status(metadata =
-                Some(metadataFrom(Source.Tinkoff, Some(cets), "2026-10-19T04:30:00Z"))
+                Some(metadataFrom(SourceSetting.Tinkoff(Some(cets)), "2026-10-19T04:30:00Z"))
               )
             ),
             "Metadata:"
           ) must_== "Metadata: read from tinkoff, board CETS, currency RUB, updated 5 hours ago"
         }
 
+        "names the Yahoo symbol it was read under" >> {
+          line(
+            render(
+              status(
+                metadata = Some(metadataFrom(SourceSetting.Yahoo(Some(vodL)), forTicker = vod)),
+                forTicker = vod
+              )
+            ),
+            "Metadata:"
+          ) must_== "Metadata: read from yahoo, symbol VOD.L, currency RUB, updated 1 hour ago"
+        }
+
         "reports its age in the largest whole unit" >> {
           def age(updatedAt: String): String =
             line(
-              render(status(metadata = Some(metadataFrom(Source.Yahoo, None, updatedAt)))),
+              render(status(metadata = Some(metadataFrom(SourceSetting.Yahoo(None), updatedAt)))),
               "Metadata:"
             )
               .split(", updated ")
@@ -191,8 +221,22 @@ class TickerStatusSpec extends Specification {
             render(
               status(
                 SourceSetting.Tinkoff(None),
-                adapter = Some(Origin(Source.Tinkoff, Some(tqbr))),
-                metadata = Some(metadataFrom(Source.Tinkoff, Some(tqbr)))
+                adapter = Some(SourceSetting.Tinkoff(Some(tqbr))),
+                metadata = Some(metadataFrom(SourceSetting.Tinkoff(Some(tqbr))))
+              )
+            ),
+            "Metadata origin"
+          ) must_== "Metadata origin: matches the source setting"
+        }
+
+        "matches when it was read under the Yahoo symbol of the adapter that serves the ticker" >> {
+          line(
+            render(
+              status(
+                SourceSetting.Yahoo(Some(vodL)),
+                adapter = Some(SourceSetting.Yahoo(Some(vodL))),
+                metadata = Some(metadataFrom(SourceSetting.Yahoo(Some(vodL)), forTicker = vod)),
+                forTicker = vod
               )
             ),
             "Metadata origin"
@@ -204,8 +248,8 @@ class TickerStatusSpec extends Specification {
             render(
               status(
                 SourceSetting.Tinkoff(Some(cets)),
-                adapter = Some(Origin(Source.Tinkoff, Some(cets))),
-                metadata = Some(metadataFrom(Source.Tinkoff, Some(tqbr)))
+                adapter = Some(SourceSetting.Tinkoff(Some(cets))),
+                metadata = Some(metadataFrom(SourceSetting.Tinkoff(Some(tqbr))))
               )
             ),
             "Metadata origin"
@@ -213,12 +257,41 @@ class TickerStatusSpec extends Specification {
             "so the next sync re-reads the metadata and refetches the bars"
         }
 
+        "differs when it was read under another Yahoo symbol than the adapter's" >> {
+          line(
+            render(
+              status(
+                SourceSetting.Yahoo(Some(vodL)),
+                adapter = Some(SourceSetting.Yahoo(Some(vodL))),
+                metadata = Some(metadataFrom(SourceSetting.Yahoo(Some(vodMx)), forTicker = vod)),
+                forTicker = vod
+              )
+            ),
+            "Metadata origin"
+          ) must_== "Metadata origin: differs from the source setting, " +
+            "so the next sync re-reads the metadata and refetches the bars"
+        }
+
+        "differs when it was read without the Yahoo symbol the setting names, with no adapter wired" >> {
+          line(
+            render(
+              status(
+                SourceSetting.Yahoo(Some(vodL)),
+                metadata = Some(metadataFrom(SourceSetting.Yahoo(None), forTicker = vod)),
+                forTicker = vod
+              )
+            ),
+            "Metadata origin"
+          ) must_== "Metadata origin: differs from the source setting; " +
+            "once an adapter is wired, the sync re-reads the metadata and refetches the bars"
+        }
+
         "differs when it was read from another source, and the sync waits for an adapter" >> {
           line(
             render(
               status(
                 SourceSetting.Tinkoff(Some(tqbr)),
-                metadata = Some(metadataFrom(Source.Yahoo, None))
+                metadata = Some(metadataFrom(SourceSetting.Yahoo(None)))
               )
             ),
             "Metadata origin"
@@ -231,16 +304,16 @@ class TickerStatusSpec extends Specification {
             render(
               status(
                 SourceSetting.Tinkoff(None),
-                metadata = Some(metadataFrom(Source.Tinkoff, Some(tqbr)))
+                metadata = Some(metadataFrom(SourceSetting.Tinkoff(Some(tqbr))))
               )
             ),
             "Metadata origin"
           ) must_== "Metadata origin: matches the source setting"
         }
 
-        "matches a Yahoo setting by source and no board when no adapter is wired" >> {
+        "matches a Yahoo setting with no symbol when no adapter is wired" >> {
           line(
-            render(status(metadata = Some(metadataFrom(Source.Yahoo, None)))),
+            render(status(metadata = Some(metadataFrom(SourceSetting.Yahoo(None))))),
             "Metadata origin"
           ) must_== "Metadata origin: matches the source setting"
         }
