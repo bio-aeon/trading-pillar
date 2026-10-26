@@ -6,8 +6,9 @@ lazy val root = (project in file("."))
     name := "trading-pillar",
     version := "0.1.0-SNAPSHOT",
     scalaVersion := "3.9.0",
-    // generated Tinkoff protobuf/gRPC stubs are not our code; keep them out of coverage figures
-    coverageExcludedPackages := "ru\\.tinkoff\\..*",
+    // code generated from the Tinkoff contracts, and from the Google annotations they import, is
+    // not our code; keep it out of coverage figures
+    coverageExcludedPackages := "ru\\.tinkoff\\..*;st\\.btu\\.trading\\.pillar\\.contracts\\..*",
     libraryDependencies ++= Seq(
       bcprov,
       bcpkix,
@@ -22,6 +23,9 @@ lazy val root = (project in file("."))
       mcpServerHttp4s,
       http4sEmberServer,
       scalapbRuntime % "protobuf",
+      // only the contracts' .proto files are used, compiled here to Scala; the jar's Java classes
+      // are not
+      (investContracts % "protobuf-src").intransitive(),
       grpcNetty,
       yfinance4s,
       specs2Core % Test,

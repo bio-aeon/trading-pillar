@@ -34,7 +34,7 @@ final class TcsFacadeImpl[F[_]: Monad: Logging] private (
   private val metadata = TcsGrpc.bearerMetadata(token)
 
   def portfolio: F[Portfolio] = {
-    val instrumentsRequest = InstrumentsRequest(InstrumentStatus.INSTRUMENT_STATUS_ALL)
+    val instrumentsRequest = InstrumentsRequest(Some(InstrumentStatus.INSTRUMENT_STATUS_ALL))
     for {
       tcsCurrencies <- instrumentsGrpc
         .currencies(instrumentsRequest, metadata)

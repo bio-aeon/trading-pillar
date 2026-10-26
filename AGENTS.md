@@ -25,7 +25,11 @@ published snapshot, so run `sbt publishLocal` after a change they need to see.
 - Every dependency resolves from Maven Central; versions live in `project/Dependencies.scala`.
 - `-Werror` is on, together with `-deprecation` and `-feature`: any warning fails the build. Only
   the warnings of the generated Tinkoff stubs are filtered out.
-- Stubs for the Tinkoff API are generated from `src/main/protobuf` during compilation.
+- Stubs for the Tinkoff API are generated during compilation from the official contracts,
+  `ru.tinkoff.piapi:java-sdk-grpc-contract`: sbt unpacks its `.proto` files (`protobuf-src`) and
+  ScalaPB compiles them. The jar's own Java classes are not used. The contracts import Google's
+  `field_behavior.proto`; `src/main/protobuf/google/api/package.proto` generates its code into
+  `st.btu.trading.pillar.contracts`, so it cannot clash with another library's `com.google.api`.
 
 ```bash
 sbt compile
@@ -98,8 +102,15 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 - **Public API.** Every public type and member gets Scaladoc with a one-sentence summary; internals
   are `private` or `private[pillar]`. Narrowing or removing a public member breaks consumers, so
   propose it rather than doing it as part of another change.
-- **Vendored protos.** `src/main/protobuf` holds the upstream Tinkoff Invest contracts. Leave their
-  upstream text as it is, and record any deviation in the file header, as `marketdata.proto` does.
+- **Tinkoff contracts.** Updating the T-Invest contracts is a bump of `Versions.investContracts`. A
+  new version can add calls, which the gRPC fakes in `testkit.TcsMarketDataFakes` must stub, and can
+  deprecate request fields. Build requests with the replacement fields, since naming a deprecated
+  field in a constructor raises no warning.
+- **Tinkoff TLS.** The API's certificates chain to the Russian Trusted Root CA, which the JDK does
+  not ship. `TcsGrpc` trusts it next to the JDK's roots, for that channel only, from
+  `src/main/resources/st/btu/trading/pillar/facades/russian-trusted-root-ca.pem`. The root expires
+  on 2032-02-27; take a reissued one from the Ministry of Digital Development, and check its
+  fingerprint against T-Bank's own SDK.
 
 ## Code style
 

@@ -243,7 +243,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           source <- buildSource(instruments, marketData)
           _ <- source.onBoard(Some(cets)).instrumentInfo(ticker)
           calls <- instruments.getInstrumentByCalls
-        } yield calls.map(_.classCode) must_== List("CETS")
+        } yield calls.map(_.classCode) must_== List(Some("CETS"))
       }
 
       "looks the ticker up on the default board when no board is given" >> {
@@ -253,7 +253,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           source <- buildSource(instruments, marketData)
           _ <- source.onBoard(None).instrumentInfo(ticker)
           calls <- instruments.getInstrumentByCalls
-        } yield calls.map(_.classCode) must_== List("TQBR")
+        } yield calls.map(_.classCode) must_== List(Some("TQBR"))
       }
 
       "names the requested board in its metadata and as its own origin" >> {
@@ -313,7 +313,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           _ <- source.onBoard(Some(cets)).instrumentInfo(ticker)
           _ <- source.onBoard(Some(tqbr)).instrumentInfo(ticker)
           calls <- instruments.getInstrumentByCalls
-        } yield calls.map(_.classCode) must_== List("CETS", "TQBR")
+        } yield calls.map(_.classCode) must_== List(Some("CETS"), Some("TQBR"))
       }
 
       "shares the default board's lookups with the plain source" >> {

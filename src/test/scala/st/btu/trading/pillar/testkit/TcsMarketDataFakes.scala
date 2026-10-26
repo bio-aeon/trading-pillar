@@ -27,7 +27,7 @@ object TcsMarketDataFakes {
 
   // A ticker lookup is answered from byBoard, keyed by the request's class code and ticker, and
   // otherwise from byTicker, keyed by the ticker alone; a FIGI lookup is answered from byFigi.
-  // Dividends are keyed by GetDividendsRequest.figi (the FIGI resolved via getInstrumentBy).
+  // Dividends are keyed by GetDividendsRequest.instrumentId, the FIGI getInstrumentBy resolved.
   def instrumentsService(
     byTicker: Map[String, IO[InstrumentResponse]] = Map.empty,
     dividends: Map[String, IO[GetDividendsResponse]] = Map.empty,
@@ -42,8 +42,8 @@ object TcsMarketDataFakes {
         val response = request.idType match {
           case InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI => byFigi.get(request.id)
           case InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER =>
-            byBoard
-              .get(OnBoard(ClassCode(request.classCode), Ticker(request.id)))
+            request.classCode
+              .flatMap(code => byBoard.get(OnBoard(ClassCode(code), Ticker(request.id))))
               .orElse(byTicker.get(request.id))
           case other =>
             Some(IO.raiseError(new UnsupportedOperationException(s"no fake lookup by $other")))
@@ -57,7 +57,7 @@ object TcsMarketDataFakes {
 
       def getDividends(request: GetDividendsRequest, ctx: Unit): IO[GetDividendsResponse] =
         dividendsCallsRef.update(_ :+ request) >> dividends.getOrElse(
-          request.figi,
+          request.instrumentId,
           IO.pure(GetDividendsResponse())
         )
 
@@ -117,6 +117,50 @@ object TcsMarketDataFakes {
         unimplemented("getBrands")
       def getBrandBy(request: GetBrandRequest, ctx: Unit): IO[Brand] =
         unimplemented("getBrandBy")
+      def getBondEvents(request: GetBondEventsRequest, ctx: Unit): IO[GetBondEventsResponse] =
+        unimplemented("getBondEvents")
+      def optionsBy(request: FilterOptionsRequest, ctx: Unit): IO[OptionsResponse] =
+        unimplemented("optionsBy")
+      def dfaBy(request: InstrumentRequest, ctx: Unit): IO[DfaResponse] =
+        unimplemented("dfaBy")
+      def dfas(request: DfasRequest, ctx: Unit): IO[DfasResponse] =
+        unimplemented("dfas")
+      def indicatives(request: IndicativesRequest, ctx: Unit): IO[IndicativesResponse] =
+        unimplemented("indicatives")
+      def createFavoriteGroup(
+        request: CreateFavoriteGroupRequest,
+        ctx: Unit
+      ): IO[CreateFavoriteGroupResponse] = unimplemented("createFavoriteGroup")
+      def deleteFavoriteGroup(
+        request: DeleteFavoriteGroupRequest,
+        ctx: Unit
+      ): IO[DeleteFavoriteGroupResponse] = unimplemented("deleteFavoriteGroup")
+      def getFavoriteGroups(
+        request: GetFavoriteGroupsRequest,
+        ctx: Unit
+      ): IO[GetFavoriteGroupsResponse] = unimplemented("getFavoriteGroups")
+      def getAssetFundamentals(
+        request: GetAssetFundamentalsRequest,
+        ctx: Unit
+      ): IO[GetAssetFundamentalsResponse] = unimplemented("getAssetFundamentals")
+      def getAssetReports(request: GetAssetReportsRequest, ctx: Unit): IO[GetAssetReportsResponse] =
+        unimplemented("getAssetReports")
+      def getConsensusForecasts(
+        request: GetConsensusForecastsRequest,
+        ctx: Unit
+      ): IO[GetConsensusForecastsResponse] = unimplemented("getConsensusForecasts")
+      def getForecastBy(request: GetForecastRequest, ctx: Unit): IO[GetForecastResponse] =
+        unimplemented("getForecastBy")
+      def getRiskRates(request: RiskRatesRequest, ctx: Unit): IO[RiskRatesResponse] =
+        unimplemented("getRiskRates")
+      def getInsiderDeals(request: GetInsiderDealsRequest, ctx: Unit): IO[GetInsiderDealsResponse] =
+        unimplemented("getInsiderDeals")
+      def structuredNoteBy(request: InstrumentRequest, ctx: Unit): IO[StructuredNoteResponse] =
+        unimplemented("structuredNoteBy")
+      def structuredNotes(request: InstrumentsRequest, ctx: Unit): IO[StructuredNotesResponse] =
+        unimplemented("structuredNotes")
+      def news(request: NewsRequest, ctx: Unit): IO[NewsResponse] =
+        unimplemented("news")
     }
 
   // --- MarketDataServiceFs2Grpc (only getCandles / getLastPrices are exercised) ---

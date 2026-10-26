@@ -92,7 +92,7 @@ class TcsInstrumentDirectorySpec extends Specification with CatsEffect {
         } yield {
           calls.map(_.idType) must_== List(InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI)
           calls.map(_.id) must_== List(figi.value)
-          calls.map(_.classCode) must_== List("")
+          calls.map(_.classCode) must_== List(None)
         }
       }
 

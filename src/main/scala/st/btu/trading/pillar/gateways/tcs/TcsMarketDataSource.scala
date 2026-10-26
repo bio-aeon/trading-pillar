@@ -98,7 +98,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
       resp <- F.adaptError(
         instruments.getDividends(
           GetDividendsRequest(
-            figi = instrument.figi,
+            instrumentId = instrument.figi,
             from = Some(toTimestamp(since.atStartOfDay(config.zone))),
             to = Some(toTimestamp(until.plusDays(1).atStartOfDay(config.zone)))
           ),
@@ -178,7 +178,7 @@ final class TcsMarketDataSource[F[_]: Logging] private (
       instruments.getInstrumentBy(
         InstrumentRequest(
           InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-          lookupBoard.value,
+          Some(lookupBoard.value),
           ticker.value
         ),
         ()

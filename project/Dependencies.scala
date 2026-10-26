@@ -14,6 +14,7 @@ object Dependencies {
     val http4s = "0.23.38"
     val scalapb = "0.11.15"
     val grpc = "1.64.0"
+    val investContracts = "1.51"
     val specs2 = "4.20.5"
     val catsEffectTesting = "1.5.0"
     val yfinance4s = "0.2.0"
@@ -34,6 +35,7 @@ object Dependencies {
   val http4sEmberServer = "org.http4s" %% "http4s-ember-server" % Versions.http4s
   val scalapbRuntime = "com.thesamet.scalapb" %% "scalapb-runtime" % Versions.scalapb
   val grpcNetty = "io.grpc" % "grpc-netty-shaded" % Versions.grpc
+  val investContracts = "ru.tinkoff.piapi" % "java-sdk-grpc-contract" % Versions.investContracts
   val yfinance4s = "io.github.coinductive" %% "yfinance4s" % Versions.yfinance4s
 
   // Test dependencies

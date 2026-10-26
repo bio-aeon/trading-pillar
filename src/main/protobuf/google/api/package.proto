@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+// The T-Invest contracts import google/api/field_behavior.proto, so its Scala code is generated
+// with theirs. Generating it into this library's package keeps it from clashing with the copy
+// other ScalaPB libraries publish under com.google.api.
+package google.api;
+
+import "scalapb/scalapb.proto";
+
+option (scalapb.options) = {
+  scope: PACKAGE
+  package_name: "st.btu.trading.pillar.contracts.google.api"
+};

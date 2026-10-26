@@ -204,8 +204,10 @@ pounds and is not divided. The table is Yahoo's convention and lives in the adap
 built on the Tinkoff Invest gRPC API instead of yfinance4s. It is the source for MOEX-listed tickers
 (e.g. `SBER`) that Yahoo Finance no longer serves - see "Known limitation" below.
 
-It calls three Tinkoff Invest RPCs, all against `invest-public-api.tinkoff.ru:443` (TLS, with a
-Bearer-token `Metadata` interceptor built from a `tcs.Token`):
+It calls three Tinkoff Invest RPCs, all against `invest-public-api.tbank.ru:443` over TLS, with a
+Bearer-token `Metadata` interceptor built from a `tcs.Token`. The API's certificates chain to the
+Russian Trusted Root CA, which the JDK does not ship, so the channel trusts that root, bundled with
+the library, besides the JDK's own roots. The trust applies to this channel only.
 
 - **`InstrumentsService.GetInstrumentBy`** (`InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER`, keyed by
   `Ticker.value` and the board's class code) resolves a ticker to its FIGI and the rest of the
@@ -247,15 +249,15 @@ Errors map from the gRPC `Status` code of a `StatusRuntimeException` (any other 
 
 ### Tinkoff dividends
 
-`TcsMarketDataSource.dividends` calls `InstrumentsService.GetDividends(figi, from, to)` for the
-cached FIGI (same resolution/caching as `dailyBars`/`latestQuote`). Tinkoff's `Dividend` message has
-no explicit ex-dividend date field, so **`exDate` is approximated as `last_buy_date + 1 day`** -
-the exchange convention that the ex-date is the first trading day on which a purchase no longer
-settles in time to land the buyer on the dividend register for that payment. This is a documented
-approximation, not an exact figure from the API. `amount` is `dividend_net` (a `MoneyValue`:
-`units + nano / 1e9`, scaled to 6 decimals, same as prices) and `currency` is `dividend_net`'s own
-`currency` field. Entries without a `last_buy_date`, or whose `dividend_net` amount is zero, are
-skipped rather than guessed at.
+`TcsMarketDataSource.dividends` calls `InstrumentsService.GetDividends(instrument_id, from, to)`
+with the cached FIGI as `instrument_id` (same resolution/caching as `dailyBars`/`latestQuote`).
+Tinkoff's `Dividend` message has no explicit ex-dividend date field, so **`exDate` is approximated
+as `last_buy_date + 1 day`** - the exchange convention that the ex-date is the first trading day on
+which a purchase no longer settles in time to land the buyer on the dividend register for that
+payment. This is a documented approximation, not an exact figure from the API. `amount` is
+`dividend_net` (a `MoneyValue`: `units + nano / 1e9`, scaled to 6 decimals, same as prices) and
+`currency` is `dividend_net`'s own `currency` field. Entries without a `last_buy_date`, or whose
+`dividend_net` amount is zero, are skipped rather than guessed at.
 
 ### Boards (`TinkoffBoards`)
 

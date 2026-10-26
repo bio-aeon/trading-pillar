@@ -31,8 +31,6 @@ final class TcsInstrumentDirectory[F[_]] private (
 )(implicit F: MonadThrow[F], clock: Clock[F])
     extends InstrumentDirectory[F] {
 
-  import TcsInstrumentDirectory.NoClassCode
-
   def byFigi(figi: Figi): F[Option[BrokerInstrument]] =
     storage.find(figi).flatMap {
       case stored @ Some(_) => F.pure(stored)
@@ -49,7 +47,7 @@ final class TcsInstrumentDirectory[F[_]] private (
   // A FIGI the broker does not know is an answer (None), not a failure.
   private def fetch(figi: Figi): F[Option[Instrument]] = {
     val request =
-      InstrumentRequest(InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, NoClassCode, figi.value)
+      InstrumentRequest(InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, classCode = None, id = figi.value)
     F.adaptError(
       instruments
         .getInstrumentBy(request, ())
@@ -73,9 +71,6 @@ final class TcsInstrumentDirectory[F[_]] private (
 }
 
 object TcsInstrumentDirectory {
-
-  // The board is only needed to look a ticker up; a FIGI identifies the instrument on its own.
-  private val NoClassCode = ""
 
   /** Wires an [[InstrumentDirectory]] over the given Tinkoff gRPC stub, remembering what it fetches
     * in `storage`.
