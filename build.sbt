@@ -9,6 +9,13 @@ lazy val root = (project in file("."))
     // code generated from the Tinkoff contracts, and from the Google annotations they import, is
     // not our code; keep it out of coverage figures
     coverageExcludedPackages := "ru\\.tinkoff\\..*;st\\.btu\\.trading\\.pillar\\.contracts\\..*",
+    // TcsFacade.ApiVersion names the contracts dependency, so a bump of it changes the version too
+    buildInfoKeys := Seq[BuildInfoKey](
+      "investContracts" -> s"${investContracts.name} ${investContracts.revision}"
+    ),
+    buildInfoPackage := "st.btu.trading.pillar.facades",
+    buildInfoObject := "ContractsInfo",
+    buildInfoOptions += BuildInfoOption.PackagePrivate,
     libraryDependencies ++= Seq(
       bcprov,
       bcpkix,
@@ -34,7 +41,7 @@ lazy val root = (project in file("."))
       sttpCatsEffect % Test
     )
   )
-  .enablePlugins(Fs2Grpc)
+  .enablePlugins(Fs2Grpc, BuildInfoPlugin)
 
 scalacOptions ++= Seq(
   "-deprecation",

@@ -6,7 +6,7 @@ import st.btu.trading.pillar.facades.TcsFacade
 import st.btu.trading.pillar.gateways.TgGateway
 import st.btu.trading.pillar.models.domain.Portfolio
 import st.btu.trading.pillar.models.tg.{ChatId, InlineButton, Result, Update}
-import ru.tinkoff.piapi.contract.v1.operations.Operation
+import ru.tinkoff.piapi.contract.v1.operations.OperationItem
 
 import java.time.ZonedDateTime
 
@@ -99,11 +99,11 @@ object Fakes {
 
   def tcsFacade(
     portfolioRef: Ref[IO, Portfolio],
-    operationsResponse: List[Operation] = List.empty
+    operationsResponse: List[OperationItem] = List.empty
   ): FakeTcsFacade[IO] = new FakeTcsFacade[IO] {
     def portfolio: IO[Portfolio] = portfolioRef.get
 
-    def operations(since: ZonedDateTime, until: ZonedDateTime): IO[List[Operation]] =
+    def operations(since: ZonedDateTime, until: ZonedDateTime): IO[List[OperationItem]] =
       IO.pure(operationsResponse)
 
     def setPortfolio(portfolio: Portfolio): IO[Unit] =

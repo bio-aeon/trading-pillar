@@ -9,7 +9,7 @@ import cats.syntax.show.*
 import cats.syntax.traverse.*
 import cats.{Functor, Monad}
 import ru.tinkoff.piapi.contract.v1.common.MoneyValue
-import ru.tinkoff.piapi.contract.v1.operations.Operation as TcsOperation
+import ru.tinkoff.piapi.contract.v1.operations.OperationItem
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.facades.TcsFacade
 import st.btu.trading.pillar.models.domain.*
@@ -56,7 +56,7 @@ final class TcsPortfolioServiceImpl[F[_]: Logging] private (
         Set.empty[(String, String)].pure[F]
       )
       operationsToSave <- tcsOperations
-        .filter(x => !existingOperations.contains((x.operationType.name, x.id)))
+        .filter(x => !existingOperations.contains((x.`type`.name, x.id)))
         .traverse(toDomainOperation(_, accountId))
         .map(_.sortBy(_.createdAt))
       _ <- info"Received ${operationsToSave.length} new tcs operations"
@@ -64,7 +64,7 @@ final class TcsPortfolioServiceImpl[F[_]: Logging] private (
     } yield operationsToSave.lastOption.map(_.createdAt).orElse(Some(untilWithoutOverlap))
 
   private[services] def toDomainOperation(
-    tcsOperation: TcsOperation,
+    tcsOperation: OperationItem,
     accountId: AccountId
   ): F[TcsPortfolioOperation] = {
     val instrumentType_? = Option(tcsOperation.instrumentType).filter(_.nonEmpty)
@@ -74,16 +74,16 @@ final class TcsPortfolioServiceImpl[F[_]: Logging] private (
       tcsOperation.price.orRaise[F](new Exception("Empty price")),
       tcsOperation.payment.orRaise[F](new Exception("Empty amount")),
       tcsOperation.date.orRaise[F](new Exception("Empty date"))
-    ).flatMapN { case (price, amount, date) =>
-      (moneyToBigDecimal(price), moneyToBigDecimal(amount)).mapN(
+    ).flatMapN { case (price, payment, date) =>
+      (moneyToBigDecimal(price), moneyToBigDecimal(payment)).mapN(
         TcsPortfolioOperation(
           PortfolioOperationId(0),
           PortfolioOperationExtId(tcsOperation.id),
-          PortfolioOperationType(tcsOperation.operationType.name),
+          PortfolioOperationType(tcsOperation.`type`.name),
           instrumentType_?.map(PortfolioInstrumentType(_)),
           PortfolioOperationStatus(tcsOperation.state.name),
           figi_?.map(Figi(_)),
-          Currency(tcsOperation.currency),
+          Currency(payment.currency),
           _,
           tcsOperation.quantity.toInt,
           tcsOperation.quantityRest.toInt,

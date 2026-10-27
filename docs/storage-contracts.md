@@ -40,6 +40,9 @@ trait TcsPortfolioOperationStorage[F[_]] {
 
 Written by the library, via `TcsPortfolioSyncProcess`, through `saveOperations`, which skips any
 operation already on record. An operation is identified by `(accountId, extId, operationType)`.
+T-Invest warns that an operation's id can change over time, so an operation that comes back under a
+new id is stored again. `protocolVersion` is `TcsFacade.ApiVersion`, the contracts version the
+operation was fetched with.
 Operations are read back through `lastOperation` and `operationsByDtRange` (by the sync itself, the
 valuation and tax services, and `/export`). A relational implementation could use a table such as
 `tcs_portfolio_operations` with a generated `id`, one column per remaining `TcsPortfolioOperation`

@@ -11,8 +11,8 @@ import io.grpc.Metadata
 import ru.tinkoff.piapi.contract.v1.common.InstrumentStatus
 import ru.tinkoff.piapi.contract.v1.instruments.{InstrumentsRequest, InstrumentsServiceFs2Grpc}
 import ru.tinkoff.piapi.contract.v1.operations.{
-  Operation,
-  OperationsRequest,
+  GetOperationsByCursorRequest,
+  OperationItem,
   OperationsServiceFs2Grpc,
   PortfolioRequest
 }
@@ -67,17 +67,14 @@ final class TcsFacadeImpl[F[_]: Monad: Logging] private (
     }
   }
 
-  def operations(since: ZonedDateTime, until: ZonedDateTime): F[List[Operation]] =
-    operationsGrpc
-      .getOperations(
-        OperationsRequest(
-          brokerAccountId.show,
-          zonedDtToTimestamp(since).some,
-          zonedDtToTimestamp(until).some
-        ),
-        metadata
-      )
-      .map(_.operations.toList)
+  def operations(since: ZonedDateTime, until: ZonedDateTime): F[List[OperationItem]] =
+    TcsFacadeImpl.allOperations(
+      operationsGrpc,
+      metadata,
+      brokerAccountId,
+      zonedDtToTimestamp(since),
+      zonedDtToTimestamp(until)
+    )
 
   private def zonedDtToTimestamp(dt: ZonedDateTime): Timestamp = {
     val i = dt.toInstant
@@ -86,6 +83,32 @@ final class TcsFacadeImpl[F[_]: Monad: Logging] private (
 }
 
 object TcsFacadeImpl {
+
+  // The most operations GetOperationsByCursor returns per page.
+  private val OperationsPageLimit = 1000
+
+  private[facades] def allOperations[F[_]: Monad](
+    operationsGrpc: OperationsServiceFs2Grpc[F, Metadata],
+    metadata: Metadata,
+    brokerAccountId: tcs.BrokerAccountId,
+    since: Timestamp,
+    until: Timestamp
+  ): F[List[OperationItem]] =
+    Monad[F].tailRecM((Option.empty[String], Vector.empty[OperationItem])) {
+      case (cursor, fetched) =>
+        val request = GetOperationsByCursorRequest(
+          accountId = brokerAccountId.show,
+          from = since.some,
+          to = until.some,
+          cursor = cursor,
+          limit = OperationsPageLimit.some,
+          withoutTrades = true.some
+        )
+        operationsGrpc.getOperationsByCursor(request, metadata).map { page =>
+          val all = fetched ++ page.items
+          Either.cond(!page.hasNext, all.toList, (page.nextCursor.some, all))
+        }
+    }
 
   /** Wires a `TcsFacade` authenticated as `brokerAccountId`, holding the gRPC channel open for the
     * resource's lifetime.
