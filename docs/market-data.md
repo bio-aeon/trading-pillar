@@ -94,6 +94,10 @@ calls is the symbol Yahoo is asked for, which is the bot's ticker unless the set
 - **Date derivation**: each `YahooQuote.datetime` (UTC) is converted to a `LocalDate` in the
   instrument's *exchange* timezone (`meta.exchangeTimezoneName`), not UTC or the caller's zone.
   When two quotes fall on the same exchange-local date, the later one in the source list wins.
+- **Sessions in progress are skipped**: while a session is open, Yahoo's daily chart ends with a
+  bar whose close is the latest price. yfinance4s marks that bar (`ChartResult.Quote.inProgress`,
+  carried as `YahooQuote.inProgress`), and `dailyBars` leaves it out, so the session's bar arrives
+  with the first request after the close, as with the Tinkoff source.
 - **Quote validation**: a quote is dropped (and a single warning logged with the drop count) if
   `open`/`high`/`low`/`close` is `NaN`, infinite or `<= 0`, or `volume < 0`.
 - **Numeric conversion**: `Double -> BigDecimal` via `java.math.BigDecimal.valueOf(d)`, then

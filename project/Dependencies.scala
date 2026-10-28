@@ -17,7 +17,7 @@ object Dependencies {
     val investContracts = "1.51"
     val specs2 = "4.20.5"
     val catsEffectTesting = "1.5.0"
-    val yfinance4s = "0.2.0"
+    val yfinance4s = "0.3.0"
   }
 
   val bcprov = "org.bouncycastle" % "bcprov-jdk18on" % Versions.bouncyCastle

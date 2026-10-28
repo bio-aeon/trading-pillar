@@ -7,7 +7,12 @@ import io.github.coinductive.yfinance4s.models.{Ticker as YfTicker, *}
 
 import java.time.ZonedDateTime
 
-/** One daily OHLCV quote from yfinance4s, before conversion to this library's own `Bar`. */
+/** One daily OHLCV quote from yfinance4s, before conversion to this library's own `Bar`.
+  *
+  * @param inProgress
+  *   whether the quote is the bar of a session still open when Yahoo answered: its close is the
+  *   latest price, and its high, low and volume can still change
+  */
 final case class YahooQuote(
   datetime: ZonedDateTime,
   open: Double,
@@ -15,7 +20,8 @@ final case class YahooQuote(
   low: Double,
   close: Double,
   adjClose: Double,
-  volume: Long
+  volume: Long,
+  inProgress: Boolean
 )
 
 /** A ticker's daily quotes, plus the currency they are denominated in. */
@@ -93,7 +99,8 @@ object YahooApi {
       quote.low,
       quote.close,
       quote.adjclose,
-      quote.volume
+      quote.volume,
+      quote.inProgress
     )
 
   private def toYahooMetadata(meta: HistoryMetadata): YahooMetadata =

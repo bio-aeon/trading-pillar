@@ -15,7 +15,8 @@ trait MarketDataSource[F[_]] {
     */
   def origin: SourceSetting
 
-  /** Daily bars for `ticker` between `since` and `until`, chronological.
+  /** Daily bars for `ticker` between `since` and `until`, chronological. Only sessions that have
+    * closed are returned, so every bar is final.
     *
     * @return
     *   a failed `F` with `MarketDataError` if the ticker is unrecognized, the source is

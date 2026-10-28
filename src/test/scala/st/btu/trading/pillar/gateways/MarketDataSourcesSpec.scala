@@ -30,7 +30,16 @@ class MarketDataSourcesSpec extends Specification with CatsEffect {
           Some(
             YahooChart(
               List(
-                YahooQuote(ZonedDateTime.parse("2024-01-10T12:00:00Z"), 1, 2, 0.5, 1.5, 1.5, 100)
+                YahooQuote(
+                  ZonedDateTime.parse("2024-01-10T12:00:00Z"),
+                  1,
+                  2,
+                  0.5,
+                  1.5,
+                  1.5,
+                  100,
+                  inProgress = false
+                )
               ),
               "GBP"
             )

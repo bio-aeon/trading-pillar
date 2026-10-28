@@ -133,7 +133,7 @@ final class YahooMarketDataSource[F[_]: Logging] private (
     val zone = ZoneId.of(meta.exchangeTimezoneName)
     val currency = YahooCurrency.of(meta.currency)
     val (validQuotes, droppedCount) =
-      quotes.foldLeft((List.empty[YahooQuote], 0)) {
+      quotes.filterNot(_.inProgress).foldLeft((List.empty[YahooQuote], 0)) {
         case ((acc, dropped), q) if isValidQuote(q) => (q :: acc, dropped)
         case ((acc, dropped), _) => (acc, dropped + 1)
       }

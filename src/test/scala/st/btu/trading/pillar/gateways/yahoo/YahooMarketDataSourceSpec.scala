@@ -45,8 +45,9 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
     low: Double = 0.5,
     close: Double = 1.5,
     adjClose: Double = 1.5,
-    volume: Long = 100
-  ): YahooQuote = YahooQuote(dt, open, high, low, close, adjClose, volume)
+    volume: Long = 100,
+    inProgress: Boolean = false
+  ): YahooQuote = YahooQuote(dt, open, high, low, close, adjClose, volume, inProgress)
 
   // Yahoo's description of VOD.L, quoted in `currency` (pence by default).
   private def londonMetadata(currency: String = "GBp"): YahooMetadata =
@@ -116,6 +117,20 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
               ticker.value -> IO
                 .pure(Some(YahooChart(List(good, nonFiniteOpen, zeroClose, negativeVolume), "USD")))
             ),
+            metadata = Map(ticker.value -> IO.pure(usMetadata))
+          )
+          source <- buildSource(api)
+          bars <- source.dailyBars(ticker, LocalDate.of(2024, 1, 1), LocalDate.of(2024, 1, 31))
+        } yield bars.map(_.date) must_== List(LocalDate.of(2024, 1, 10))
+      }
+
+      "leaves out the bar of a session still in progress" >> {
+        val closedDay = quote(ZonedDateTime.parse("2024-01-10T14:30:00Z"))
+        val openDay = quote(ZonedDateTime.parse("2024-01-11T14:30:00Z"), inProgress = true)
+        for {
+          api <- MarketDataFakes.yahooApi(
+            charts =
+              Map(ticker.value -> IO.pure(Some(YahooChart(List(closedDay, openDay), "USD")))),
             metadata = Map(ticker.value -> IO.pure(usMetadata))
           )
           source <- buildSource(api)
