@@ -71,6 +71,7 @@ object Side {
   * @param side
   *   the direction the signal would fire in
   * @param distanceToTrigger
-  *   strategy-specific distance remaining; smaller means closer
+  *   strategy-specific distance remaining, never negative and 0 at the trigger; smaller means
+  *   closer
   */
 final case class PreSignal(side: Side, distanceToTrigger: BigDecimal, reason: String)

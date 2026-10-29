@@ -221,16 +221,19 @@ first suppression; every dispatch (delivered or suppressed) is recorded via
 | # | Guard | `suppressedBy` value | Data source | Applies to |
 |---|---|---|---|---|
 | 1 | Mute | `"mute"` | in-memory `Ref[F, Option[Instant]]` set by `mute`/`unmute` | every alert |
-| 2 | Cooldown | `"cooldown"` | `AlertHistoryStorage.lastDelivered(ruleKey, symbol, kind)` - suppressed if `alert.at` is before `lastDelivered.deliveredAt + policy.cooldown` | every alert, keyed by `(ruleKey, symbol, kind)` |
+| 2 | Cooldown | `"cooldown"` | `AlertHistoryStorage.lastDelivered(ruleKey, symbol, kind)` - suppressed if `alert.at` is before `lastDelivered.deliveredAt + policy.cooldown` | every alert except strategy warnings (`StrategyPreBuy`/`StrategyPreSell`), keyed by `(ruleKey, symbol, kind)` |
 | 3 | Hysteresis | `"hysteresis"` | in-memory `Ref[F, Map[String, BigDecimal]]` (last delivered `triggerValue` per `ruleKey`) | **only** `PreTarget`/`TargetHit` (threshold-kind) alerts - suppressed if the new `triggerValue` is within `policy.hysteresisPct`% of the last delivered value |
 | 4 | Dedup | `"dedup"` | `AlertHistoryStorage.existsDedup(alert.dedupHash, alert.at - policy.cooldown)` | every alert |
 | 5 | Daily cap | `"daily_cap"` | `AlertHistoryStorage.deliveredCountSince(ruleKey, startOfLocalDay)` `>= policy.maxPerDay` | every alert, only if `maxPerDay` is set |
 | 6 | Quiet hours | `"quiet_hours"` | `policy.quietHours`, evaluated against `alert.at` in the configured zone | every alert **except** `AlertKind.System`, which always bypasses this one guard (every other guard above still applies to it) |
 
 Strategy alerts (`StrategyBuy`/`StrategySell`/`StrategyPreBuy`/`StrategyPreSell`) skip guard 3
-entirely (`isThresholdKind` is `false` for them) - they rely instead on `LiveStrategyService`'s own
-state machine (see [Live evaluation](#live-evaluation-and-the-shadow-position-rule) below) to avoid
-re-firing every poll.
+entirely (`isThresholdKind` is `false` for them), and strategy warnings skip guard 2 as well:
+`LiveStrategyService` paces them itself (see
+[Live evaluation](#live-evaluation-and-the-shadow-position-rule) below). A signal fires once per bar,
+and a standing warning once per session, then again within it only of the other side, or closer to
+its signal and at most half as far. A cooldown would drop such a warning for good, since the live
+service does not send it again.
 
 On delivery, `channels.traverse` sends to every named `AlertChannel`; an unknown channel name or a
 channel that raises is logged and counted as *not sent* rather than failing the whole dispatch. If
@@ -286,8 +289,13 @@ final case class LiveEvaluation(alerts: List[Alert], signals: List[StrategySigna
    `strategy.proximity(ctx, provisionalBar)` with the *current* shadow position and the stored bars
    of earlier sessions only: once the quote's session has closed and its bar is stored, the quote
    takes that bar's place, so the session is not counted twice. A `PreSignal` becomes a
-   `StrategyPreBuy`/`StrategyPreSell` `Alert` depending on its `side`. Proximity never contributes
-   to `LiveEvaluation.signals` - only a closed bar's own onBar signals do.
+   `StrategyPreBuy`/`StrategyPreSell` `Alert` depending on its `side`, unless it repeats the last
+   warning sent: the binding's state keeps that warning's session, side and distance, and a warning
+   of the same session and side goes out again only once it is closer to its signal and at most half
+   as far. A warning that a guard below holds back, or that no channel delivers, still counts as its
+   session's warning. The state lives in memory, so after a restart the session's warning goes out
+   again. Proximity never contributes to `LiveEvaluation.signals` - only a closed bar's own onBar
+   signals do.
 4. `LiveEvaluation.alerts` is the concatenation of both paths' alerts (0, 1 or 2 alerts per binding
    per poll); `LiveEvaluation.signals` carries the onBar path's own signals regardless of whether
    the matching alert is actually delivered or suppressed by a guard below - see

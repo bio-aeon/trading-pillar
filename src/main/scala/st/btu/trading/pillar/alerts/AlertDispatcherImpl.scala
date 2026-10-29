@@ -63,12 +63,19 @@ final class AlertDispatcherImpl[F[_]: Logging] private (
   private def checkMute(alert: Alert): F[Option[String]] =
     muteUntilRef.get.map(_.filter(alert.at.toInstant.isBefore).as(Reason.Mute))
 
+  // Strategy warnings are paced by the live service, once per session and again as their distance
+  // halves; a cooldown would drop such a warning for good, since it is not sent again.
   private def checkCooldown(alert: Alert, policy: DeliveryPolicy): F[Option[String]] =
-    history.lastDelivered(alert.ruleKey, alert.symbol, alert.kind).map {
-      case Some(last) if alert.at.isBefore(last.deliveredAt.plusNanos(policy.cooldown.toNanos)) =>
-        Some(Reason.Cooldown)
-      case _ => None
-    }
+    if (isStrategyWarning(alert.kind)) none[String].pure[F]
+    else
+      history.lastDelivered(alert.ruleKey, alert.symbol, alert.kind).map {
+        case Some(last) if alert.at.isBefore(last.deliveredAt.plusNanos(policy.cooldown.toNanos)) =>
+          Some(Reason.Cooldown)
+        case _ => None
+      }
+
+  private def isStrategyWarning(kind: AlertKind): Boolean =
+    kind == AlertKind.StrategyPreBuy || kind == AlertKind.StrategyPreSell
 
   // Only PreTarget/TargetHit (threshold-rule) alerts re-arm on price movement; strategy alerts
   // are already gated by the strategy's own state machine (see LiveStrategyService).

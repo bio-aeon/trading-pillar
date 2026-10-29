@@ -1,11 +1,12 @@
 package st.btu.trading.pillar.alerts
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.*
-import st.btu.trading.pillar.strategy.StrategySignal
+import st.btu.trading.pillar.storages.PriceHistoryStorage
+import st.btu.trading.pillar.strategy.*
 import st.btu.trading.pillar.strategy.reference.MovingAverageCrossoverStrategy
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import st.btu.trading.pillar.testkit.{AlertFakes, MarketDataFakes, StrategyFakes}
@@ -23,8 +24,8 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
   private def bar(day: Int, close: BigDecimal): Bar =
     StrategyFakes.flatBar(ticker, LocalDate.of(2024, 1, day), close)
 
-  private def quoteAt(asOf: ZonedDateTime): Quote =
-    Quote(ticker, BigDecimal(200), Currency("USD"), asOf, Source.Yahoo)
+  private def quoteAt(asOf: ZonedDateTime, price: BigDecimal = BigDecimal(200)): Quote =
+    Quote(ticker, price, Currency("USD"), asOf, Source.Yahoo)
 
   private def listedIn(timezone: String): InstrumentInfo =
     InstrumentInfo(
@@ -43,13 +44,19 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
     bars: List[Bar],
     quote: Option[Quote] = None,
     timezone: String = "America/New_York"
+  ): IO[LiveStrategyService[IO]] =
+    MarketDataFakes.priceHistoryStorage(bars).flatMap(serviceOver(_, IO.pure(quote), timezone))
+
+  private def serviceOver(
+    priceHistory: PriceHistoryStorage[IO],
+    latestQuote: IO[Option[Quote]],
+    timezone: String = "America/New_York"
   ): IO[LiveStrategyService[IO]] = {
     implicit val logs: Logs[IO, IO] =
       Logs.const[IO, IO](Logging.Make.plain[IO].forService[LiveStrategyService[IO]])
     for {
-      priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       marketData <- MarketDataFakes.marketDataSource(
-        quotes = Map(ticker -> IO.pure(quote)),
+        quotes = Map(ticker -> latestQuote),
         info = Map(ticker -> IO.pure(Some(listedIn(timezone))))
       )
       sources <- MarketDataFakes.marketDataSources(yahoo =
@@ -134,6 +141,96 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
             )
             evaluation <- service.evaluate(binding, strategy, weekend)
           } yield warnings(evaluation) must_== buyApproaching
+        }
+      }
+
+      "warning cadence" >> {
+        // Warns at a distance equal to the quote's price: of a buy while flat, of a sell while
+        // holding. It buys on Monday's bar.
+        val monday = LocalDate.of(2024, 1, 8)
+        val warner = StrategyFakes.ScriptedStrategy(
+          StrategyId("warner"),
+          warmupBars = 1,
+          onBarFn = (_, bar) =>
+            if (bar.date == monday) List(StrategySignal.Buy(ticker, Sizing.AllIn, "buy"))
+            else List(StrategySignal.Hold("hold")),
+          proximityFn = (ctx, bar) =>
+            Some(PreSignal(if (ctx.position.isEmpty) Side.Buy else Side.Sell, bar.close, "near"))
+        )
+        val friday = bar(5, 100)
+        val preBuy = List(AlertKind.StrategyPreBuy)
+
+        def utc(day: Int, hour: Int): ZonedDateTime =
+          ZonedDateTime.of(2024, 1, day, hour, 0, 0, 0, ZoneOffset.UTC)
+
+        // Each poll quotes the distance to warn at as of `asOf`, and returns the kinds of the
+        // alerts raised.
+        def poller(
+          priceHistory: PriceHistoryStorage[IO]
+        ): IO[(ZonedDateTime, String) => IO[List[AlertKind]]] =
+          for {
+            quote <- Ref.of[IO, Option[Quote]](None)
+            service <- serviceOver(priceHistory, quote.get)
+          } yield (asOf, distance) =>
+            quote.set(Some(quoteAt(asOf, BigDecimal(distance)))) >>
+              service.evaluate(binding, warner, asOf).map(_.alerts.map(_.kind))
+
+        "warns once per session while the warning stands" >> {
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            poll <- poller(history)
+            morning <- poll(utc(8, 15), "0.004")
+            noon <- poll(utc(8, 17), "0.003")
+          } yield List(morning, noon) must_== List(preBuy, Nil)
+        }
+
+        "warns again within the session once the distance has halved" >> {
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            poll <- poller(history)
+            first <- poll(utc(8, 15), "0.004")
+            nearlyHalved <- poll(utc(8, 16), "0.0021")
+            halved <- poll(utc(8, 17), "0.002")
+          } yield List(first, nearlyHalved, halved) must_== List(preBuy, Nil, preBuy)
+        }
+
+        "warns once while the distance stays at 0" >> {
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            poll <- poller(history)
+            first <- poll(utc(8, 15), "0")
+            again <- poll(utc(8, 16), "0")
+          } yield List(first, again) must_== List(preBuy, Nil)
+        }
+
+        "stays silent after the close once the session's bar is stored" >> {
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            poll <- poller(history)
+            beforeClose <- poll(utc(9, 15), "0.004")
+            _ <- history.upsertBars(List(bar(9, 100)))
+            afterClose <- poll(utc(9, 22), "0.004")
+          } yield List(beforeClose, afterClose) must_== List(preBuy, Nil)
+        }
+
+        "warns again on the next session" >> {
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            poll <- poller(history)
+            onMonday <- poll(utc(8, 15), "0.004")
+            onTuesday <- poll(utc(9, 15), "0.004")
+          } yield List(onMonday, onTuesday) must_== List(preBuy, preBuy)
+        }
+
+        "warns of the other side within the session once the position has turned" >> {
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            poll <- poller(history)
+            beforeClose <- poll(utc(8, 15), "0.004")
+            _ <- history.upsertBars(List(bar(8, 100)))
+            afterClose <- poll(utc(8, 22), "0.004")
+          } yield List(beforeClose, afterClose) must_==
+            List(preBuy, List(AlertKind.StrategyBuy, AlertKind.StrategyPreSell))
         }
       }
     }

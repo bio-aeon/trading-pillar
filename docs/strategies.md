@@ -131,9 +131,10 @@ feeds live "approaching" alerts (`AlertKind.StrategyPreBuy`/`StrategyPreSell`; s
 [`alerts.md`](alerts.md)). The `bar` argument may be a *provisional* bar built from the latest live
 quote (open = high = low = close = current price, volume 0), dated with the quote's session.
 `ctx.history` holds only the sessions before it, even once that session's own bar is stored.
-`distanceToTrigger` is a strategy-defined fraction (the reference crossover strategy uses relative
-SMA distance, e.g. `0.004` for 0.4%) - trading-pillar does not interpret its scale beyond passing it
-through as `Alert.triggerValue`.
+`distanceToTrigger` is a strategy-defined distance, never negative and 0 at the trigger (the
+reference crossover strategy uses relative SMA distance, e.g. `0.004` for 0.4%). trading-pillar
+passes it through as `Alert.triggerValue` and compares it only with the binding's last warning:
+within a session, a warning goes out again once it is closer and at most half as far.
 
 ## `StrategyRegistry`
 

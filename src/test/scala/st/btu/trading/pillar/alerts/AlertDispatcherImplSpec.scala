@@ -122,6 +122,24 @@ class AlertDispatcherImplSpec extends Specification with CatsEffect {
         }
       }
 
+      "delivers a second strategy warning within the cooldown" >> {
+        def warning(distance: String, at: ZonedDateTime): Alert =
+          alert(
+            ruleKey = "strategy:1",
+            kind = AlertKind.StrategyPreBuy,
+            triggerValue = BigDecimal(distance),
+            at = at,
+            body = s"distance $distance"
+          )
+        for {
+          channel <- AlertFakes.alertChannel()
+          history <- AlertFakes.alertHistoryStorage()
+          dispatcher <- buildDispatcher(List(channel), history)
+          _ <- dispatcher.dispatch(warning("0.004", t0), policy, channels)
+          second <- dispatcher.dispatch(warning("0.002", t0.plusMinutes(5)), policy, channels)
+        } yield second must_== DispatchOutcome.Delivered(channels)
+      }
+
       "re-arms a threshold rule only once price has moved beyond the hysteresis band" >> {
         val policy = DeliveryPolicy(cooldown = Duration.Zero, hysteresisPct = BigDecimal(1))
         for {
