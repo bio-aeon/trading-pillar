@@ -280,11 +280,14 @@ final case class LiveEvaluation(alerts: List[Alert], signals: List[StrategySigna
    `Buy`/`Sell` signal into a `StrategyBuy`/`StrategySell` `Alert` (`Hold` produces none), and keep
    the same bar's `Buy`/`Sell` signals (only - never `Hold`) on `LiveEvaluation.signals`.
 3. **Proximity path**: independently (no warmup gate, no once-per-bar-date gate), fetch
-   `marketDataSource.latestQuote(binding.ticker)`. If present, build a provisional flat `Bar`
-   (`open = high = low = close = quote.price`, `volume = 0`, today's date) and call
-   `strategy.proximity(ctx, provisionalBar)` using the *current* shadow position. A `PreSignal`
-   becomes a `StrategyPreBuy`/`StrategyPreSell` `Alert` depending on its `side`. Proximity never
-   contributes to `LiveEvaluation.signals` - only a closed bar's own onBar signals do.
+   `marketDataSource.latestQuote(binding.ticker)` and `instrumentInfo(binding.ticker)`. With both,
+   build a provisional flat `Bar` (`open = high = low = close = quote.price`, `volume = 0`) dated
+   with the quote's session: its `asOf` in the exchange's time zone, `InstrumentInfo.timezone`. Call
+   `strategy.proximity(ctx, provisionalBar)` with the *current* shadow position and the stored bars
+   of earlier sessions only: once the quote's session has closed and its bar is stored, the quote
+   takes that bar's place, so the session is not counted twice. A `PreSignal` becomes a
+   `StrategyPreBuy`/`StrategyPreSell` `Alert` depending on its `side`. Proximity never contributes
+   to `LiveEvaluation.signals` - only a closed bar's own onBar signals do.
 4. `LiveEvaluation.alerts` is the concatenation of both paths' alerts (0, 1 or 2 alerts per binding
    per poll); `LiveEvaluation.signals` carries the onBar path's own signals regardless of whether
    the matching alert is actually delivered or suppressed by a guard below - see

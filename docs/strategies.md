@@ -129,7 +129,8 @@ object Side {
 `proximity` is optional (default `None`) and is **never called by the backtest engine** - it only
 feeds live "approaching" alerts (`AlertKind.StrategyPreBuy`/`StrategyPreSell`; see
 [`alerts.md`](alerts.md)). The `bar` argument may be a *provisional* bar built from the latest live
-quote (open = high = low = close = current price, volume 0), not a closed historical bar.
+quote (open = high = low = close = current price, volume 0), dated with the quote's session.
+`ctx.history` holds only the sessions before it, even once that session's own bar is stored.
 `distanceToTrigger` is a strategy-defined fraction (the reference crossover strategy uses relative
 SMA distance, e.g. `0.004` for 0.4%) - trading-pillar does not interpret its scale beyond passing it
 through as `Alert.triggerValue`.
@@ -162,10 +163,11 @@ contract and to give a backtest/live-alert path something concrete to run agains
 - `id = StrategyId(s"ma-cross-$fast-$slow")`, `warmupBars = slow + 1`.
 - `onBar`: buys `AllIn` when the fast SMA crosses above the slow SMA and there is no position;
   sells `ClosePosition` on the opposite cross while holding one; otherwise `Hold`.
-- `proximity`: both SMAs are computed over `ctx.history.closes :+ bar.close`, i.e. including the
-  live bar passed in, not just the closed history; while flat and `fastSma < slowSma` (or in a
-  position and `fastSma > slowSma`), emits a `PreSignal` once the relative SMA distance drops below
-  `proximityThreshold` (default 1%).
+- `proximity`: compares the SMAs over `ctx.history.closes :+ bar.close`, i.e. with the live bar,
+  against the SMAs over the history alone. While flat it warns of a buy when the live bar brings the
+  fast SMA nearer the slow one from below, and in a position of a sell when it brings it nearer from
+  above, once their relative distance is below `proximityThreshold` (default 1%). Right after a
+  crossover the averages move apart, so it stays silent however close they still are.
 - Requires `fast > 0`, `slow > 0`, `fast < slow` (constructor `require`s).
 
 ### `RsiReversionStrategy(period, lower, upper)`

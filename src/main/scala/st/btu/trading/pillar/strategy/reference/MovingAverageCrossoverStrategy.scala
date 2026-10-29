@@ -48,22 +48,34 @@ final class MovingAverageCrossoverStrategy(
     }).getOrElse(List(StrategySignal.Hold(s"$name: insufficient history")))
   }
 
-  override def proximity(ctx: StrategyContext, bar: Bar): Option[PreSignal] = {
-    val closes = ctx.history.closes :+ bar.close
+  override def proximity(ctx: StrategyContext, bar: Bar): Option[PreSignal] =
     for {
-      currFast <- Indicators.sma(closes, fast)
-      currSlow <- Indicators.sma(closes, slow)
-      if currSlow != BigDecimal(0)
-      approachingBuy = ctx.position.isEmpty && currFast < currSlow
-      approachingSell = ctx.position.isDefined && currFast > currSlow
-      if approachingBuy || approachingSell
-      distance = Indicators.divide((currFast - currSlow).abs, currSlow)
+      storedLead <- fastLead(ctx.history.closes)
+      liveLead <- fastLead(ctx.history.closes :+ bar.close)
+      side <- convergingSide(ctx.position, storedLead, liveLead)
+      distance = liveLead.abs
       if distance < proximityThreshold
-    } yield {
-      val side = if (approachingBuy) Side.Buy else Side.Sell
-      PreSignal(side, distance, s"$name: fast/slow SMA distance $distance")
+    } yield PreSignal(side, distance, s"$name: fast/slow SMA distance $distance")
+
+  private def fastLead(closes: Vector[BigDecimal]): Option[BigDecimal] =
+    for {
+      fastSma <- Indicators.sma(closes, fast)
+      slowSma <- Indicators.sma(closes, slow)
+      if slowSma != BigDecimal(0)
+    } yield Indicators.divide(fastSma - slowSma, slowSma)
+
+  // A crossover approaches only while the live bar brings the fast SMA nearer the slow one: from
+  // below while flat, toward a buy, and from above while holding, toward a sell. Right after a
+  // crossover the averages move apart, however close they still are.
+  private def convergingSide(
+    position: Option[OpenPosition],
+    storedLead: BigDecimal,
+    liveLead: BigDecimal
+  ): Option[Side] =
+    position match {
+      case None => Option.when(liveLead < 0 && liveLead > storedLead)(Side.Buy)
+      case Some(_) => Option.when(liveLead > 0 && liveLead < storedLead)(Side.Sell)
     }
-  }
 
   // Keys: "fast", "slow", "proximityThreshold". Unset keys keep this instance's current value;
   // fast < slow (like every other constructor invariant) is checked by building the candidate

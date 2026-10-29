@@ -1,17 +1,18 @@
 package st.btu.trading.pillar.alerts
 
 import cats.MonadThrow
+import cats.data.OptionT
 import cats.effect.{Ref, Sync}
 import cats.syntax.applicative.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import st.btu.trading.pillar.gateways.{MarketDataSource, MarketDataSources}
-import st.btu.trading.pillar.models.market.Bar
+import st.btu.trading.pillar.models.market.{Bar, Quote}
 import st.btu.trading.pillar.storages.PriceHistoryStorage
 import st.btu.trading.pillar.strategy.*
 import tofu.logging.{Logging, Logs}
 
-import java.time.{LocalDate, ZonedDateTime}
+import java.time.{LocalDate, ZoneId, ZonedDateTime}
 
 // No real brokerage position is available to trading-pillar (that lives in the consumer app), so
 // a shadow position is derived purely from this binding's own live signal history: flat until a
@@ -131,26 +132,25 @@ final class LiveStrategyServiceImpl[F[_]: Logging] private (
     history: BarHistory,
     now: ZonedDateTime
   ): F[List[Alert]] =
-    source.latestQuote(binding.ticker).flatMap {
-      case None => List.empty[Alert].pure[F]
-      case Some(quote) =>
-        stateRef.get.map { states =>
-          val position = states.get(binding.ruleKey).flatMap(_.position)
-          val provisionalBar = Bar(
-            binding.ticker,
-            now.toLocalDate,
-            quote.price,
-            quote.price,
-            quote.price,
-            quote.price,
-            quote.price,
-            0L,
-            source.origin.source
-          )
-          val ctx = StrategyContext(binding.ticker, history, position, PortfolioView(0, 0))
-          strategy.proximity(ctx, provisionalBar).map(toProximityAlert(binding, now, _)).toList
-        }
-    }
+    (for {
+      quote <- OptionT(source.latestQuote(binding.ticker))
+      info <- OptionT(source.instrumentInfo(binding.ticker))
+      zone <- OptionT.liftF(F.catchNonFatal(ZoneId.of(info.timezone)))
+      states <- OptionT.liftF(stateRef.get)
+      liveBar = provisionalBar(quote, zone)
+      // Once the quote's session has closed, its stored bar gives way to the quote, so that the
+      // session counts once.
+      earlierSessions = BarHistory(history.bars.filter(_.date.isBefore(liveBar.date)))
+      position = states.get(binding.ruleKey).flatMap(_.position)
+      ctx = StrategyContext(binding.ticker, earlierSessions, position, PortfolioView(0, 0))
+      preSignal <- OptionT.fromOption[F](strategy.proximity(ctx, liveBar))
+    } yield toProximityAlert(binding, now, preSignal)).value.map(_.toList)
+
+  private def provisionalBar(quote: Quote, zone: ZoneId): Bar = {
+    val price = quote.price
+    val session = quote.asOf.withZoneSameInstant(zone).toLocalDate
+    Bar(quote.ticker, session, price, price, price, price, price, 0L, quote.source)
+  }
 
   private def toProximityAlert(
     binding: StrategyBinding,

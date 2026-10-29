@@ -37,46 +37,55 @@ class MovingAverageCrossoverStrategySpec extends Specification {
 
     "proximity" >> {
       val strategy = new MovingAverageCrossoverStrategy(fast = 2, slow = 3)
+      val holding = Some(OpenPosition(ticker, 1L, BigDecimal(200), LocalDate.of(2024, 1, 1)))
 
-      def ctxWithCloses(closes: List[BigDecimal]): StrategyContext = {
-        val bars = closes.zipWithIndex.map { case (c, i) => bar(i, c) }
-        StrategyContext(ticker, BarHistory(bars.toVector), None, PortfolioView(10000, 10000))
+      def warning(
+        stored: List[Int],
+        live: Int,
+        position: Option[OpenPosition] = None
+      ): Option[(Side, BigDecimal)] = {
+        val bars = stored.zipWithIndex.map { case (c, i) => bar(i, BigDecimal(c)) }
+        val ctx =
+          StrategyContext(ticker, BarHistory(bars.toVector), position, PortfolioView(10000, 10000))
+        strategy
+          .proximity(ctx, bar(stored.size, BigDecimal(live)))
+          .map(p => (p.side, p.distanceToTrigger))
       }
 
-      // The live bar is not yet in `ctx.history` (it is still forming) - proximity must fold its
-      // close into both SMAs itself, per Strategy.proximity's own contract.
-      "signals proximity when the fast/slow SMA distance, including the live bar, is inside the threshold" >> {
-        // History closes 100, 100, 100; live bar close 99 (not yet in history).
-        // SMA(2) over [100, 99] = 99.5; SMA(3) over [100, 100, 99] = 99.6667 -> distance ~0.167%,
-        // inside the default 1% threshold. Ignoring the live bar (the pre-fix behavior) would
-        // instead compare SMA(2) = SMA(3) = 100 over history alone - equal, not "fast < slow" -
-        // and wrongly return None.
-        val ctx = ctxWithCloses(List(BigDecimal(100), BigDecimal(100), BigDecimal(100)))
-        val liveBar = bar(3, BigDecimal(99))
+      // In the comments, SMA(2) and SMA(3) of the history, then with the live bar.
+      "while flat" >> {
+        "warns of a buy as the fast SMA climbs toward the slow one" >> {
+          // 200 below 202, then 199.5 below 200: 0.25% apart.
+          warning(List(206, 201, 199), live = 200) must_== Some((Side.Buy, BigDecimal("0.0025")))
+        }
 
-        val result = strategy.proximity(ctx, liveBar)
+        "stays silent right after a sell, while the fast SMA falls away from the slow one" >> {
+          // 199.5 below 199.67, then 198.5 below 199: within 1%, but further apart.
+          warning(List(200, 200, 199), live = 198) must beNone
+        }
 
-        result must beSome[PreSignal].like { case p => p.side must_== Side.Buy }
+        "stays silent once the fast SMA is above the slow one" >> {
+          // 90 and 90, then 95 above 93.33.
+          warning(List(90, 90, 90), live = 100) must beNone
+        }
+
+        "stays silent while the averages are further apart than the threshold" >> {
+          // 200 below 203.33, then 195.5 below 198.67: nearer, but 1.6% apart.
+          warning(List(210, 205, 195), live = 196) must beNone
+        }
       }
 
-      "returns nothing when the fast/slow SMA distance, including the live bar, is outside the threshold" >> {
-        // History closes 100, 100, 100; live bar close 90 (not yet in history).
-        // SMA(2) over [100, 90] = 95; SMA(3) over [100, 100, 90] = 96.667 -> distance ~1.72%,
-        // outside the default 1% threshold.
-        val ctx = ctxWithCloses(List(BigDecimal(100), BigDecimal(100), BigDecimal(100)))
-        val liveBar = bar(3, BigDecimal(90))
+      "while holding" >> {
+        "warns of a sell as the fast SMA falls toward the slow one" >> {
+          // 200 above 198, then 200.5 above 200: 0.25% apart.
+          warning(List(194, 199, 201), live = 200, holding) must_==
+            Some((Side.Sell, BigDecimal("0.0025")))
+        }
 
-        strategy.proximity(ctx, liveBar) must beNone
-      }
-
-      "returns nothing when there is no position and fast is already above slow (not approaching a buy)" >> {
-        // History closes 90, 90, 90; live bar close 100 (not yet in history).
-        // SMA(2) over [90, 100] = 95; SMA(3) over [90, 90, 100] = 93.333 -> fast > slow, so this
-        // is not "approaching a buy" (nor is any position open, so not "approaching a sell" either).
-        val ctx = ctxWithCloses(List(BigDecimal(90), BigDecimal(90), BigDecimal(90)))
-        val liveBar = bar(3, BigDecimal(100))
-
-        strategy.proximity(ctx, liveBar) must beNone
+        "stays silent right after a buy, while the fast SMA climbs away from the slow one" >> {
+          // 200.5 above 200.33, then 201.5 above 201: within 1%, but further apart.
+          warning(List(200, 200, 201), live = 202, holding) must beNone
+        }
       }
     }
 

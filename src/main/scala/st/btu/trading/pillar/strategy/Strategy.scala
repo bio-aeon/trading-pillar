@@ -20,11 +20,12 @@ trait Strategy {
   /** Decides what to do on `bar`, given the context built up to and including it. */
   def onBar(ctx: StrategyContext, bar: Bar): List[StrategySignal]
 
-  /** Reports how close the next bar is to triggering a signal, for a live "approaching" alert.
+  /** Reports how close the next bar is to triggering a signal, for a live "approaching" alert. The
+    * backtest engine never calls it.
     *
     * @param bar
-    *   the live, possibly provisional bar to judge against; not yet part of `ctx.history`, and not
-    *   used by the backtest engine
+    *   the live, possibly provisional bar to judge against; `ctx.history` holds only the sessions
+    *   before it
     * @return
     *   `None` when no signal is close, or this strategy does not implement proximity
     */
