@@ -50,7 +50,7 @@ class TaxReportSpec extends Specification {
         val report = TaxReport.annual(2025, ledger, ops, noRate)
 
         report.realizedGains must_== BigDecimal(600)
-        report.exemptGains must_== BigDecimal(0)
+        report.exemptGains must_== Some(BigDecimal(0))
         report.taxableGains must_== BigDecimal(600)
         report.estimatedTax must_== BigDecimal(600) * BigDecimal("0.13")
         report.currency must_== rub
@@ -69,7 +69,7 @@ class TaxReportSpec extends Specification {
         val report = TaxReport.annual(year, ledger, ops, noRate)
 
         report.realizedGains must_== BigDecimal(600) // 500 - 200 + 300
-        report.exemptGains must_== BigDecimal(500) // only the long-term, positive one
+        report.exemptGains must_== Some(BigDecimal(500)) // only the long-term, positive one
         report.taxableGains must_== BigDecimal(100) // max(0, 600 - 500)
       }
 
@@ -83,9 +83,22 @@ class TaxReportSpec extends Specification {
         val report = TaxReport.annual(year, ledger, ops, noRate)
 
         report.realizedGains must_== BigDecimal(-400) // 500 - 900
-        report.exemptGains must_== BigDecimal(500)
+        report.exemptGains must_== Some(BigDecimal(500))
         report.taxableGains must_== BigDecimal(0) // max(0, -400 - 500)
         report.estimatedTax must_== BigDecimal(0)
+      }
+
+      "taxes a long-held gain like any other under a regime without a long-term exemption" >> {
+        val year = 2025
+        val longTermGain = rg("F1", LocalDate.of(year, 3, 1), 500, holdingDays = 1200)
+        val shortTermGain = rg("F1", LocalDate.of(year, 5, 1), 300, holdingDays = 100)
+        val ledger = LotLedger(Map.empty, List(longTermGain, shortTermGain), Map.empty)
+        val ops = List(op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2020, 1, 1), Some("F1")))
+
+        val report = TaxReport.annual(year, ledger, ops, noRate, TaxConfig(longTermYears = None))
+
+        report.exemptGains must beNone
+        report.taxableGains must_== BigDecimal(800) // 500 + 300
       }
 
       "applies the upper rate only to the slice of taxable gains above the progressive threshold" >> {
@@ -122,7 +135,8 @@ class TaxReportSpec extends Specification {
         val report = TaxReport.annual(year, ledger, ops, fxRate)
 
         report.realizedGains must_== BigDecimal(9000) // 100 * 90; the EUR gain is dropped
-        report.exemptGains must_== BigDecimal(0) // the only long-term gain couldn't be converted
+        // The only long-term gain could not be converted.
+        report.exemptGains must_== Some(BigDecimal(0))
         report.unconverted must_== 1
       }
 

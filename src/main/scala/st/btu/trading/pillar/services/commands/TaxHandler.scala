@@ -37,10 +37,11 @@ final class TaxHandler[F[_]: Monad: Clock](
     }
 
   private def format(r: AnnualTaxReport): String = {
+    val exemptLine = r.exemptGains.map(gains => s"Long-term exempt: ${Replies.scaled(gains)}")
     val lines = List(
       s"Tax estimate ${r.year} (${r.currency.value}) - not tax advice",
-      s"Realized gains: ${Replies.scaled(r.realizedGains)}",
-      s"Long-term exempt: ${Replies.scaled(r.exemptGains)}",
+      s"Realized gains: ${Replies.scaled(r.realizedGains)}"
+    ) ++ exemptLine ++ List(
       s"Taxable gains: ${Replies.scaled(r.taxableGains)}",
       s"Dividend income: ${Replies.scaled(r.dividendIncome)}",
       s"Coupon income: ${Replies.scaled(r.couponIncome)}",

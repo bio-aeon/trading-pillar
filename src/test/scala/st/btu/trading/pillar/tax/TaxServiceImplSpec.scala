@@ -94,7 +94,7 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
           report <- service.annualReport(accountId, 2024)
         } yield {
           report.realizedGains must_== BigDecimal(800)
-          report.exemptGains must_== BigDecimal(0)
+          report.exemptGains must_== Some(BigDecimal(0))
           report.taxableGains must_== BigDecimal(800)
           report.dividendIncome must_== BigDecimal(50)
           report.taxesWithheld must_== BigDecimal(5)

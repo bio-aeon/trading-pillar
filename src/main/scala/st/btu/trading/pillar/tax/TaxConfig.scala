@@ -8,6 +8,9 @@ import st.btu.trading.pillar.models.market.Ticker
   * lots held `longTermYears` (365-day years) or more. Every field is overridable per deployment.
   * This produces an estimate, not tax advice.
   *
+  * @param longTermYears
+  *   how many 365-day years a lot must be held for a positive gain on it to be exempt; `None` for a
+  *   regime without a long-term exemption
   * @param fxTickers
   *   per currency, the ticker whose bars carry that currency's rate when it is not the conventional
   *   `<CCY><baseCurrency>=X` pair; the bars are read from the source that ticker is configured to
@@ -18,6 +21,6 @@ final case class TaxConfig(
   progressiveThreshold: BigDecimal = BigDecimal(2400000),
   lowerRate: BigDecimal = BigDecimal("0.13"),
   upperRate: BigDecimal = BigDecimal("0.15"),
-  longTermYears: Int = 3,
+  longTermYears: Option[Int] = Some(3),
   fxTickers: Map[Currency, Ticker] = Map.empty
 )

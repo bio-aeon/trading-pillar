@@ -16,8 +16,12 @@ class TaxHandlerSpec extends Specification with CatsEffect {
   private val accountId = AccountId(1)
   private val rub = Currency("RUB")
 
-  private def report(year: Int, unconverted: Int = 0) =
-    AnnualTaxReport(year, 600, 0, 600, 50, 20, 5, 78, unconverted, rub)
+  private def report(
+    year: Int,
+    unconverted: Int = 0,
+    exemptGains: Option[BigDecimal] = Some(BigDecimal(0))
+  ) =
+    AnnualTaxReport(year, 600, exemptGains, 600, 50, 20, 5, 78, unconverted, rub)
 
   "TaxHandler" >> {
     "handle" >> {
@@ -41,6 +45,22 @@ class TaxHandlerSpec extends Specification with CatsEffect {
           msg must contain("Taxes withheld: 5.00")
           msg must contain("Estimated tax: 78.00")
           msg must not(contain("could not be converted"))
+        }
+      }
+
+      "leaves out the long-term line under a regime without a long-term exemption" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          taxService <- TaxFakes.taxService(annualReports =
+            Map((accountId, 2024) -> report(2024, exemptGains = None))
+          )
+          handler = new TaxHandler[IO](tgGateway, taxService, accountId)
+          _ <- handler.handle(chatId, List("2024"))
+          messages <- tgGateway.sentMessages
+        } yield {
+          val msg = messages.head.message
+          msg must not(contain("Long-term exempt"))
+          msg must contain("Taxable gains: 600.00")
         }
       }
 

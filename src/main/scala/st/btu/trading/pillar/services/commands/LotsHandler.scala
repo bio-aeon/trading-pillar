@@ -44,9 +44,7 @@ final class LotsHandler[F[_]: Monad: Clock](
   private def formatLot(lot: Lot, today: LocalDate): String = {
     val holdingDays = ChronoUnit.DAYS.between(lot.acquiredOn, today)
     val longTermSuffix =
-      if (holdingDays >= taxService.config.longTermYears.toLong * TaxReport.DaysPerYear)
-        ", long-term"
-      else ""
+      if (TaxReport.isLongTerm(holdingDays, taxService.config)) ", long-term" else ""
     s"${lot.quantity} @ ${Replies.scaled(lot.unitCost)} acquired ${lot.acquiredOn} ($holdingDays day(s)$longTermSuffix)"
   }
 }

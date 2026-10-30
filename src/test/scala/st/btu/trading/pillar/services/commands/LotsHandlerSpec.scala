@@ -42,6 +42,21 @@ class LotsHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "marks no lot long-term under a regime without a long-term exemption" >> {
+        val longHeldLot = Lot(Figi("F1"), 10, BigDecimal("102.5"), today.minusDays(1200))
+        for {
+          tgGateway <- Fakes.tgGateway()
+          taxService <- TaxFakes.taxService(
+            taxConfig = TaxConfig(longTermYears = None),
+            openLotsByTicker = Map((accountId, Ticker("AAPL")) -> List(longHeldLot))
+          )
+          handler = new LotsHandler[IO](tgGateway, taxService, accountId)
+          _ <- handler.handle(chatId, List("aapl"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must_==
+          s"10 @ 102.50 acquired ${today.minusDays(1200)} (1200 day(s))"
+      }
+
       "replies with 'No open lots for SYM.' when the ticker has none" >> {
         for {
           tgGateway <- Fakes.tgGateway()

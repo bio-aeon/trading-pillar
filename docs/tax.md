@@ -4,8 +4,8 @@ Package `st.btu.trading.pillar.tax`. Turns an account's executed `TcsPortfolioOp
 into FIFO cost-basis lots and a per-year tax estimate.
 
 **This is an estimate for personal reference, not tax advice.** It knows about exactly the rules
-listed below - progressive rate, long-term exemption, broker-withheld tax - and nothing else (no
-loss carry-forward across years, no IIS deductions, no instrument-specific rules). The FX
+listed below - progressive rate, an optional long-term exemption, broker-withheld tax - and nothing
+else (no loss carry-forward across years, no IIS deductions, no instrument-specific rules). The FX
 conversion it uses is a documented approximation, not the official rate for any given instant - see
 ["FX conversion"](#fx-conversion) below.
 
@@ -100,17 +100,23 @@ order (a stable sort), and different figis on the same date break the tie by fig
 
 ```scala
 final case class TaxConfig(baseCurrency: Currency = Currency("RUB"), progressiveThreshold: BigDecimal = 2400000,
-                           lowerRate: BigDecimal = 0.13, upperRate: BigDecimal = 0.15, longTermYears: Int = 3,
-                           fxTickers: Map[Currency, Ticker] = Map.empty)
-final case class AnnualTaxReport(year: Int, realizedGains: BigDecimal, exemptGains: BigDecimal, taxableGains: BigDecimal,
-                                 dividendIncome: BigDecimal, couponIncome: BigDecimal, taxesWithheld: BigDecimal,
-                                 estimatedTax: BigDecimal, unconverted: Int, currency: Currency)
+                           lowerRate: BigDecimal = 0.13, upperRate: BigDecimal = 0.15,
+                           longTermYears: Option[Int] = Some(3), fxTickers: Map[Currency, Ticker] = Map.empty)
+final case class AnnualTaxReport(year: Int, realizedGains: BigDecimal, exemptGains: Option[BigDecimal],
+                                 taxableGains: BigDecimal, dividendIncome: BigDecimal, couponIncome: BigDecimal,
+                                 taxesWithheld: BigDecimal, estimatedTax: BigDecimal, unconverted: Int,
+                                 currency: Currency)
 
 object TaxReport {
   def annual(year: Int, ledger: LotLedger, operations: List[TcsPortfolioOperation],
              fxRate: (Currency, LocalDate) => Option[BigDecimal], config: TaxConfig = TaxConfig()): AnnualTaxReport
+  def isLongTerm(holdingDays: Long, config: TaxConfig): Boolean
 }
 ```
+
+`longTermYears` is `None` for a regime without a long-term exemption: then no gain is exempt and no
+lot is long-term. The default, 3 years, follows the Russian rule for tax residents, like the other
+defaults.
 
 Pure. `operations` must be the same (or a superset of the) operations `ledger` was built from -
 `TaxReport.annual` uses it for two things `ledger` alone cannot provide:
@@ -145,12 +151,12 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
 
 1. **`realizedGains`**: every `RealizedGain` whose `sellDate.getYear == year`, converted and summed -
    gains and losses alike.
-2. **`exemptGains`**: the subset of the above that is both long-term (`holdingDays >=
-   longTermYears * 365`) **and** itself positive after conversion - a long-held *loss* is not
-   "exempt", it simply remains counted in `realizedGains` and reduces the taxable total below. (An
-   FX rate is always positive, so checking the converted gain's sign or the original's is
-   equivalent.)
-3. **`taxableGains`**: `max(0, realizedGains - exemptGains)`.
+2. **`exemptGains`**: the subset of the above that is both long-term (`TaxReport.isLongTerm`:
+   `holdingDays >= longTermYears * 365`) **and** itself positive after conversion - a long-held
+   *loss* is not "exempt", it simply remains counted in `realizedGains` and reduces the taxable
+   total below. (An FX rate is always positive, so checking the converted gain's sign or the
+   original's is equivalent.) `None` when `longTermYears` is.
+3. **`taxableGains`**: `max(0, realizedGains - exemptGains.getOrElse(0))`.
 4. **`dividendIncome`** / **`couponIncome`**: `OPERATION_TYPE_DIVIDEND` / `OPERATION_TYPE_COUPON`
    operations of the year, converted and summed as-is (positive, following the same "amount is a
    signed payment" convention `PortfolioValuationServiceImpl` uses - income is a positive `amount`).
@@ -166,7 +172,7 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
 6. **`estimatedTax`**: `config.lowerRate` applied to `taxableGains` up to `config.progressiveThreshold`,
    `config.upperRate` above it - `taxableGains <= threshold ? taxableGains * lowerRate : threshold *
    lowerRate + (taxableGains - threshold) * upperRate`. **Decision**: this estimates tax on
-   `taxableGains` (realized capital gains, net of the long-term exemption) **only** - dividend/coupon
+   `taxableGains` (realized capital gains, net of any long-term exemption) **only** - dividend/coupon
    income is shown for reference and is not folded into this estimate, since its own withholding is
    already reported separately in `taxesWithheld` (the broker withholds dividend/coupon tax at
    source; re-estimating it here would double-count against a figure the report already shows).
@@ -193,8 +199,8 @@ Same "load a long window, then narrow" shape as `PortfolioValuationServiceImpl`:
 `annualReport` and `openLots` load the account's executed operations over a trailing 20-year window
 ending "now" (`Clock[F]`), regardless of the report year or ticker requested, so a lot opened long
 before a requested year is still on hand to be matched against a sale inside it. `config` is exposed
-on the trait itself (not threaded through every method) so a caller like `LotsHandler` can derive its
-own display-only figures - the long-term holding-period threshold - without a dedicated method.
+on the trait itself (not threaded through every method) so a caller like `LotsHandler` can judge its
+own lots with `TaxReport.isLongTerm` without a dedicated method.
 
 Every figi in the loaded operations is mapped to a ticker through `InstrumentDirectory.byFigi`, once
 per distinct figi per call; a figi the directory does not know is left out of the ticker mapping, so

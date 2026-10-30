@@ -7,10 +7,11 @@ import st.btu.trading.pillar.models.domain.Currency
   * @param realizedGains
   *   every realized gain or loss of `year`, converted and summed
   * @param exemptGains
-  *   the subset of `realizedGains` that is both long-term and itself positive; a long-held loss
-  *   stays in `realizedGains`, it is not "exempt"
+  *   the subset of `realizedGains` that is both long-term and itself positive, or `None` under a
+  *   regime without a long-term exemption; a long-held loss stays in `realizedGains`, it is not
+  *   "exempt"
   * @param taxableGains
-  *   `max(0, realizedGains - exemptGains)`
+  *   `realizedGains` less `exemptGains`, never below 0
   * @param taxesWithheld
   *   summed as a positive magnitude
   * @param estimatedTax
@@ -23,7 +24,7 @@ import st.btu.trading.pillar.models.domain.Currency
 final case class AnnualTaxReport(
   year: Int,
   realizedGains: BigDecimal,
-  exemptGains: BigDecimal,
+  exemptGains: Option[BigDecimal],
   taxableGains: BigDecimal,
   dividendIncome: BigDecimal,
   couponIncome: BigDecimal,

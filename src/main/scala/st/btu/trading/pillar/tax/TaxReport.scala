@@ -1,5 +1,6 @@
 package st.btu.trading.pillar.tax
 
+import cats.syntax.functor.*
 import st.btu.trading.pillar.models.domain.*
 
 import java.time.{LocalDate, ZoneOffset}
@@ -13,8 +14,15 @@ import java.time.{LocalDate, ZoneOffset}
 object TaxReport {
 
   private val Zero = BigDecimal(0)
-  // Shared with services.commands.LotsHandler's own long-term holding-period check.
+
+  /** Days in each year of `TaxConfig.longTermYears`. */
   val DaysPerYear = 365L
+
+  /** Whether a lot held `holdingDays` counts as long-term under `config`; never under a regime
+    * without a long-term exemption.
+    */
+  def isLongTerm(holdingDays: Long, config: TaxConfig): Boolean =
+    config.longTermYears.exists(years => holdingDays >= years * DaysPerYear)
 
   private final case class Summed(total: BigDecimal, unconverted: Int)
 
@@ -40,22 +48,22 @@ object TaxReport {
     val figiCurrency: Map[Figi, Currency] =
       operations.iterator.flatMap(op => op.figi.map(_ -> op.currency)).toMap
 
-    val longTermDays = config.longTermYears.toLong * DaysPerYear
     val yearGains = ledger.realized.filter(_.sellDate.getYear == year)
 
-    val (realizedGains, exemptGains, gainsUnconverted) =
+    val (realizedGains, exemptTotal, gainsUnconverted) =
       yearGains.foldLeft((Zero, Zero, 0)) { case ((realized, exempt, unconverted), rg) =>
         figiCurrency.get(rg.figi).flatMap(ccy => convert(rg.gain, ccy, rg.sellDate)) match {
           case Some(converted) =>
             // An FX rate is always positive, so the sign of `converted` always matches the sign
             // of `rg.gain` - checking either is equivalent.
             val exemptPart =
-              if (rg.holdingDays >= longTermDays && converted > Zero) converted else Zero
+              if (isLongTerm(rg.holdingDays, config) && converted > Zero) converted else Zero
             (realized + converted, exempt + exemptPart, unconverted)
           case None => (realized, exempt, unconverted + 1)
         }
       }
-    val taxableGains = (realizedGains - exemptGains).max(Zero)
+    val exemptGains = config.longTermYears.as(exemptTotal)
+    val taxableGains = (realizedGains - exemptTotal).max(Zero)
 
     val yearOps =
       operations.filter(op => op.statusEnum == OperationStatus.Executed && yearOf(op) == year)

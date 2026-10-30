@@ -833,9 +833,10 @@ Estimated tax: 5486.00
 
 Built from `TaxService.annualReport` (FIFO lots via `TaxLots.fifo`, the estimate via
 `TaxReport.annual` - see [`tax.md`](tax.md)). `year` defaults to the current year (UTC) when
-omitted or not an integer. A trailing line, `"N amount(s) could not be converted to RUB and were
-excluded."`, appears only when `unconverted > 0`. Single-account app, same as every other handler:
-the handler is constructed with a fixed `AccountId`, not derived from the chat.
+omitted or not an integer. The `Long-term exempt` line appears only when `TaxConfig.longTermYears`
+is set; without it every gain is taxable. A trailing line, `"N amount(s) could not be converted to
+RUB and were excluded."`, appears only when `unconverted > 0`. Single-account app, same as every
+other handler: the handler is constructed with a fixed `AccountId`, not derived from the chat.
 
 ### `/lots`
 
@@ -845,14 +846,14 @@ Usage: `/lots SYM - open FIFO tax lots for a ticker`
 /lots AAPL
 ```
 ```
-10 @ 140.00 acquired 2023-03-01 (945 day(s), long-term)
+10 @ 140.00 acquired 2022-03-01 (1312 day(s), long-term)
 5 @ 165.00 acquired 2025-06-10 (115 day(s))
 ```
 
 One line per open lot for that ticker (`TaxService.openLots`, oldest first): quantity, unit cost,
 acquisition date, holding days as of today (UTC) and a trailing `, long-term` when `holdingDays >=
-TaxConfig.longTermYears * 365`. `No open lots for SYM.` when there are none (including an unknown
-ticker). `Usage: ...` when the ticker is missing.
+TaxConfig.longTermYears * 365`, never while `longTermYears` is unset. `No open lots for SYM.` when
+there are none (including an unknown ticker). `Usage: ...` when the ticker is missing.
 
 ### `/export`
 
