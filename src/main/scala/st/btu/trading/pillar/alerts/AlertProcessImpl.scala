@@ -93,7 +93,7 @@ final class AlertProcessImpl[F[_]: Temporal: Logging: GenUUID](
       case None =>
         warn"Strategy ${binding.strategyId.value} not registered for binding ${binding.ruleKey}"
       case Some(strategy) =>
-        liveStrategyService.evaluate(binding, strategy, now).flatMap { evaluation =>
+        liveStrategyService.evaluate(binding, strategy, now) { evaluation =>
           dispatchAll(evaluation.alerts, binding.policy, binding.channels) >>
             executePaperSignals(binding, evaluation.signals, now)
         }

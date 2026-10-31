@@ -2,7 +2,7 @@ package st.btu.trading.pillar.alerts
 
 import st.btu.trading.pillar.strategy.StrategySignal
 
-/** The result of one [[LiveStrategyService.evaluate]] call.
+/** What one [[LiveStrategyService.evaluate]] call found for a binding, handed to its action.
   *
   * @param signals
   *   the newly-closed bar's Buy/Sell signals (never Hold), independent of whether the matching

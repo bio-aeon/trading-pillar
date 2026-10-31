@@ -265,21 +265,24 @@ chat.
 
 ```scala
 trait LiveStrategyService[F[_]] {
-  def evaluate(binding: StrategyBinding, strategy: Strategy, now: ZonedDateTime): F[LiveEvaluation]
+  def evaluate[A](binding: StrategyBinding, strategy: Strategy, now: ZonedDateTime)(
+    act: LiveEvaluation => F[A]
+  ): F[A]
 }
 
 final case class LiveEvaluation(alerts: List[Alert], signals: List[StrategySignal])
 ```
 
-`LiveStrategyServiceImpl.evaluate`, per binding, per poll:
+`LiveStrategyServiceImpl.evaluate`, per binding, per poll, works on a copy of the binding's state and
+records it only at the end (step 5):
 
 1. Load `PriceHistoryStorage.latestBars(binding.ticker, marketDataSource.origin.source,
    strategy.warmupBars)` into a `BarHistory`.
 2. **onBar path**: if `history.size >= strategy.warmupBars` and there is a latest bar, look up this
    binding's in-memory state (`lastBarDate`, shadow `position`). If `lastBarDate` is already `>=`
-   the latest bar's date, **skip** - `onBar` for a given bar date is only ever invoked once per
-   binding, however many times the process polls before the next bar closes. Otherwise call
-   `strategy.onBar`, update the shadow position (see below) and the state's `lastBarDate`, turn any
+   the latest bar's date, **skip** - `onBar` runs for a bar date once per binding, however many
+   times the process polls before the next bar closes, unless a poll fails before step 5. Otherwise
+   call `strategy.onBar`, work out the new shadow position (see below) and `lastBarDate`, turn any
    `Buy`/`Sell` signal into a `StrategyBuy`/`StrategySell` `Alert` (`Hold` produces none), and keep
    the same bar's `Buy`/`Sell` signals (only - never `Hold`) on `LiveEvaluation.signals`.
 3. **Proximity path**: independently (no warmup gate, no once-per-bar-date gate), fetch
@@ -300,6 +303,12 @@ final case class LiveEvaluation(alerts: List[Alert], signals: List[StrategySigna
    per poll); `LiveEvaluation.signals` carries the onBar path's own signals regardless of whether
    the matching alert is actually delivered or suppressed by a guard below - see
    [Paper trading](#paper-trading) for who consumes it and why.
+5. Run `act` on the `LiveEvaluation`, and only once it has succeeded record the new `lastBarDate`,
+   shadow position and last warning. A failure anywhere before then, in the quote, the dispatch or
+   a paper fill, leaves the state as it was: the next poll evaluates the same bar again, and its
+   `act` sees the same signals and alerts a second time. The cooldown and dedup guards hold back a
+   buy or sell alert already delivered within the cooldown. A warning already delivered goes out
+   again unless its message is unchanged.
 
 ### Shadow position
 
@@ -333,7 +342,8 @@ Every `pollInterval` (for example `5m`), `AlertProcessImpl`:
   `SystemAlerts[F]` it now takes as a constructor/`create` parameter (see below).
 - After dispatching a binding's alerts, also executes its `LiveEvaluation.signals` through the
   `PaperBroker[F]` it takes as a constructor/`create` parameter, for bindings with `mode == Paper`
-  only - see [Paper trading](#paper-trading).
+  only - see [Paper trading](#paper-trading). Both run as the action `LiveStrategyService.evaluate`
+  takes, so a binding whose dispatch or fill fails keeps its bar for the next poll.
 
 ## Paper trading
 

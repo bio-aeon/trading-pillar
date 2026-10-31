@@ -1,21 +1,22 @@
 package st.btu.trading.pillar.alerts
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.gateways.MarketDataSource
 import st.btu.trading.pillar.models.domain.{AccountId, Currency}
-import st.btu.trading.pillar.models.market.{MarketDataError, Ticker}
+import st.btu.trading.pillar.models.market.{MarketDataError, Quote, Ticker}
 import st.btu.trading.pillar.paper.*
 import st.btu.trading.pillar.strategy.*
+import st.btu.trading.pillar.strategy.reference.MovingAverageCrossoverStrategy
 import st.btu.trading.pillar.testkit.{AlertFakes, MarketDataFakes, PaperFakes, StrategyFakes}
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
 
-import java.time.{ZoneOffset, ZonedDateTime}
+import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 import scala.concurrent.duration.*
 
 class AlertProcessImplSpec extends Specification with CatsEffect {
@@ -62,6 +63,21 @@ class AlertProcessImplSpec extends Specification with CatsEffect {
 
   private def noopPaperBroker: IO[PaperBroker[IO]] =
     PaperFakes.paperStorage().map(PaperBrokerImpl.create[IO](_, PaperBrokerConfig(0, 0)))
+
+  // `broker`, except that its first fill fails, as when its store is briefly unavailable.
+  private def failingOnce(broker: PaperBroker[IO], fills: Ref[IO, Int]): PaperBroker[IO] =
+    new PaperBroker[IO] {
+      def execute(
+        binding: StrategyBinding,
+        signal: StrategySignal,
+        quote: Quote,
+        now: ZonedDateTime
+      ): IO[PaperOrder] =
+        fills.getAndUpdate(_ + 1).flatMap { attempt =>
+          if (attempt == 0) IO.raiseError(new RuntimeException("paper store unavailable"))
+          else broker.execute(binding, signal, quote, now)
+        }
+    }
 
   "AlertProcessImpl" >> {
     "continues past a binding whose strategy isn't registered" >> {
@@ -214,6 +230,61 @@ class AlertProcessImplSpec extends Specification with CatsEffect {
         orders.map(_.ticker) must_== List(Ticker("AAPL"))
         orders.head.status must_== PaperOrderStatus.Filled
         orders.head.quantity must_== 1L
+      }
+    }
+
+    "fills a paper signal on the next poll after its fill failed, delivering its alert once" >> {
+      implicit val logs: Logs[IO, IO] =
+        Logs.const[IO, IO](Logging.Make.plain[IO].forService[AlertProcess[IO]])
+
+      val ticker = Ticker("AAPL")
+      val strategy = new MovingAverageCrossoverStrategy(fast = 2, slow = 3)
+      val binding =
+        AlertFakes.strategyBinding(
+          strategyId = strategy.id,
+          ticker = ticker,
+          mode = BindingMode.Paper
+        )
+      // fast(2)/slow(3) SMA crosses up on the last bar, so the binding buys.
+      val bars = List(10, 10, 10, 13).zipWithIndex.map { case (close, day) =>
+        StrategyFakes.flatBar(ticker, LocalDate.of(2024, 1, day + 1), BigDecimal(close))
+      }
+
+      for {
+        registry <- StrategyRegistryImpl.create[IO, IO]
+        _ <- registry.register(strategy)
+        marketData <- MarketDataFakes.marketDataSource(quotes =
+          Map(ticker -> IO.pure(Some(AlertFakes.quote(ticker, 13, now))))
+        )
+        sources <- MarketDataFakes.marketDataSources(yahoo =
+          Some(MarketDataFakes.yahooSymbolsOver(marketData))
+        )
+        priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
+        liveService <- LiveStrategyServiceImpl.create[IO, IO](priceHistory, sources)
+        channel <- AlertFakes.alertChannel()
+        history <- AlertFakes.alertHistoryStorage()
+        dispatcher <- AlertDispatcherImpl.create[IO, IO](List(channel), history)
+        paperStorage <- PaperFakes.paperStorage(accounts =
+          List(PaperAccount(accountId, 10000, Currency("USD")))
+        )
+        fills <- Ref.of[IO, Int](0)
+        paperBroker =
+          failingOnce(PaperBrokerImpl.create[IO](paperStorage, PaperBrokerConfig(0, 0)), fills)
+        process <- buildProcess(
+          List(binding),
+          List.empty,
+          registry,
+          liveService,
+          marketData,
+          dispatcher,
+          paperBroker
+        )
+        _ <- process.run.take(2).compile.drain
+        sent <- channel.sentAlerts
+        orders <- paperStorage.allOrders
+      } yield {
+        sent.map(_.kind) must_== List(AlertKind.StrategyBuy)
+        orders.map(_.status) must_== List(PaperOrderStatus.Filled)
       }
     }
   }

@@ -124,10 +124,12 @@ object AlertFakes {
   ): IO[FakeLiveStrategyService] =
     Ref.of[IO, List[String]](List.empty).map { callsRef =>
       new FakeLiveStrategyService {
-        def evaluate(binding: StrategyBinding, strategy: Strategy, now: ZonedDateTime)
-          : IO[LiveEvaluation] =
+        def evaluate[A](binding: StrategyBinding, strategy: Strategy, now: ZonedDateTime)(
+          act: LiveEvaluation => IO[A]
+        ): IO[A] =
           callsRef.update(_ :+ binding.ruleKey) >> outcomes
             .getOrElse(binding.ruleKey, IO.pure(LiveEvaluation(List.empty, List.empty)))
+            .flatMap(act)
 
         def evaluatedRuleKeys: IO[List[String]] = callsRef.get
       }

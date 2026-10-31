@@ -21,6 +21,10 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
   private val binding = AlertFakes.strategyBinding(ticker = ticker, strategyId = strategy.id)
   private val now = ZonedDateTime.of(2024, 1, 4, 16, 0, 0, 0, ZoneOffset.UTC)
 
+  // A caller whose dispatch fails, so that it never acts on the evaluation.
+  private val failingAction: LiveEvaluation => IO[Unit] =
+    _ => IO.raiseError(new RuntimeException("dispatch failed"))
+
   private def bar(day: Int, close: BigDecimal): Bar =
     StrategyFakes.flatBar(ticker, LocalDate.of(2024, 1, day), close)
 
@@ -73,8 +77,8 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
         val bars = List(bar(1, 10), bar(2, 10), bar(3, 10), bar(4, 13))
         for {
           service <- buildService(bars)
-          first <- service.evaluate(binding, strategy, now)
-          second <- service.evaluate(binding, strategy, now)
+          first <- service.evaluate(binding, strategy, now)(IO.pure)
+          second <- service.evaluate(binding, strategy, now)(IO.pure)
         } yield {
           first.alerts.map(_.kind) must_== List(AlertKind.StrategyBuy)
           second.alerts must beEmpty
@@ -86,7 +90,7 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
         val bars = List(bar(1, 10), bar(2, 10), bar(3, 10), bar(4, 13))
         for {
           service <- buildService(bars)
-          evaluation <- service.evaluate(binding, strategy, now)
+          evaluation <- service.evaluate(binding, strategy, now)(IO.pure)
         } yield evaluation.signals must beLike {
           case List(StrategySignal.Buy(signalTicker, _, _)) =>
             signalTicker must_== ticker
@@ -97,10 +101,43 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
         val bars = List(bar(2, 10), bar(3, 10), bar(4, 13))
         for {
           service <- buildService(bars)
-          evaluation <- service.evaluate(binding, strategy, now)
+          evaluation <- service.evaluate(binding, strategy, now)(IO.pure)
         } yield {
           evaluation.alerts must beEmpty
           evaluation.signals must beEmpty
+        }
+      }
+
+      "after a failed poll" >> {
+        // fast(2)/slow(3) SMA crosses up on the 4th bar, so a buy is due.
+        val crossover = List(bar(1, 10), bar(2, 10), bar(3, 10), bar(4, 13))
+
+        "signals the same bar again when acting on it failed" >> {
+          for {
+            service <- buildService(crossover)
+            failed <- service.evaluate(binding, strategy, now)(failingAction).attempt
+            retried <- service.evaluate(binding, strategy, now)(IO.pure)
+          } yield {
+            failed must beLeft
+            retried.signals must beLike { case List(StrategySignal.Buy(_, _, _)) => ok }
+          }
+        }
+
+        "signals the same bar again when its quote could not be read" >> {
+          for {
+            reads <- Ref.of[IO, Int](0)
+            quoteFailingOnce = reads.getAndUpdate(_ + 1).flatMap { n =>
+              if (n == 0) IO.raiseError[Option[Quote]](MarketDataError.RateLimited(None))
+              else IO.pure(Option.empty[Quote])
+            }
+            history <- MarketDataFakes.priceHistoryStorage(crossover)
+            service <- serviceOver(history, quoteFailingOnce)
+            failed <- service.evaluate(binding, strategy, now)(IO.pure).attempt
+            retried <- service.evaluate(binding, strategy, now)(IO.pure)
+          } yield {
+            failed must beLeft
+            retried.signals must beLike { case List(StrategySignal.Buy(_, _, _)) => ok }
+          }
         }
       }
 
@@ -119,14 +156,14 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
         "judges the quote as the bar of a session not stored yet" >> {
           for {
             service <- buildService(throughThursday, Some(quoteAt(fridayClose)))
-            evaluation <- service.evaluate(binding, strategy, weekend)
+            evaluation <- service.evaluate(binding, strategy, weekend)(IO.pure)
           } yield warnings(evaluation) must_== buyApproaching
         }
 
         "counts the quote's session once when its bar is already stored" >> {
           for {
             service <- buildService(throughThursday :+ bar(5, 200), Some(quoteAt(fridayClose)))
-            evaluation <- service.evaluate(binding, strategy, weekend)
+            evaluation <- service.evaluate(binding, strategy, weekend)(IO.pure)
           } yield warnings(evaluation) must_== buyApproaching
         }
 
@@ -139,7 +176,7 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
               Some(quoteAt(aucklandFriday)),
               "Pacific/Auckland"
             )
-            evaluation <- service.evaluate(binding, strategy, weekend)
+            evaluation <- service.evaluate(binding, strategy, weekend)(IO.pure)
           } yield warnings(evaluation) must_== buyApproaching
         }
       }
@@ -173,7 +210,7 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
             service <- serviceOver(priceHistory, quote.get)
           } yield (asOf, distance) =>
             quote.set(Some(quoteAt(asOf, BigDecimal(distance)))) >>
-              service.evaluate(binding, warner, asOf).map(_.alerts.map(_.kind))
+              service.evaluate(binding, warner, asOf)(IO.pure).map(_.alerts.map(_.kind))
 
         "warns once per session while the warning stands" >> {
           for {
@@ -220,6 +257,17 @@ class LiveStrategyServiceImplSpec extends Specification with CatsEffect {
             onMonday <- poll(utc(8, 15), "0.004")
             onTuesday <- poll(utc(9, 15), "0.004")
           } yield List(onMonday, onTuesday) must_== List(preBuy, preBuy)
+        }
+
+        "warns again when acting on the warning failed" >> {
+          val mondayMorning = utc(8, 15)
+          val quote = IO.pure(Some(quoteAt(mondayMorning, BigDecimal("0.004"))))
+          for {
+            history <- MarketDataFakes.priceHistoryStorage(List(friday))
+            service <- serviceOver(history, quote)
+            _ <- service.evaluate(binding, warner, mondayMorning)(failingAction).attempt
+            retried <- service.evaluate(binding, warner, mondayMorning.plusMinutes(5))(IO.pure)
+          } yield retried.alerts.map(_.kind) must_== preBuy
         }
 
         "warns of the other side within the session once the position has turned" >> {

@@ -3,7 +3,6 @@ package st.btu.trading.pillar.alerts
 import cats.MonadThrow
 import cats.data.OptionT
 import cats.effect.{Ref, Sync}
-import cats.syntax.applicative.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import st.btu.trading.pillar.gateways.{MarketDataSource, MarketDataSources}
@@ -17,7 +16,8 @@ import java.time.{LocalDate, ZoneId, ZonedDateTime}
 // No real brokerage position is available to trading-pillar (that lives in the consumer app), so
 // a shadow position is derived purely from this binding's own live signal history: flat until a
 // Buy alert fires, closed on the next Sell. It evolves bar by bar in stateRef, alongside the last
-// bar date onBar ran for (so a bar's signals are only ever emitted once) and the last warning sent.
+// bar date onBar ran for and the last warning sent, all of them recorded only once the caller has
+// acted on them.
 final class LiveStrategyServiceImpl[F[_]: Logging] private (
   priceHistory: PriceHistoryStorage[F],
   marketDataSources: MarketDataSources[F],
@@ -25,50 +25,43 @@ final class LiveStrategyServiceImpl[F[_]: Logging] private (
 )(implicit F: MonadThrow[F])
     extends LiveStrategyService[F] {
 
-  import LiveStrategyServiceImpl.LiveState
+  import LiveStrategyServiceImpl.{LiveState, Outcome}
 
-  def evaluate(
-    binding: StrategyBinding,
-    strategy: Strategy,
-    now: ZonedDateTime
-  ): F[LiveEvaluation] =
+  def evaluate[A](binding: StrategyBinding, strategy: Strategy, now: ZonedDateTime)(
+    act: LiveEvaluation => F[A]
+  ): F[A] =
     for {
       source <- marketDataSources.forTicker(binding.ticker)
       bars <- priceHistory.latestBars(binding.ticker, source.origin.source, strategy.warmupBars)
       history = BarHistory(bars.toVector)
-      (onBarAlerts, signals) <- processNewBar(binding, strategy, history, now)
-      proximityAlerts <- evaluateProximity(binding, strategy, source, history, now)
-    } yield LiveEvaluation(onBarAlerts ++ proximityAlerts, signals)
+      state <- stateRef.get.map(_.getOrElse(binding.ruleKey, LiveState.Initial))
+      onBar = processNewBar(binding, strategy, history, state, now)
+      outcome <- evaluateProximity(binding, strategy, source, history, onBar, now)
+      result <- act(LiveEvaluation(outcome.alerts, outcome.signals))
+      _ <- stateRef.update(_.updated(binding.ruleKey, outcome.state))
+    } yield result
 
   private def processNewBar(
     binding: StrategyBinding,
     strategy: Strategy,
     history: BarHistory,
+    state: LiveState,
     now: ZonedDateTime
-  ): F[(List[Alert], List[StrategySignal])] =
-    if (history.size < strategy.warmupBars) (List.empty[Alert], List.empty[StrategySignal]).pure[F]
-    else
-      history.last match {
-        case None => (List.empty[Alert], List.empty[StrategySignal]).pure[F]
-        case Some(latestBar) =>
-          stateRef
-            .modify { states =>
-              val st = states.getOrElse(binding.ruleKey, LiveState.Initial)
-              if (st.lastBarDate.exists(!_.isBefore(latestBar.date)))
-                (states, List.empty[StrategySignal])
-              else {
-                val ctx = StrategyContext(binding.ticker, history, st.position, PortfolioView(0, 0))
-                val signals = strategy.onBar(ctx, latestBar)
-                val newPosition = applySignals(st.position, signals, latestBar)
-                val newState = st.copy(lastBarDate = Some(latestBar.date), position = newPosition)
-                (states.updated(binding.ruleKey, newState), signals)
-              }
-            }
-            .map { signals =>
-              val alerts = signals.flatMap(toSignalAlert(binding, now, latestBar, _))
-              (alerts, signals.filter(isActionable))
-            }
-      }
+  ): Outcome = {
+    val newBar = history.last.filter(bar =>
+      history.size >= strategy.warmupBars && state.lastBarDate.forall(_.isBefore(bar.date))
+    )
+    newBar.fold(Outcome(state, Nil, Nil)) { bar =>
+      val ctx = StrategyContext(binding.ticker, history, state.position, PortfolioView(0, 0))
+      val signals = strategy.onBar(ctx, bar)
+      val position = applySignals(state.position, signals, bar)
+      Outcome(
+        state.copy(lastBarDate = Some(bar.date), position = position),
+        signals.flatMap(toSignalAlert(binding, now, bar, _)),
+        signals.filter(isActionable)
+      )
+    }
+  }
 
   private def isActionable(signal: StrategySignal): Boolean =
     signal match {
@@ -130,8 +123,9 @@ final class LiveStrategyServiceImpl[F[_]: Logging] private (
     strategy: Strategy,
     source: MarketDataSource[F],
     history: BarHistory,
+    onBar: Outcome,
     now: ZonedDateTime
-  ): F[List[Alert]] =
+  ): F[Outcome] =
     (for {
       quote <- OptionT(source.latestQuote(binding.ticker))
       info <- OptionT(source.instrumentInfo(binding.ticker))
@@ -140,17 +134,15 @@ final class LiveStrategyServiceImpl[F[_]: Logging] private (
       // Once the quote's session has closed, its stored bar gives way to the quote, so that the
       // session counts once.
       earlierSessions = BarHistory(history.bars.filter(_.date.isBefore(liveBar.date)))
-      preSignal <- OptionT(stateRef.modify { states =>
-        val state = states.getOrElse(binding.ruleKey, LiveState.Initial)
-        val ctx =
-          StrategyContext(binding.ticker, earlierSessions, state.position, PortfolioView(0, 0))
-        strategy.proximity(ctx, liveBar).filterNot(state.repeats(liveBar.date, _)) match {
-          case Some(warning) =>
-            (states.updated(binding.ruleKey, state.warned(liveBar.date, warning)), Some(warning))
-          case None => (states, None)
-        }
-      })
-    } yield toProximityAlert(binding, now, preSignal)).value.map(_.toList)
+      state = onBar.state
+      ctx = StrategyContext(binding.ticker, earlierSessions, state.position, PortfolioView(0, 0))
+      warning <- OptionT.fromOption[F](
+        strategy.proximity(ctx, liveBar).filterNot(state.repeats(liveBar.date, _))
+      )
+    } yield onBar.copy(
+      state = state.warned(liveBar.date, warning),
+      alerts = onBar.alerts :+ toProximityAlert(binding, now, warning)
+    )).getOrElse(onBar)
 
   private def provisionalBar(quote: Quote, zone: ZoneId): Bar = {
     val price = quote.price
@@ -205,6 +197,13 @@ object LiveStrategyServiceImpl {
   }
 
   private[alerts] final case class SentWarning(session: LocalDate, side: Side, distance: BigDecimal)
+
+  // What one evaluation found for a binding, with the state to record once it is acted on.
+  private final case class Outcome(
+    state: LiveState,
+    alerts: List[Alert],
+    signals: List[StrategySignal]
+  )
 
   /** Wires a [[LiveStrategyService]] with no binding state recorded yet. */
   def create[I[_]: Sync, F[_]: Sync](
