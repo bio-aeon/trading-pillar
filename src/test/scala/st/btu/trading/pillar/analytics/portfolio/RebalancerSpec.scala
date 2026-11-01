@@ -27,10 +27,12 @@ class RebalancerSpec extends Specification {
       instrumentType = instrumentType,
       currency = currency.map(Currency(_)),
       exchange = exchange,
+      source = None,
       quantity = 1,
       price = None,
       value = None,
-      weight = weight
+      weight = weight,
+      dayReturn = None
     )
 
   private def snapshot(
@@ -38,7 +40,7 @@ class RebalancerSpec extends Specification {
     cash: BigDecimal,
     total: BigDecimal
   ): PositionSnapshot =
-    PositionSnapshot(date, Currency("RUB"), positions, cash, total, unpriced = 0)
+    PositionSnapshot(date, Currency("RUB"), positions, cash, total, BigDecimal(0), unpriced = 0)
 
   private def target(
     dimension: Dimension,

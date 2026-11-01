@@ -54,7 +54,7 @@ Package root `st.btu.trading.pillar`:
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
-| `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing, performance metrics, periods) |
+| `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
 | `paper`, `tax`, `charts` | paper broker; FIFO tax lots and the annual estimate; equity-curve PNG |
 | `services` | sync and command services; `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync, price-history sync, analytics |
@@ -95,10 +95,10 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   yet.
 - **Telegram output** uses legacy Markdown. Send command replies through `Replies.reply`, which
   sanitizes and caps the text; alert notifications pass through the same sanitizer.
-- **Persisted values are contracts.** Consumers store the circe encodings of backtest results and
-  of `Proximity` and `QuietHours`, the string values of enumeratum enums such as `Source`,
-  `AlertKind` and `BindingMode`, and the names of `Side` and `PriceCrossed.Direction`. Renaming any
-  of them breaks stored data.
+- **Persisted values are contracts.** Consumers store the circe encodings of backtest results, of
+  `Proximity` and `QuietHours`, and of `Allocation` and `PortfolioMetrics`, the string values of
+  enumeratum enums such as `Source`, `AlertKind`, `BindingMode` and `Period`, and the names of
+  `Side` and `PriceCrossed.Direction`. Renaming any of them breaks stored data.
 - **Public API.** Every public type and member gets Scaladoc with a one-sentence summary; internals
   are `private` or `private[pillar]`. Narrowing or removing a public member breaks consumers, so
   propose it rather than doing it as part of another change.

@@ -9,6 +9,7 @@ import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.storages.{
   AccountStorage,
   AllocationTargetStorage,
+  PortfolioSnapshotStorage,
   PortfolioValuationStorage,
   TcsPortfolioOperationStorage
 }
@@ -123,6 +124,39 @@ object AnalyticsFakes {
       }
     }
 
+  // --- PortfolioSnapshotStorage ---
+
+  trait FakePortfolioSnapshotStorage extends PortfolioSnapshotStorage[IO] {
+    def all: IO[Map[(AccountId, LocalDate), PortfolioSnapshot]]
+  }
+
+  // Keyed as the storage contract says: a save replaces the snapshot of that account and date.
+  def portfolioSnapshotStorage(): IO[FakePortfolioSnapshotStorage] =
+    Ref.of[IO, Map[(AccountId, LocalDate), PortfolioSnapshot]](Map.empty).map { ref =>
+      new FakePortfolioSnapshotStorage {
+        def save(accountId: AccountId, snapshot: PortfolioSnapshot): IO[Unit] =
+          ref.update(_.updated((accountId, snapshot.holdings.date), snapshot))
+
+        def all: IO[Map[(AccountId, LocalDate), PortfolioSnapshot]] = ref.get
+      }
+    }
+
+  // Saving a snapshot of `failingAccount` fails with `failure`; every other account saves as usual,
+  // for specs of how a caller carries on after one account's save fails.
+  def failingPortfolioSnapshotStorage(
+    failingAccount: AccountId,
+    failure: Throwable
+  ): IO[FakePortfolioSnapshotStorage] =
+    portfolioSnapshotStorage().map { working =>
+      new FakePortfolioSnapshotStorage {
+        def save(accountId: AccountId, snapshot: PortfolioSnapshot): IO[Unit] =
+          if (accountId == failingAccount) IO.raiseError(failure)
+          else working.save(accountId, snapshot)
+
+        def all: IO[Map[(AccountId, LocalDate), PortfolioSnapshot]] = working.all
+      }
+    }
+
   // --- PortfolioValuationService (fake, used by AnalyticsProcessImplSpec and by
   // PositionsHandlerSpec/AllocationHandlerSpec via positionSnapshots) ---
 
@@ -145,7 +179,7 @@ object AnalyticsFakes {
         def positionsAsOf(accountId: AccountId, date: LocalDate): IO[PositionSnapshot] =
           callsRef.update(_ :+ accountId) >> positionSnapshots.getOrElse(
             accountId,
-            IO.pure(PositionSnapshot(date, DefaultCurrency, Vector.empty, Zero, Zero, 0))
+            IO.pure(PositionSnapshot(date, DefaultCurrency, Vector.empty, Zero, Zero, Zero, 0))
           )
 
         def calls: IO[List[AccountId]] = callsRef.get

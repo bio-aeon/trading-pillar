@@ -289,6 +289,37 @@ a day replaces its point. Read by `/performance`, `/portfolio` and `/export` - s
 such as `portfolio_valuations` with `account_id`, `date`, `value`, `invested`, `cash_flow`,
 `currency`, `updated_at` and a unique key on `(account_id, date)`.
 
+## `PortfolioSnapshotStorage[F[_]]`
+
+```scala
+trait PortfolioSnapshotStorage[F[_]] {
+  def save(accountId: AccountId, snapshot: PortfolioSnapshot): F[Unit]
+}
+```
+
+Written by the library: `AnalyticsProcess` calls `save` once per account on every run, after it has
+upserted the account's valuations - see [`analytics.md`](analytics.md#portfolio-snapshots). A
+snapshot is keyed on `(account, snapshot.holdings.date)`: saving replaces whatever is stored for that
+account and date, positions included, and stores all of it or, on failure, none. The library never
+reads snapshots back; the consumer does, for example to show them on a dashboard.
+
+A relational implementation could use two tables, and save in one transaction:
+
+- `portfolio_snapshots` with a generated `id`, `account_id`, `date`, `computed_at`, `currency`,
+  `cash`, `total`, `day_change`, `unpriced`, `allocation` and `metrics`, and a unique key on
+  `(account_id, date)`. The last two are JSON: `allocation` the circe encoding of
+  `snapshot.allocation` and `metrics` that of `snapshot.metrics`, both exactly as
+  [`analytics.md`](analytics.md#stored-json-form) lays them out.
+- `portfolio_snapshot_positions` with `snapshot_id` (the snapshot's `id`), `figi`, `ticker`, `name`,
+  `instrument_type`, `currency`, `exchange`, `source` (`yahoo` | `tinkoff` | `binance`, the
+  `Source` values), `quantity`, `price`, `value`, `weight`, `day_return` and a unique key on
+  `(snapshot_id, figi)`. Every column but `figi` and `quantity` is nullable: an unmapped FIGI has
+  no ticker, name, type, currency, exchange or source, and a position with no close or exchange
+  rate has no price, value, weight or day return.
+
+Saving replaces the day's `portfolio_snapshots` row and its positions in one transaction, so a
+reader never sees a snapshot with the positions of another run.
+
 ## `AllocationTargetStorage[F[_]]`
 
 ```scala
@@ -359,9 +390,12 @@ implementation runs its statements in one transaction.
 | `AlertRuleStorage` | `alert_rules` | `insertPriceRule`, `delete` | `allEnabledPriceRules`, `byAccount` |
 | `AlertHistoryStorage` | `alert_history` | `record` | `lastDelivered`, `deliveredCountSince`, `existsDedup`, `recent` |
 | `PortfolioValuationStorage` | `portfolio_valuations` | `upsert` | `series`, `latest` |
+| `PortfolioSnapshotStorage` | `portfolio_snapshots` / `portfolio_snapshot_positions` | `save` | none |
 | `AllocationTargetStorage` | `allocation_targets` | none | `byAccount` |
 | `PaperStorage` | `paper_accounts` / `paper_orders` / `paper_positions` | `insertOrder`, `recordFill` | `account`, `positions`, `recentOrders` |
 
 A trait with no library write ("none" in the third column) is populated entirely by the consumer,
 for example through operator tooling, and the library only reads it. `PaperStorage`'s account is
 provisioned the same way: `recordFill` only changes the balance of an account that already exists.
+`PortfolioSnapshotStorage` is the reverse: the library only writes it, and the consumer reads the
+snapshots back.

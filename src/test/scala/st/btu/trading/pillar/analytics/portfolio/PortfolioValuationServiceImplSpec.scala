@@ -700,6 +700,150 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           position.value must beSome(BigDecimal(120))
         }
       }
+
+      "source" >> {
+
+        val d0 = LocalDate.of(2026, 10, 6)
+        val aaa = Ticker("AAA")
+        val sber = Ticker("SBER")
+
+        "is the source the ticker is configured to use" >> {
+          val ops = depositAndBuy(d0, "F1", quantity = 1, cost = 50) ++
+            depositAndBuy(d0, "F2", quantity = 1, cost = 100)
+          val bars = List(bar(aaa, d0, 50), bar(sber, d0, 100, Source.Tinkoff))
+          for {
+            service <- buildService(
+              ops,
+              directory = List(brokerInstrument("F1", aaa), brokerInstrument("F2", sber)),
+              bars = bars,
+              settings = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
+            )
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.positions.map(p => p.figi.value -> p.source) must_== Vector(
+            "F1" -> Some(Source.Yahoo),
+            "F2" -> Some(Source.Tinkoff)
+          )
+        }
+
+        "is absent for an unmapped FIGI" >> {
+          for {
+            service <- buildService(depositAndBuy(d0, "UNMAPPED", quantity = 1, cost = 50))
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.positions.map(_.source) must_== Vector(None)
+        }
+      }
+
+      "day return" >> {
+
+        val d0 = LocalDate.of(2026, 10, 5)
+        val aaa = Ticker("AAA")
+        val ops = depositAndBuy(d0, "F1", quantity = 10, cost = 500)
+
+        "is the last close over the close of the bar before it, minus 1" >> {
+          // d0 is a Monday, so the bar before it is the one of the Friday, three days earlier.
+          val bars = List(bar(aaa, d0.minusDays(3), 50), bar(aaa, d0, 55))
+          for {
+            service <- buildService(ops, List(brokerInstrument("F1", aaa)), bars = bars)
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.positions.map(_.dayReturn) must_==
+            Vector(Some(BigDecimal("0.1"))) // 55 / 50 - 1
+        }
+
+        "is absent with a single close" >> {
+          for {
+            service <- buildService(
+              ops,
+              List(brokerInstrument("F1", aaa)),
+              bars = List(bar(aaa, d0, 55))
+            )
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield {
+            val position = snapshot.positions.head
+            position.price must beSome(BigDecimal(55))
+            position.dayReturn must beNone
+          }
+        }
+
+        "is absent when the close before is zero" >> {
+          val bars = List(bar(aaa, d0.minusDays(1), 0), bar(aaa, d0, 55))
+          for {
+            service <- buildService(ops, List(brokerInstrument("F1", aaa)), bars = bars)
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.positions.map(_.dayReturn) must_== Vector(None)
+        }
+
+        "is absent for an unmapped FIGI" >> {
+          for {
+            service <- buildService(depositAndBuy(d0, "UNMAPPED", quantity = 10, cost = 500))
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.positions.map(_.dayReturn) must_== Vector(None)
+        }
+      }
+
+      "day change" >> {
+
+        val d0 = LocalDate.of(2026, 10, 7)
+        val d1 = d0.minusDays(1)
+        val aaa = Ticker("AAA")
+        val ccc = Ticker("CCC")
+        val ddd = Ticker("DDD")
+
+        "sums quantity times the move of the last close, converting dollars at the latest rate" >> {
+          val ops = depositAndBuy(d0, "F1", quantity = 10, cost = 500) ++
+            depositAndBuy(d0, "F2", quantity = 2, cost = 100) ++
+            depositAndBuy(d0, "F3", quantity = 5, cost = 300)
+          val directory = List(
+            brokerInstrument("F1", aaa),
+            brokerInstrument("F2", ccc, currency = "USD"),
+            brokerInstrument("F3", ddd)
+          )
+          val bars = List(
+            bar(aaa, d1, 50),
+            bar(aaa, d0, 55),
+            bar(ccc, d1, 40),
+            bar(ccc, d0, 50),
+            bar(usdRub, d1, 80),
+            bar(usdRub, d0, 90),
+            bar(ddd, d0, 60)
+          )
+          for {
+            service <- buildService(ops, directory, bars = bars)
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield
+          // AAA: 10 * (55 - 50) = 50. CCC: 2 * (50 - 40) = 20 dollars, at the latest rate of 90
+          // roubles: 1800 (the day before's rate of 80 would give 1600). DDD has one close and
+          // adds nothing.
+          snapshot.dayChange must_== BigDecimal(1850)
+        }
+
+        "is zero when no position has two closes" >> {
+          for {
+            service <- buildService(
+              depositAndBuy(d0, "F3", quantity = 5, cost = 300),
+              List(brokerInstrument("F3", ddd)),
+              bars = List(bar(ddd, d0, 60))
+            )
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.dayChange must_== BigDecimal(0)
+        }
+
+        "leaves out a position whose currency has no exchange rate" >> {
+          for {
+            service <- buildService(
+              depositAndBuy(d0, "F2", quantity = 2, cost = 100),
+              List(brokerInstrument("F2", ccc, currency = "USD")),
+              bars = List(bar(ccc, d1, 40), bar(ccc, d0, 50))
+            )
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield {
+            // The position has a day return, but without a USDRUB=X bar no value to add it to.
+            val position = snapshot.positions.head
+            position.dayReturn must beSome(BigDecimal("0.25")) // 50 / 40 - 1
+            position.value must beNone
+            snapshot.dayChange must_== BigDecimal(0)
+          }
+        }
+      }
     }
   }
 }

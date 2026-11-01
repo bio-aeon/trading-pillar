@@ -1,5 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
 import st.btu.trading.pillar.analytics.{Performance, Returns, Risk, Valuation}
 
 import java.time.LocalDate
@@ -38,6 +40,11 @@ final case class PortfolioMetrics(
 
 object PortfolioMetrics {
 
+  /** The JSON form a stored snapshot keeps a period's figures in. Renaming a field breaks stored
+    * data.
+    */
+  implicit val codecForPortfolioMetrics: Codec.AsObject[PortfolioMetrics] = deriveCodec
+
   /** The figures of `points`, or `None` for an empty series. A single point gives zero for every
     * figure and no money-weighted return.
     *
@@ -67,4 +74,18 @@ object PortfolioMetrics {
         maxDrawdown = Risk.maxDrawdown(values)
       )
     }
+
+  /** The figures of each [[Period]] that ends on `end`, over the `points` dated from
+    * `period.from(end)` to `end`, both inclusive: the window `/performance` reads for that period.
+    * A period whose window holds no point is absent.
+    *
+    * @param points
+    *   the valuation series, oldest first, as for [[of]]; a point dated after `end` falls in no
+    *   window
+    */
+  def byPeriod(points: Vector[ValuationPoint], end: LocalDate): Map[Period, PortfolioMetrics] =
+    Period.values.flatMap { period =>
+      val from = period.from(end)
+      of(points.filter(p => !p.date.isBefore(from) && !p.date.isAfter(end))).map(period -> _)
+    }.toMap
 }

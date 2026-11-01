@@ -7,17 +7,13 @@ import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import fs2.Stream
 import st.btu.trading.pillar.alerts.*
-import st.btu.trading.pillar.analytics.portfolio.{
-  Allocation,
-  Drift,
-  PortfolioValuationService,
-  Rebalancer
-}
+import st.btu.trading.pillar.analytics.portfolio.*
 import st.btu.trading.pillar.data.{ProcessContext, TraceIds, UtcClock}
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.storages.{
   AccountStorage,
   AllocationTargetStorage,
+  PortfolioSnapshotStorage,
   PortfolioValuationStorage
 }
 import tofu.WithLocal
@@ -34,6 +30,7 @@ final class AnalyticsProcessImpl[F[_]: Temporal: Logging: GenUUID](
   accounts: AccountStorage[F],
   valuationService: PortfolioValuationService[F],
   valuations: PortfolioValuationStorage[F],
+  snapshots: PortfolioSnapshotStorage[F],
   targets: AllocationTargetStorage[F],
   dispatcher: AlertDispatcher[F],
   systemAlerts: SystemAlerts[F],
@@ -77,14 +74,18 @@ final class AnalyticsProcessImpl[F[_]: Temporal: Logging: GenUUID](
         today
       )
       _ <- valuations.upsert(accountId, series.currency, series.points)
-      _ <- checkDrift(accountId, today)
+      holdings <- valuationService.positionsAsOf(accountId, today)
+      points <- valuations.series(accountId, Period.All.from(today), today)
+      now <- UtcClock.nowUtc[F]
+      snapshot = PortfolioSnapshot(holdings, PortfolioMetrics.byPeriod(points, today), now)
+      _ <- snapshots.save(accountId, snapshot)
+      _ <- checkDrift(accountId, holdings)
     } yield ()
 
-  private def checkDrift(accountId: AccountId, today: LocalDate): F[Unit] =
+  private def checkDrift(accountId: AccountId, holdings: PositionSnapshot): F[Unit] =
     for {
       accountTargets <- targets.byAccount(accountId)
-      snapshot <- valuationService.positionsAsOf(accountId, today)
-      drifts = Rebalancer.drift(Allocation.of(snapshot), snapshot, accountTargets)
+      drifts = Rebalancer.drift(Allocation.of(holdings), holdings, accountTargets)
       now <- UtcClock.nowUtc[F]
       _ <- drifts.filter(_.breached).traverse(dispatchDrift(accountId, _, now))
     } yield ()
@@ -121,6 +122,7 @@ object AnalyticsProcessImpl {
     accounts: AccountStorage[F],
     valuationService: PortfolioValuationService[F],
     valuations: PortfolioValuationStorage[F],
+    snapshots: PortfolioSnapshotStorage[F],
     targets: AllocationTargetStorage[F],
     dispatcher: AlertDispatcher[F],
     systemAlerts: SystemAlerts[F],
@@ -134,6 +136,7 @@ object AnalyticsProcessImpl {
           accounts,
           valuationService,
           valuations,
+          snapshots,
           targets,
           dispatcher,
           systemAlerts,

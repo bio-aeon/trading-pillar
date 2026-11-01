@@ -419,11 +419,13 @@ two-argument-fewer call sites keep compiling unchanged.
 
 Unlike every other alert kind above, `AlertKind.AllocationDrift` is not dispatched by `AlertProcess`
 on its poll loop - it comes from `processes.AnalyticsProcessImpl`, right after that
-process's own daily `PortfolioValuationStorage.upsert` for an account:
+process's own daily `PortfolioValuationStorage.upsert` and
+[portfolio snapshot](analytics.md#portfolio-snapshots) save for an account:
 
 1. Load the account's `AllocationTargetStorage.byAccount` targets.
-2. Compute today's `PositionSnapshot`/`Allocation` (the same pipeline `/positions`/`/allocation`
-   use) and run `Rebalancer.drift` - see
+2. Take today's `PositionSnapshot` - the holdings the process has just saved in the snapshot, from
+   the same pipeline `/positions`/`/allocation` use - and its `Allocation`, and run
+   `Rebalancer.drift` - see
    [`analytics.md`](analytics.md#allocation-targets-drift-and-rebalancing) for the drift/
    breach rules.
 3. For every **breached** target, dispatch one `Alert` through the very same `AlertDispatcher` -

@@ -1,5 +1,8 @@
 package st.btu.trading.pillar.analytics.portfolio
 
+import io.circe.Codec
+import io.circe.generic.semiauto.deriveCodec
+
 /** Cash is reported separately via `cashWeight`, never folded into the three breakdowns below. A
   * position with no weight contributes to none of them, since its share of total is unknown rather
   * than zero.
@@ -19,6 +22,10 @@ object Allocation {
 
   private val Zero = BigDecimal(0)
   private val Unknown = "unknown"
+
+  /** The JSON form a stored snapshot keeps its allocation in. Renaming a field breaks stored data.
+    */
+  implicit val codecForAllocation: Codec.AsObject[Allocation] = deriveCodec
 
   /** Groups `snapshot`'s priced positions into instrument-type, currency and exchange weight
     * breakdowns, each summing to at most `1 - cashWeight`.

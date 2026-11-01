@@ -31,10 +31,12 @@ class AllocationHandlerSpec extends Specification with CatsEffect {
       instrumentType = instrumentType,
       currency = currency.map(Currency(_)),
       exchange = exchange,
+      source = None,
       quantity = 1,
       price = None,
       value = None,
-      weight = weight
+      weight = weight,
+      dayReturn = None
     )
 
   "AllocationHandler" >> {
@@ -50,6 +52,7 @@ class AllocationHandlerSpec extends Specification with CatsEffect {
           ),
           cash = BigDecimal(200),
           total = BigDecimal(1000),
+          dayChange = BigDecimal(0),
           unpriced = 0
         )
         for {
@@ -74,7 +77,15 @@ class AllocationHandlerSpec extends Specification with CatsEffect {
 
       "notes unpriced positions when their weight is unknown" >> {
         val snapshot =
-          PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), unpriced = 2)
+          PositionSnapshot(
+            today,
+            rub,
+            Vector.empty,
+            BigDecimal(0),
+            BigDecimal(0),
+            BigDecimal(0),
+            unpriced = 2
+          )
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =
@@ -88,7 +99,15 @@ class AllocationHandlerSpec extends Specification with CatsEffect {
 
       "prints '(none)' for an empty breakdown and 100% cash weight when everything is cash" >> {
         val snapshot =
-          PositionSnapshot(today, rub, Vector.empty, BigDecimal(500), BigDecimal(500), 0)
+          PositionSnapshot(
+            today,
+            rub,
+            Vector.empty,
+            BigDecimal(500),
+            BigDecimal(500),
+            BigDecimal(0),
+            0
+          )
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =

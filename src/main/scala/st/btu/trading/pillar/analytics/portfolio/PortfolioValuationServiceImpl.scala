@@ -13,6 +13,7 @@ import st.btu.trading.pillar.storages.{
   PriceHistoryStorage,
   TcsPortfolioOperationStorage
 }
+import st.btu.trading.pillar.strategy.indicators.Indicators.divide
 
 import java.time.{LocalDate, ZoneOffset}
 
@@ -33,6 +34,9 @@ import java.time.{LocalDate, ZoneOffset}
 //    do the bars of an FX rate ticker.
 //  - A position's price currency is the one InstrumentStorage holds for its ticker, when that was
 //    read from the ticker's configured source, else the broker's currency for the instrument.
+//  - A position's day return compares its last close on or before the date with the close of the
+//    bar before it. A snapshot's day change sums quantity * (last close - previous close) over the
+//    positions with both a value and a day return, converted at the rate their value used.
 //  - A non-base cash currency or position with no FX rate is excluded from `value` and the
 //    currency/ticker is recorded in `unpricedInstruments`; a FIGI the directory does not know is
 //    excluded and recorded in `unmappedFigis`.
@@ -84,14 +88,17 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       priced = state.positions.iterator.collect {
         case (figi, qty) if qty != 0 => valueOnePosition(figi, qty, date, ctx)
       }.toVector
-      total = cashBase + priced.iterator.flatMap(_.value).sum
-      positions = priced.map(p => p.copy(weight = p.value.flatMap(weightOf(_, total))))
+      total = cashBase + priced.iterator.flatMap(_.position.value).sum
+      positions = priced.map(_.position).map { p =>
+        p.copy(weight = p.value.flatMap(weightOf(_, total)))
+      }
     } yield PositionSnapshot(
       date,
       config.baseCurrency,
       positions.sortBy(_.figi.value),
       cashBase,
       total,
+      priced.iterator.flatMap(_.dayChange).sum,
       positions.count(_.value.isEmpty)
     )
 
@@ -267,7 +274,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
     positions.foldLeft((Zero, Set.empty[String])) { case ((sum, unpriced), (figi, qty)) =>
       if (qty == 0) (sum, unpriced)
       else {
-        val priced = valueOnePosition(figi, qty, date, ctx)
+        val priced = valueOnePosition(figi, qty, date, ctx).position
         priced.value match {
           case Some(value) => (sum + value, unpriced)
           // Mapped but unpriced: report the ticker. Unmapped (ticker is also None): already
@@ -281,40 +288,59 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   // one figi/quantity pair as of `date`. `price` is the last known close in the instrument's own
   // currency (unconverted); `value` is that price times `qty`, converted to ctx.baseCurrency - None
   // when the directory does not know the figi, no close is known on or before `date`, or (for a
-  // non-base currency) no FX rate is known on or before `date`. `weight` is always None here; it
-  // depends on a snapshot-wide total only positionsAsOf computes.
+  // non-base currency) no FX rate is known on or before `date`. `dayReturn` compares that close
+  // with the one before it, still in the instrument's own currency. `dayChange` is what that move
+  // adds to `value`, converted at the rate `value` used, so it is set exactly when `value` and
+  // `dayReturn` both are. `weight` is always None here; it depends on a snapshot-wide total only
+  // positionsAsOf computes.
   private def valueOnePosition(
     figi: Figi,
     qty: Int,
     date: LocalDate,
     ctx: PricingContext
-  ): PositionValue =
+  ): PricedPosition =
     ctx.held.get(figi) match {
-      case None => PositionValue(figi, None, None, None, None, None, qty, None, None, None)
-      case Some(instrument) =>
-        val price =
-          ctx.tickerBars.get(instrument.ticker).flatMap(FxRates.closeOnOrBefore(_, date))
-        val value = price.flatMap { close =>
-          val raw = close * qty
-          if (instrument.currency == ctx.baseCurrency) Some(raw)
-          else fxRateOnOrBefore(instrument.currency, date, ctx).map(raw * _)
-        }
-        PositionValue(
-          figi,
-          Some(instrument.ticker),
-          Some(instrument.name),
-          Some(instrument.instrumentType),
-          Some(instrument.currency),
-          instrument.exchange,
-          qty,
-          price,
-          value,
+      case None =>
+        PricedPosition(
+          PositionValue(figi, None, None, None, None, None, None, qty, None, None, None, None),
           None
+        )
+      case Some(instrument) =>
+        val closes = ctx.tickerBars.get(instrument.ticker).flatMap(latestCloses(_, date))
+        def inBase(amount: BigDecimal): Option[BigDecimal] =
+          toBase(amount, instrument.currency, date, ctx)
+        PricedPosition(
+          PositionValue(
+            figi,
+            Some(instrument.ticker),
+            Some(instrument.name),
+            Some(instrument.instrumentType),
+            Some(instrument.currency),
+            instrument.exchange,
+            Some(instrument.source),
+            qty,
+            closes.map(_.last),
+            closes.flatMap(c => inBase(c.last * qty)),
+            None,
+            closes.flatMap(_.dayReturn)
+          ),
+          closes.flatMap(_.priceChange).flatMap(change => inBase(change * qty))
         )
     }
 
   private def weightOf(value: BigDecimal, total: BigDecimal): Option[BigDecimal] =
     if (total == Zero) None else Some(value / total)
+
+  // `amount` of `currency` in ctx.baseCurrency, at the latest rate on or before `date`; None when
+  // `currency` has no rate.
+  private def toBase(
+    amount: BigDecimal,
+    currency: Currency,
+    date: LocalDate,
+    ctx: PricingContext
+  ): Option[BigDecimal] =
+    if (currency == ctx.baseCurrency) Some(amount)
+    else fxRateOnOrBefore(currency, date, ctx).map(amount * _)
 
   private def fxRateOnOrBefore(
     currency: Currency,
@@ -384,6 +410,24 @@ object PortfolioValuationServiceImpl {
     fxBars: Map[Currency, Vector[Bar]],
     baseCurrency: Currency
   )
+
+  // A position priced as of a date, with what its latest price move added to its value in the base
+  // currency; None when the position has no value or no day return.
+  private final case class PricedPosition(position: PositionValue, dayChange: Option[BigDecimal])
+
+  // The last close on or before a date and, when there is one and it is positive, the close of the
+  // bar before it: a return from a zero close is undefined.
+  private final case class LatestCloses(last: BigDecimal, previous: Option[BigDecimal]) {
+    def dayReturn: Option[BigDecimal] = previous.map(divide(last, _) - 1)
+    def priceChange: Option[BigDecimal] = previous.map(last - _)
+  }
+
+  // `bars` must be chronological, as ConfiguredBars returns them.
+  private def latestCloses(bars: Vector[Bar], date: LocalDate): Option[LatestCloses] =
+    bars.reverseIterator.filterNot(_.date.isAfter(date)).take(2).map(_.close).toList match {
+      case last :: rest => Some(LatestCloses(last, rest.headOption.filter(_ > 0)))
+      case Nil => None
+    }
 
   /** Wires a `PortfolioValuationService` that maps FIGIs through `directory`, takes prices from
     * `priceHistory` as `sources` configures them, and reads price currencies from `instruments`.

@@ -30,10 +30,12 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
       instrumentType = instrumentType,
       currency = None,
       exchange = None,
+      source = None,
       quantity = 1,
       price = None,
       value = None,
-      weight = weight
+      weight = weight,
+      dayReturn = None
     )
 
   private def handlerAndGateway(snapshot: PositionSnapshot, targets: List[AllocationTarget]) =
@@ -55,6 +57,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
           Vector(position(Some("share"), Some(BigDecimal("0.6")))),
           cash = BigDecimal(400),
           total = BigDecimal(1000),
+          dayChange = BigDecimal(0),
           unpriced = 0
         )
         val targets = List(
@@ -83,6 +86,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
             Vector.empty,
             cash = BigDecimal(1000),
             total = BigDecimal(1000),
+            dayChange = BigDecimal(0),
             unpriced = 0
           )
         val targets = List(
@@ -112,6 +116,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
           Vector(position(Some("share"), Some(BigDecimal("0.5")))),
           cash = BigDecimal(500),
           total = BigDecimal(1000),
+          dayChange = BigDecimal(0),
           unpriced = 0
         )
         val targets = List(
@@ -131,7 +136,8 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
       }
 
       "replies with usage on an invalid cash argument" >> {
-        val snapshot = PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), 0)
+        val snapshot =
+          PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), BigDecimal(0), 0)
         for {
           pair <- handlerAndGateway(snapshot, List.empty)
           (handler, tgGateway) = pair

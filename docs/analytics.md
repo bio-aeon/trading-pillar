@@ -243,7 +243,8 @@ trait PortfolioValuationStorage[F[_]] {
 
 `processes.AnalyticsProcessImpl` mirrors `PriceHistorySyncProcessImpl`: at start, then every
 `AnalyticsConfig.interval`, every account from `AccountStorage` gets
-`dailySeries(accountId, today - recomputeDays, today)` recomputed and upserted, with per-account
+`dailySeries(accountId, today - recomputeDays, today)` recomputed and upserted, then its
+[portfolio snapshot](#portfolio-snapshots) saved and its allocation drift checked, with per-account
 error isolation (one account's failure never stops the others) and a `process-crashed:analytics`
 `SystemAlerts` alert if the batch loop itself fails (e.g. `AccountStorage.allAccounts` raises).
 
@@ -261,6 +262,8 @@ object Period extends StringEnum[Period] {
   val InceptionLookbackYears = 50
   // OneMonth "1m", ThreeMonths "3m", SixMonths "6m", OneYear "1y", All "all"
   def parse(s: String): Option[Period]
+  implicit val keyEncoder: KeyEncoder[Period]   // the token, as a JSON object key
+  implicit val keyDecoder: KeyDecoder[Period]
 }
 
 final case class PortfolioMetrics(firstDate: LocalDate, lastDate: LocalDate, totalReturn: BigDecimal,
@@ -268,6 +271,8 @@ final case class PortfolioMetrics(firstDate: LocalDate, lastDate: LocalDate, tot
                                   volatility: BigDecimal, sharpe: BigDecimal, maxDrawdown: BigDecimal)
 object PortfolioMetrics {
   def of(points: Vector[ValuationPoint]): Option[PortfolioMetrics]
+  def byPeriod(points: Vector[ValuationPoint], end: LocalDate): Map[Period, PortfolioMetrics]
+  implicit val codecForPortfolioMetrics: Codec.AsObject[PortfolioMetrics]
 }
 ```
 
@@ -294,6 +299,13 @@ Volatility/Sharpe/max drawdown run on the raw value series' simple returns, the 
 the way `timeWeightedReturn` and `moneyWeightedReturn` are. A single point gives zero for every
 figure and no `moneyWeightedReturn`.
 
+`PortfolioMetrics.byPeriod(points, end)` gives the figures of every `Period` that ends on `end`:
+for each period, `of` over the points dated from `period.from(end)` to `end`, both inclusive. That
+is the window `/performance` reads for the period, through
+`PortfolioValuationStorage.series(accountId, period.from(today), today)`. A period whose window
+holds no point, as when the stored series stops before the window opens, is absent from the map.
+It is pure, and takes the points oldest first, as `series` returns them.
+
 ### Positions and allocation
 
 `PortfolioValuationService.positionsAsOf(accountId, date): F[PositionSnapshot]` is a
@@ -306,9 +318,10 @@ day-by-day fold would produce for that date.
 ```scala
 final case class PositionValue(figi: Figi, ticker: Option[Ticker], name: Option[String],
                                instrumentType: Option[String], currency: Option[Currency], exchange: Option[String],
-                               quantity: Int, price: Option[BigDecimal], value: Option[BigDecimal], weight: Option[BigDecimal])
+                               source: Option[Source], quantity: Int, price: Option[BigDecimal],
+                               value: Option[BigDecimal], weight: Option[BigDecimal], dayReturn: Option[BigDecimal])
 final case class PositionSnapshot(date: LocalDate, currency: Currency, positions: Vector[PositionValue],
-                                  cash: BigDecimal, total: BigDecimal, unpriced: Int)
+                                  cash: BigDecimal, total: BigDecimal, dayChange: BigDecimal, unpriced: Int)
 ```
 
 Rules, sharing a `valueOnePosition` per-figi helper that `valuePositions` (the aggregate `dailySeries`
@@ -318,14 +331,17 @@ uses) also delegates to, so both entry points price a position identically:
    `dailySeries` uses) gets one `PositionValue`; a fully closed position (net quantity `0`) is
    omitted entirely, same as `dailySeries` silently skips it.
 2. **Unmapped** (the directory does not know the FIGI): `ticker`, `name`, `instrumentType`,
-   `currency` and `exchange` are all `None`, and so are `price`/`value`/`weight`.
+   `currency`, `exchange` and `source` are all `None`, and so are `price`/`value`/`weight`/
+   `dayReturn`.
    `dailySeries` reports this case once per call via `unmappedFigis`; `positionsAsOf` instead folds
    it into the same per-position `unpriced` count as the next case, since both mean "this
    position's contribution to `total` is unknown".
-3. **Mapped**: `ticker` comes from the directory; `name`/`instrumentType`/`currency`/`exchange`
-   come from the `InstrumentInfo` stored for it from its configured source, with the broker's
-   record filling in the first three when there is none (rule 9 above). `price` is the last known
-   close on or before `date`, in the position's own `currency` - **unconverted**, unlike `value`.
+3. **Mapped**: `ticker` comes from the directory; `source` is the source the ticker is configured
+   to use, whose bars priced the position (rule 6 of the valuation above);
+   `name`/`instrumentType`/`currency`/`exchange` come from the `InstrumentInfo` stored for it from
+   its configured source, with the broker's record filling in the first three when there is none
+   (rule 9 above). `price` is the last known close on or before `date`, in the position's own
+   `currency` - **unconverted**, unlike `value`.
    `value` is `price * quantity`, converted to `PositionSnapshot.currency` (the same
    `ValuationConfig.baseCurrency` `dailySeries` uses) via the latest close of the currency's rate
    ticker (rule 7 above) - `None` when there is no known close at all, or (for a non-base currency)
@@ -339,13 +355,26 @@ uses) also delegates to, so both entry points price a position identically:
    every priced position, `None` alongside `value` (also `None`, never divided by zero, on the
    degenerate `total == 0` snapshot). `unpriced` is the count of positions - mapped or not - whose
    `value` is `None`.
+6. **Day return and day change**: `dayReturn` is the last close over the close of the bar before it,
+   minus 1, as a fraction (`0.02` is +2%), in the position's own `currency`, so no exchange rate
+   enters it. Both closes are on or before `date` and come from the bars already loaded for
+   `price`, `priceLookback` days back: a position with fewer than two closes in that span has no
+   `dayReturn`, nor has one whose earlier close is not positive, or an unmapped FIGI.
+   `PositionSnapshot.dayChange` is the sum, over every position that has both a `value` and a
+   `dayReturn`, of `quantity * (last close - previous close)`, converted to the base currency at
+   the rate `value` used, the latest on or before `date`, so a currency move is not counted as a
+   price move. It is `0` when no position qualifies, and a position with a `dayReturn` but no
+   `value` (no exchange rate) adds nothing.
 
 `analytics/portfolio/Allocation.scala` is a pure grouping of one snapshot's position weights:
 
 ```scala
 final case class Allocation(byInstrumentType: Map[String, BigDecimal], byCurrency: Map[String, BigDecimal],
                             byExchange: Map[String, BigDecimal], cashWeight: BigDecimal, unpricedWeightUnknown: Int)
-object Allocation { def of(snapshot: PositionSnapshot): Allocation }
+object Allocation {
+  def of(snapshot: PositionSnapshot): Allocation
+  implicit val codecForAllocation: Codec.AsObject[Allocation]
+}
 ```
 
 Every priced position's `weight` is added into three maps, keyed by its own `instrumentType`/
@@ -361,9 +390,64 @@ folded into `byCurrency`.
 
 `/positions` and `/allocation` (see [`telegram-commands.md`](telegram-commands.md#positions)) call
 `positionsAsOf(accountId, today)` live, unlike `/performance`/`/portfolio` which read the stored
-valuation series (`PortfolioValuationStorage`) - nothing persists positions, so this is always
-computed fresh from `TcsPortfolioOperationStorage`/`InstrumentDirectory`/`InstrumentStorage`/
-`PriceHistoryStorage` on every call.
+valuation series (`PortfolioValuationStorage`). They do not read the daily snapshots described next
+either: every call computes from `TcsPortfolioOperationStorage`/`InstrumentDirectory`/
+`InstrumentStorage`/`PriceHistoryStorage` afresh.
+
+### Portfolio snapshots
+
+```scala
+final case class PortfolioSnapshot(holdings: PositionSnapshot, metrics: Map[Period, PortfolioMetrics],
+                                   computedAt: ZonedDateTime) {
+  def allocation: Allocation   // Allocation.of(holdings)
+}
+
+trait PortfolioSnapshotStorage[F[_]] {
+  def save(accountId: AccountId, snapshot: PortfolioSnapshot): F[Unit]
+}
+```
+
+A `PortfolioSnapshot` is one account's portfolio as of `holdings.date`: the holdings, each position
+with its `dayReturn` and the snapshot with its `dayChange`; their `allocation`; and the
+`PortfolioMetrics` of every `Period` that ends on that date, with no entry for a period whose window
+holds no valuation point. `computedAt` is the UTC instant it was built.
+
+`AnalyticsProcessImpl` builds and saves one per account on every run, after it has recomputed and
+upserted that account's valuations and before it checks allocation drift:
+
+1. `positionsAsOf(accountId, today)` gives the holdings. They are read once, and the drift check
+   works on the same ones.
+2. `PortfolioValuationStorage.series(accountId, Period.All.from(today), today)` gives the stored
+   series, with the days just upserted in it, and `PortfolioMetrics.byPeriod(points, today)` turns
+   it into the figures of each period.
+3. `PortfolioSnapshotStorage.save(accountId, snapshot)` stores the result under `today`. A later run
+   on the same day replaces that day's snapshot, positions included.
+
+A failed save is logged like any other failure of the account's run: the next account still runs,
+and the rest of that account's run, the drift check, waits for the next one. The library only
+writes snapshots, for a consumer to read back, for example to show on a dashboard; no command reads
+them.
+
+#### Stored JSON form
+
+A consumer that keeps the allocation and the metrics as JSON stores their circe encodings. These
+are persisted contracts: renaming a field of `Allocation` or `PortfolioMetrics`, or the token of a
+`Period`, breaks stored data. `snapshot.allocation` encodes as
+
+```json
+{"byInstrumentType":{"share":0.6},"byCurrency":{"USD":0.6},"byExchange":{"NASDAQ":0.6},"cashWeight":0.4,"unpricedWeightUnknown":1}
+```
+
+and `snapshot.metrics` as an object keyed by the token of each period, `1m`, `3m`, `6m`, `1y` or
+`all`, whose values are the encoding of `PortfolioMetrics`:
+
+```json
+{"1m":{"firstDate":"2026-10-01","lastDate":"2026-11-01","totalReturn":0.05,"timeWeightedReturn":0.04,"moneyWeightedReturn":null,"volatility":0.12,"sharpe":1.5,"maxDrawdown":0.02}}
+```
+
+Dates are ISO `yyyy-MM-dd` strings, the figures are fractions as `PortfolioMetrics` describes them,
+and `moneyWeightedReturn` is `null` when it has no solution. A period with no figures has no key.
+Reading the object back accepts exactly those tokens and fails on any other key.
 
 ### Allocation targets, drift and rebalancing
 
@@ -445,5 +529,6 @@ driftThresholdPct` (strictly greater than).
 `/drift` and `/rebalance (cash=<amount>)` (see
 [`telegram-commands.md`](telegram-commands.md#drift)) call this pipeline live, the same way
 `/positions`/`/allocation` do. `AnalyticsProcessImpl` also calls `Rebalancer.drift` after every
-account's daily recompute and dispatches an `AlertKind.AllocationDrift` alert for each breached
-target - see [`alerts.md`](alerts.md#allocation-drift-alerts).
+account's daily recompute and [snapshot](#portfolio-snapshots), on the holdings it has just saved,
+and dispatches an `AlertKind.AllocationDrift` alert for each breached target - see
+[`alerts.md`](alerts.md#allocation-drift-alerts).

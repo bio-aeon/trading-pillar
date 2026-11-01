@@ -1,6 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
 import enumeratum.values.{StringEnum, StringEnumEntry}
+import io.circe.{KeyDecoder, KeyEncoder}
 
 import java.time.LocalDate
 
@@ -65,4 +66,14 @@ object Period extends StringEnum[Period] {
   def parse(s: String): Option[Period] =
     // Every value is lowercase, so an exact lookup of the lowercased token is case-insensitive.
     withValueOpt(s.toLowerCase)
+
+  /** The key a period has in a stored JSON object: its token, such as `1m`. Renaming a token breaks
+    * stored data.
+    */
+  implicit val keyEncoder: KeyEncoder[Period] = KeyEncoder.instance(_.value)
+
+  /** Reads a period from the token [[keyEncoder]] writes, exactly as written; an unknown token
+    * fails the decoding of the whole object.
+    */
+  implicit val keyDecoder: KeyDecoder[Period] = KeyDecoder.instance(withValueOpt)
 }

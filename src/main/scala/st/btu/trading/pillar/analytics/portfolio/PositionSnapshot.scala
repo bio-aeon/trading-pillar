@@ -14,6 +14,11 @@ import java.time.LocalDate
   *   before `date` is silently excluded
   * @param total
   *   `cash` plus the sum of every priced position's value
+  * @param dayChange
+  *   what the latest price moves added to `total`: the sum, over every position with a `value` and
+  *   a `dayReturn`, of `quantity * (last close - previous close)`, converted to `currency` at the
+  *   rate the position's `value` used, so a currency move does not count as a price move; `0` when
+  *   no position has both
   * @param unpriced
   *   count of positions, mapped or not, whose value is `None`
   */
@@ -23,5 +28,6 @@ final case class PositionSnapshot(
   positions: Vector[PositionValue],
   cash: BigDecimal,
   total: BigDecimal,
+  dayChange: BigDecimal,
   unpriced: Int
 )

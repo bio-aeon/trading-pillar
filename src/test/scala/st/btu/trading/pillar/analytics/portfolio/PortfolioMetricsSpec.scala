@@ -1,5 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
+import io.circe.parser.{decode, parse}
+import io.circe.syntax.*
 import org.specs2.mutable.Specification
 
 import java.time.LocalDate
@@ -26,6 +28,44 @@ class PortfolioMetricsSpec extends Specification {
     ValuationPoint(day3, 600, 600, -400)
   )
 
+  // A series ending on endDate: a point on the day before the one-month window opens (2024-02-14),
+  // one on its first day (2024-02-15), one on endDate, and an older one that only the longer
+  // windows reach. A window's total return is its last value over its first.
+  private val endDate = LocalDate.of(2024, 3, 15)
+  private val spread = Vector(
+    ValuationPoint(LocalDate.of(2024, 1, 15), 1000, 1000, 1000),
+    ValuationPoint(LocalDate.of(2024, 2, 14), 1050, 1000, 0),
+    ValuationPoint(LocalDate.of(2024, 2, 15), 1100, 1000, 0),
+    ValuationPoint(endDate, 1210, 1000, 0)
+  )
+
+  private val sampleMetrics = PortfolioMetrics(
+    firstDate = LocalDate.of(2026, 10, 1),
+    lastDate = LocalDate.of(2026, 11, 1),
+    totalReturn = BigDecimal("0.05"),
+    timeWeightedReturn = BigDecimal("0.04"),
+    moneyWeightedReturn = None,
+    volatility = BigDecimal("0.12"),
+    sharpe = BigDecimal("1.5"),
+    maxDrawdown = BigDecimal("0.02")
+  )
+
+  private val sampleMetricsJson =
+    """{
+      |  "firstDate": "2026-10-01",
+      |  "lastDate": "2026-11-01",
+      |  "totalReturn": 0.05,
+      |  "timeWeightedReturn": 0.04,
+      |  "moneyWeightedReturn": null,
+      |  "volatility": 0.12,
+      |  "sharpe": 1.5,
+      |  "maxDrawdown": 0.02
+      |}""".stripMargin
+
+  // A stored object that keeps `sampleMetricsJson` under each of `periodTokens`.
+  private def storedByPeriod(periodTokens: String*): String =
+    periodTokens.map(token => s""""$token": $sampleMetricsJson""").mkString("{", ",", "}")
+
   "PortfolioMetrics" >> {
     "of" >> {
       "is None for an empty series" >> {
@@ -49,6 +89,64 @@ class PortfolioMetricsSpec extends Specification {
 
       "measures max drawdown on the raw values, so a withdrawal counts as a fall" >> {
         PortfolioMetrics.of(withWithdrawal).map(_.maxDrawdown) must beSome(BigDecimal("0.4"))
+      }
+    }
+
+    "byPeriod" >> {
+      "measures each period over the points of its own window" >> {
+        val totalReturns = PortfolioMetrics.byPeriod(spread, endDate).view.mapValues(_.totalReturn)
+
+        // One month: 1100 -> 1210 is +10%. Every longer period starts at 1000: 1210 / 1000 - 1.
+        totalReturns.toMap must_== Map(
+          Period.OneMonth -> BigDecimal("0.1"),
+          Period.ThreeMonths -> BigDecimal("0.21"),
+          Period.SixMonths -> BigDecimal("0.21"),
+          Period.OneYear -> BigDecimal("0.21"),
+          Period.All -> BigDecimal("0.21")
+        )
+      }
+
+      "opens a window on its first day, counting that day's point and not the day before's" >> {
+        val oneMonth = PortfolioMetrics.byPeriod(spread, endDate)(Period.OneMonth)
+
+        oneMonth.firstDate must_== LocalDate.of(2024, 2, 15)
+      }
+
+      "closes every window on the end date, leaving out a later point" >> {
+        val later = spread :+ ValuationPoint(endDate.plusDays(1), 5000, 1000, 0)
+
+        PortfolioMetrics.byPeriod(later, endDate).values.map(_.lastDate).toSet must_== Set(endDate)
+      }
+
+      "leaves out a period whose window holds no point" >> {
+        val onlyOldPoint = Vector(ValuationPoint(LocalDate.of(2023, 1, 1), 1000, 1000, 1000))
+
+        PortfolioMetrics.byPeriod(onlyOldPoint, endDate).keySet must_== Set(Period.All)
+      }
+
+      "is empty for an empty series" >> {
+        PortfolioMetrics.byPeriod(Vector.empty, endDate) must beEmpty
+      }
+    }
+
+    "JSON form" >> {
+      "names the figures as stored, with null for a missing money-weighted return" >> {
+        parse(sampleMetricsJson) must beRight(sampleMetrics.asJson)
+      }
+
+      "keys a map of periods by the tokens 1m, 3m, 6m, 1y and all" >> {
+        val everyPeriod = Period.values.map(_ -> sampleMetrics).toMap
+
+        parse(storedByPeriod("1m", "3m", "6m", "1y", "all")) must beRight(everyPeriod.asJson)
+      }
+
+      "reads a stored map back by its period tokens" >> {
+        decode[Map[Period, PortfolioMetrics]](storedByPeriod("1m", "all")) must
+          beRight(Map(Period.OneMonth -> sampleMetrics, Period.All -> sampleMetrics))
+      }
+
+      "rejects a key that is no period token" >> {
+        decode[Map[Period, PortfolioMetrics]](storedByPeriod("2w")) must beLeft
       }
     }
   }

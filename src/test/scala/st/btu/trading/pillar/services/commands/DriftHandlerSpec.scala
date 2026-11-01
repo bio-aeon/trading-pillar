@@ -25,10 +25,12 @@ class DriftHandlerSpec extends Specification with CatsEffect {
       instrumentType = instrumentType,
       currency = None,
       exchange = None,
+      source = None,
       quantity = 1,
       price = None,
       value = None,
-      weight = weight
+      weight = weight,
+      dayReturn = None
     )
 
   "DriftHandler" >> {
@@ -41,6 +43,7 @@ class DriftHandlerSpec extends Specification with CatsEffect {
           Vector(position(Some("share"), Some(BigDecimal("0.6")))),
           cash = BigDecimal(400),
           total = BigDecimal(1000),
+          dayChange = BigDecimal(0),
           unpriced = 0
         )
         for {
@@ -83,7 +86,8 @@ class DriftHandlerSpec extends Specification with CatsEffect {
       }
 
       "reports that there are no targets configured" >> {
-        val snapshot = PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), 0)
+        val snapshot =
+          PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), BigDecimal(0), 0)
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =

@@ -33,10 +33,12 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       instrumentType = Some("share"),
       currency = Some(rub),
       exchange = Some("MOEX"),
+      source = None,
       quantity = quantity,
       price = price,
       value = value,
-      weight = weight
+      weight = weight,
+      dayReturn = None
     )
 
   "PositionsHandler" >> {
@@ -66,6 +68,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
           ),
           cash = BigDecimal(200),
           total = BigDecimal(1000),
+          dayChange = BigDecimal(0),
           unpriced = 0
         )
         for {
@@ -96,6 +99,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
           Vector(position("UNMAPPED", None, 5, None, None, None)),
           cash = BigDecimal(0),
           total = BigDecimal(0),
+          dayChange = BigDecimal(0),
           unpriced = 1
         )
         for {
@@ -113,7 +117,8 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       }
 
       "reports 'No positions.' when the snapshot is empty" >> {
-        val snapshot = PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), 0)
+        val snapshot =
+          PositionSnapshot(today, rub, Vector.empty, BigDecimal(0), BigDecimal(0), BigDecimal(0), 0)
         for {
           tgGateway <- Fakes.tgGateway()
           valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =

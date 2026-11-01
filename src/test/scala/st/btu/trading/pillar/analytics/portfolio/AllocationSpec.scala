@@ -1,5 +1,7 @@
 package st.btu.trading.pillar.analytics.portfolio
 
+import io.circe.parser.parse
+import io.circe.syntax.*
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.domain.{Currency, Figi}
 
@@ -9,8 +11,8 @@ class AllocationSpec extends Specification {
 
   private val date = LocalDate.of(2026, 9, 29)
 
-  // Allocation.of only looks at instrumentType/currency/exchange/weight, so price/value/ticker/name
-  // are irrelevant here and left at their zero value.
+  // Allocation.of only looks at instrumentType/currency/exchange/weight, so every other field is
+  // irrelevant here and left at its zero value.
   private def position(
     figi: String,
     instrumentType: Option[String] = None,
@@ -25,10 +27,12 @@ class AllocationSpec extends Specification {
       instrumentType = instrumentType,
       currency = currency.map(Currency(_)),
       exchange = exchange,
+      source = None,
       quantity = 1,
       price = None,
       value = None,
-      weight = weight
+      weight = weight,
+      dayReturn = None
     )
 
   private def snapshot(
@@ -36,7 +40,8 @@ class AllocationSpec extends Specification {
     cash: BigDecimal,
     total: BigDecimal,
     unpriced: Int
-  ): PositionSnapshot = PositionSnapshot(date, Currency("RUB"), positions, cash, total, unpriced)
+  ): PositionSnapshot =
+    PositionSnapshot(date, Currency("RUB"), positions, cash, total, BigDecimal(0), unpriced)
 
   "Allocation" >> {
     "of" >> {
@@ -98,6 +103,28 @@ class AllocationSpec extends Specification {
       "reports cashWeight 0 for a zero total instead of dividing by zero" >> {
         val allocation = Allocation.of(snapshot(Vector.empty, BigDecimal(0), BigDecimal(0), 0))
         allocation.cashWeight must_== BigDecimal(0)
+      }
+    }
+
+    "JSON form" >> {
+      "names the breakdowns and weights as a stored snapshot keeps them" >> {
+        val allocation = Allocation(
+          byInstrumentType = Map("share" -> BigDecimal("0.6")),
+          byCurrency = Map("USD" -> BigDecimal("0.6")),
+          byExchange = Map("NASDAQ" -> BigDecimal("0.6")),
+          cashWeight = BigDecimal("0.4"),
+          unpricedWeightUnknown = 1
+        )
+        val stored =
+          """{
+            |  "byInstrumentType": {"share": 0.6},
+            |  "byCurrency": {"USD": 0.6},
+            |  "byExchange": {"NASDAQ": 0.6},
+            |  "cashWeight": 0.4,
+            |  "unpricedWeightUnknown": 1
+            |}""".stripMargin
+
+        parse(stored) must beRight(allocation.asJson)
       }
     }
   }
