@@ -87,11 +87,7 @@ final class PaperBrokerImpl[F[_]] private (storage: PaperStorage[F], config: Pap
     val newCash = account.cash - notional - commission
     val newPosition = applyBuy(existing, binding.accountId, ticker, qty, fillPrice, now)
     val order = filledOrder(binding, ticker, Side.Buy, qty, fillPrice, commission, reason, now)
-    for {
-      _ <- storage.updateCash(binding.accountId, newCash)
-      _ <- storage.upsertPosition(newPosition)
-      id <- storage.insertOrder(order)
-    } yield order.copy(id = Some(id))
+    storage.recordFill(order, newCash, Some(newPosition)).map(id => order.copy(id = Some(id)))
   }
 
   private def applyBuy(
@@ -156,14 +152,10 @@ final class PaperBrokerImpl[F[_]] private (storage: PaperStorage[F], config: Pap
     val commission = config.commissionRate * notional
     val newCash = account.cash + notional - commission
     val remaining = position.quantity - qty
+    val newPosition =
+      Option.when(remaining > 0L)(position.copy(quantity = remaining, updatedAt = now))
     val order = filledOrder(binding, ticker, Side.Sell, qty, fillPrice, commission, reason, now)
-    for {
-      _ <- storage.updateCash(binding.accountId, newCash)
-      _ <-
-        if (remaining <= 0L) storage.deletePosition(binding.accountId, ticker)
-        else storage.upsertPosition(position.copy(quantity = remaining, updatedAt = now))
-      id <- storage.insertOrder(order)
-    } yield order.copy(id = Some(id))
+    storage.recordFill(order, newCash, newPosition).map(id => order.copy(id = Some(id)))
   }
 
   private def blankOrder(

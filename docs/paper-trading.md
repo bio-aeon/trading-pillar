@@ -38,7 +38,7 @@ object PaperOrderStatus extends StringEnum[PaperOrderStatus] {
 }                                                            // an order pending.
 
 final case class PaperOrder(
-  id: Option[PaperOrderId],            // None until PaperStorage.insertOrder assigns one
+  id: Option[PaperOrderId],            // None until PaperStorage assigns one on recording
   accountId: AccountId,
   bindingId: Option[StrategyBindingId],// the binding that produced the signal; always Some in practice
   ticker: Ticker,
@@ -66,11 +66,9 @@ tool recorded as pending (for example one inserted by hand) still decodes.
 ```scala
 trait PaperStorage[F[_]] {
   def account(accountId: AccountId): F[Option[PaperAccount]]
-  def updateCash(accountId: AccountId, cash: BigDecimal): F[Unit]
-  def insertOrder(order: PaperOrder): F[PaperOrderId]
+  def insertOrder(order: PaperOrder): F[PaperOrderId]   // a rejection, which changes nothing else
+  def recordFill(order: PaperOrder, cash: BigDecimal, position: Option[PaperPosition]): F[PaperOrderId]
   def positions(accountId: AccountId): F[List[PaperPosition]]
-  def upsertPosition(position: PaperPosition): F[Unit]
-  def deletePosition(accountId: AccountId, ticker: Ticker): F[Unit]
   def recentOrders(accountId: AccountId, limit: Int): F[List[PaperOrder]]   // most recent first
 }
 ```
@@ -80,9 +78,14 @@ Backs three kinds of data (a suggested relational layout is in
 
 | Data | Written by the library | Read by the library |
 |---|---|---|
-| Paper account (cash, currency) | `updateCash` only; the consumer provisions the account and sets or tops up its starting cash | `account` |
-| Paper orders | `insertOrder`, append-only | `recentOrders` (`/paper`) |
-| Paper positions | `upsertPosition`, `deletePosition` | `positions` |
+| Paper account (cash, currency) | the cash, through `recordFill` only; the consumer provisions the account and sets or tops up its starting cash | `account` |
+| Paper orders | `insertOrder` for a rejection, `recordFill` for a fill; append-only | `recentOrders` (`/paper`) |
+| Paper positions | `recordFill` | `positions` |
+
+`recordFill` records a fill's order together with the account's new cash and the position the fill
+leaves (`None` once it closes), all of it or nothing. A fill that fails to record therefore leaves
+the account as it was; the alert process's next poll tries it again, and the fill is recorded once
+it succeeds.
 
 Unlike the watchlist and the alert rules, which the library can create as well as the consumer,
 trading-pillar never *creates* a paper account - the consumer provisions one (and its starting cash),
@@ -148,17 +151,19 @@ accept one, since there is no `Side` to record a `PaperOrder` with.
 
 ### On a fill
 
-- **Cash**: `PaperStorage.updateCash` to `account.cash - notional - commission` on a buy, or
-  `account.cash + notional - commission` on a sell - commission is always subtracted; only the
-  notional's sign flips, matching `BacktestEngine`'s cash accounting exactly.
-- **Position, buy**: `PaperStorage.upsertPosition` - a new `PaperPosition` at the fill price, or
-  (for an existing one) a quantity-weighted average cost, identical to `BacktestEngine.applyBuy`.
-- **Position, sell**: the filled quantity is subtracted; `PaperStorage.deletePosition` once it
-  reaches zero, otherwise `upsertPosition` with the reduced quantity and the *same* `averageCost`
-  (a partial sell never changes cost basis, matching `BacktestEngine.applySell`).
-- **Order**: `PaperStorage.insertOrder` with `status = Filled`, `filledAt = now`, the resolved
-  `fillPrice`/`commission`, and `reason` set to the signal's own reason (so a filled order's reason
-  reads like `Trade.reason` in a backtest, not a rejection explanation).
+All of the following is recorded in one `PaperStorage.recordFill` call:
+
+- **Cash**: `account.cash - notional - commission` on a buy, or `account.cash + notional -
+  commission` on a sell - commission is always subtracted; only the notional's sign flips, matching
+  `BacktestEngine`'s cash accounting exactly.
+- **Position, buy**: a new `PaperPosition` at the fill price, or (for an existing one) a
+  quantity-weighted average cost, identical to `BacktestEngine.applyBuy`.
+- **Position, sell**: the filled quantity is subtracted; no position once it reaches zero, otherwise
+  the reduced quantity with the *same* `averageCost` (a partial sell never changes cost basis,
+  matching `BacktestEngine.applySell`).
+- **Order**: `status = Filled`, `filledAt = now`, the resolved `fillPrice`/`commission`, and
+  `reason` set to the signal's own reason (so a filled order's reason reads like `Trade.reason` in a
+  backtest, not a rejection explanation).
 
 ## `/paper` command
 

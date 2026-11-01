@@ -314,30 +314,31 @@ example defaulting to 5), `enabled` (default true), `created_at` and a unique ke
 ```scala
 trait PaperStorage[F[_]] {
   def account(accountId: AccountId): F[Option[PaperAccount]]
-  def updateCash(accountId: AccountId, cash: BigDecimal): F[Unit]
   def insertOrder(order: PaperOrder): F[PaperOrderId]
+  def recordFill(order: PaperOrder, cash: BigDecimal, position: Option[PaperPosition]): F[PaperOrderId]
   def positions(accountId: AccountId): F[List[PaperPosition]]
-  def upsertPosition(position: PaperPosition): F[Unit]
-  def deletePosition(accountId: AccountId, ticker: Ticker): F[Unit]
   def recentOrders(accountId: AccountId, limit: Int): F[List[PaperOrder]]   // most recent first
 }
 ```
 
-Three kinds of data (full contract in [`paper-trading.md`](paper-trading.md#paperstoragef_)):
+Three kinds of data (full contract in [`paper-trading.md`](paper-trading.md#paperstoragef_)).
+`recordFill` changes all three for one fill, and must record all of it or nothing: a relational
+implementation runs its statements in one transaction.
 
 - **Paper accounts**: the consumer provisions a paper account and its starting cash, for example
   through operator tooling; trading-pillar (`PaperBroker`) only reads it through `account` and
-  writes the cash balance through `updateCash`, and never creates an account. A relational
+  writes the cash balance through `recordFill`, and never creates an account. A relational
   implementation could use a table such as `paper_accounts` keyed by `account_id`, with `cash`,
   `currency` and `updated_at`.
-- **Paper orders**: written by the library, through `insertOrder` from `PaperBroker.execute`, which
-  is append-only - every execution, filled or rejected, is recorded. `recentOrders` backs `/paper`'s
+- **Paper orders**: written by the library from `PaperBroker.execute`, through `insertOrder` for a
+  rejection and `recordFill` for a fill, append-only - every execution, filled or rejected, is
+  recorded. `recentOrders` backs `/paper`'s
   last-5-orders section. A relational implementation could use a table such as `paper_orders` with a
   generated `id`, `account_id`, a nullable `binding_id` (the binding that produced the signal),
   `symbol`, `side` (`buy` | `sell`), `quantity`, `requested_at`, nullable `filled_at`, `fill_price`
   and `commission`, `status` (`pending` | `filled` | `rejected`) and a nullable `reason`.
-- **Paper positions**: written by the library, through `upsertPosition` from `PaperBroker.execute`
-  (keyed on `(account, ticker)`) and `deletePosition` once a sell brings the quantity to zero. A
+- **Paper positions**: written by the library, through `recordFill` from `PaperBroker.execute`
+  (keyed on `(account, ticker)`), which removes a position once a sell brings it to zero. A
   relational implementation could use a table such as `paper_positions` with `account_id`, `symbol`,
   `quantity`, `average_cost`, `updated_at` and a unique key on `(account_id, symbol)`.
 
@@ -359,8 +360,8 @@ Three kinds of data (full contract in [`paper-trading.md`](paper-trading.md#pape
 | `AlertHistoryStorage` | `alert_history` | `record` | `lastDelivered`, `deliveredCountSince`, `existsDedup`, `recent` |
 | `PortfolioValuationStorage` | `portfolio_valuations` | `upsert` | `series`, `latest` |
 | `AllocationTargetStorage` | `allocation_targets` | none | `byAccount` |
-| `PaperStorage` | `paper_accounts` / `paper_orders` / `paper_positions` | `updateCash`, `insertOrder`, `upsertPosition`, `deletePosition` | `account`, `positions`, `recentOrders` |
+| `PaperStorage` | `paper_accounts` / `paper_orders` / `paper_positions` | `insertOrder`, `recordFill` | `account`, `positions`, `recentOrders` |
 
 A trait with no library write ("none" in the third column) is populated entirely by the consumer,
 for example through operator tooling, and the library only reads it. `PaperStorage`'s account is
-provisioned the same way: `updateCash` only changes the balance of an account that already exists.
+provisioned the same way: `recordFill` only changes the balance of an account that already exists.
