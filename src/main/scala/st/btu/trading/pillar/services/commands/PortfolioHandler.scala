@@ -3,7 +3,7 @@ package st.btu.trading.pillar.services.commands
 import cats.Monad
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
-import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
+import st.btu.trading.pillar.analytics.portfolio.{Period, ValuationPoint}
 import st.btu.trading.pillar.gateways.TgGateway
 import st.btu.trading.pillar.models.domain.{AccountId, Command}
 import st.btu.trading.pillar.models.tg
@@ -30,14 +30,10 @@ final class PortfolioHandler[F[_]: Monad](
 
   // "Series length" as of the latest point: how many days of history back it up. There is no
   // dedicated count method on PortfolioValuationStorage, so this reads the series over the same
-  // lookback window PerformanceHandler.Period.All uses, no real account history predates.
+  // lookback window Period.All uses, which no real account history predates.
   private def seriesLength(latest: ValuationPoint): F[Int] =
     valuations
-      .series(
-        accountId,
-        latest.date.minusYears(PerformanceHandler.InceptionLookbackYears.toLong),
-        latest.date
-      )
+      .series(accountId, latest.date.minusYears(Period.InceptionLookbackYears.toLong), latest.date)
       .map(_.size)
 
   private def format(point: ValuationPoint, seriesLength: Int): String = {

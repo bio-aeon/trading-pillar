@@ -248,11 +248,51 @@ error isolation (one account's failure never stops the others) and a `process-cr
 `SystemAlerts` alert if the batch loop itself fails (e.g. `AccountStorage.allAccounts` raises).
 
 `/performance (1m|3m|6m|1y|all, default 1y)` and `/portfolio` read the *stored* series - see
-[`telegram-commands.md`](telegram-commands.md#performance) - via `Performance`/`Risk` with
-`Valuation(point.date, point.value, point.cashFlow)`. Volatility/Sharpe/max drawdown run on the raw
-value series' simple returns (`Returns.simple`), the same convention `strategy.backtest.Metrics`
-uses for an equity curve - not TWR-adjusted for intervening cash flows the way `timeWeighted` and
-`moneyWeighted` themselves are.
+[`telegram-commands.md`](telegram-commands.md#performance). `/performance` turns it into figures
+with `PortfolioMetrics.of`, described next.
+
+### Periods and metrics
+
+```scala
+sealed abstract class Period(val value: String) extends StringEnumEntry {
+  def from(end: LocalDate): LocalDate
+}
+object Period extends StringEnum[Period] {
+  val InceptionLookbackYears = 50
+  // OneMonth "1m", ThreeMonths "3m", SixMonths "6m", OneYear "1y", All "all"
+  def parse(s: String): Option[Period]
+}
+
+final case class PortfolioMetrics(firstDate: LocalDate, lastDate: LocalDate, totalReturn: BigDecimal,
+                                  timeWeightedReturn: BigDecimal, moneyWeightedReturn: Option[BigDecimal],
+                                  volatility: BigDecimal, sharpe: BigDecimal, maxDrawdown: BigDecimal)
+object PortfolioMetrics {
+  def of(points: Vector[ValuationPoint]): Option[PortfolioMetrics]
+}
+```
+
+A `Period` names a span of history by the token `/performance` accepts, and `period.from(end)` is
+the first date of the period that ends on `end`. `OneMonth` to `OneYear` count back that many
+months or years on the calendar, so a day the earlier month lacks becomes its last day (one month
+ending 2024-03-31 starts 2024-02-29). `All` counts back `InceptionLookbackYears` (50) years, a
+bound no real account history predates, since `PortfolioValuationStorage` has no "since inception"
+query. `Period.parse` matches a token ignoring case and is `None` for an unknown one.
+
+`PortfolioMetrics.of` is pure and is `None` for an empty series. It computes:
+
+| Field | Computed by |
+|---|---|
+| `firstDate`, `lastDate` | the dates of the first and last point |
+| `totalReturn` | `Performance.totalReturn` of the first and last point's `value` |
+| `timeWeightedReturn` | `Performance.timeWeighted` over `Valuation(point.date, point.value, point.cashFlow)` |
+| `moneyWeightedReturn` | `Performance.moneyWeighted` over the same valuations; `None` when it has no solution |
+| `volatility`, `sharpe` | `Risk.volatility` and `Risk.sharpe` over `Returns.simple` of the point values |
+| `maxDrawdown` | `Risk.maxDrawdown` over the point values |
+
+Volatility/Sharpe/max drawdown run on the raw value series' simple returns, the same convention
+`strategy.backtest.Metrics` uses for an equity curve - not TWR-adjusted for intervening cash flows
+the way `timeWeightedReturn` and `moneyWeightedReturn` are. A single point gives zero for every
+figure and no `moneyWeightedReturn`.
 
 ### Positions and allocation
 

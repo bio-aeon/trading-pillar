@@ -54,7 +54,7 @@ Package root `st.btu.trading.pillar`:
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
-| `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing) |
+| `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing, performance metrics, periods) |
 | `paper`, `tax`, `charts` | paper broker; FIFO tax lots and the annual estimate; equity-curve PNG |
 | `services` | sync and command services; `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync, price-history sync, analytics |
