@@ -49,6 +49,7 @@ package sorts it.
 object Performance {
   def totalReturn(first: BigDecimal, last: BigDecimal): BigDecimal
   def annualized(total: BigDecimal, calendarDays: Long): BigDecimal
+  def subPeriodReturns(valuations: Vector[Valuation]): Vector[BigDecimal]
   def timeWeighted(valuations: Vector[Valuation]): BigDecimal
   def moneyWeighted(valuations: Vector[Valuation]): Option[BigDecimal]
 }
@@ -58,7 +59,8 @@ object Performance {
 |---|---|
 | `totalReturn` | `last / first - 1`; `0` when `first <= 0` (no meaningful return to report). |
 | `annualized` | `(1 + total)^(365 / calendarDays) - 1`; returns `total` unchanged when `calendarDays < 1` (too short a span to annualize). Runs through `Double` (`math.pow`), rounded to scale 8. |
-| `timeWeighted` | Chains sub-period returns `value(t) / (value(t-1) + flow(t)) - 1` - compounds `(1 + r)` across every period, `- 1` at the end. A period whose denominator `value(t-1) + flow(t) <= 0` (e.g. a withdrawal larger than the prior value) is **skipped**, not folded in as a 0% or negative-base return. `0` for fewer than two valuations. |
+| `subPeriodReturns` | The return of each period between consecutive valuations with its flow taken out, `value(t) / (value(t-1) + flow(t)) - 1`. A period whose denominator `value(t-1) + flow(t) <= 0` (e.g. a withdrawal larger than the prior value) is **skipped**, not given a 0% or negative-base return. Empty for fewer than two valuations. |
+| `timeWeighted` | Compounds `subPeriodReturns`: `(1 + r)` across every period, `- 1` at the end. `0` for fewer than two valuations. |
 | `moneyWeighted` | Annualized XIRR of the valuation series' cash flows - see below. |
 
 Worked example (also a spec KAT): valuations `100 → 110 → 176` with a `+50` deposit landing on the
@@ -291,13 +293,15 @@ query. `Period.parse` matches a token ignoring case and is `None` for an unknown
 | `totalReturn` | `Performance.totalReturn` of the first and last point's `value` |
 | `timeWeightedReturn` | `Performance.timeWeighted` over `Valuation(point.date, point.value, point.cashFlow)` |
 | `moneyWeightedReturn` | `Performance.moneyWeighted` over the same valuations; `None` when it has no solution |
-| `volatility`, `sharpe` | `Risk.volatility` and `Risk.sharpe` over `Returns.simple` of the point values |
-| `maxDrawdown` | `Risk.maxDrawdown` over the point values |
+| `volatility`, `sharpe` | `Risk.volatility` and `Risk.sharpe` over `Performance.subPeriodReturns` of the same valuations, with `periodsPerYear = DaysPerYear` (365) |
+| `maxDrawdown` | `Risk.maxDrawdown` over the index those returns compound into, starting at 1 |
 
-Volatility/Sharpe/max drawdown run on the raw value series' simple returns, the same convention
-`strategy.backtest.Metrics` uses for an equity curve - not TWR-adjusted for intervening cash flows
-the way `timeWeightedReturn` and `moneyWeightedReturn` are. A single point gives zero for every
-figure and no `moneyWeightedReturn`.
+Every figure but `totalReturn` takes the deposits and withdrawals out, so moving money into or out
+of the account is neither performance nor risk: a deposit is not a return, and a withdrawal is not
+a drawdown. `totalReturn` stays the change in value, deposits included. Volatility and Sharpe
+annualize over 365 days because the valuation series has a point for every calendar day,
+weekends and holidays included, where a backtest's equity curve has one per trading day. A single
+point gives zero for every figure and no `moneyWeightedReturn`.
 
 `PortfolioMetrics.byPeriod(points, end)` gives the figures of every `Period` that ends on `end`:
 for each period, `of` over the points dated from `period.from(end)` to `end`, both inclusive. That

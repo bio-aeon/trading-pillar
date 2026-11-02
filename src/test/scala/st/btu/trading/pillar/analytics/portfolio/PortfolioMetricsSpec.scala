@@ -20,12 +20,20 @@ class PortfolioMetricsSpec extends Specification {
     ValuationPoint(day3, 1650, 1400, 400)
   )
 
-  // The value falls from a peak of 1000 to 600 only because 400 is withdrawn on day 3, so no money
-  // is lost, yet the raw values fall (1000 - 600) / 1000 = 40%.
+  // The value falls from 1000 to 600 only because 400 is withdrawn on day 3, so no money is lost:
+  // with the withdrawal taken out, day 3 returns 600 / (1000 - 400) - 1 = 0.
   private val withWithdrawal = Vector(
     ValuationPoint(day1, 1000, 1000, 1000),
     ValuationPoint(day2, 1000, 1000, 0),
     ValuationPoint(day3, 600, 600, -400)
+  )
+
+  // Daily returns of 110 / 100 - 1 = 0.1 and 143 / 110 - 1 = 0.3, with no cash flow: mean 0.2,
+  // sample variance ((0.1 - 0.2)^2 + (0.3 - 0.2)^2) / 1 = 0.02.
+  private val noFlows = Vector(
+    ValuationPoint(day1, 100, 100, 100),
+    ValuationPoint(day2, 110, 100, 0),
+    ValuationPoint(day3, 143, 100, 0)
   )
 
   // A series ending on endDate: a point on the day before the one-month window opens (2024-02-14),
@@ -87,8 +95,38 @@ class PortfolioMetricsSpec extends Specification {
         PortfolioMetrics.of(withDeposit).map(_.timeWeightedReturn) must beSome(BigDecimal("0.21"))
       }
 
-      "measures max drawdown on the raw values, so a withdrawal counts as a fall" >> {
-        PortfolioMetrics.of(withWithdrawal).map(_.maxDrawdown) must beSome(BigDecimal("0.4"))
+      "does not count a withdrawal as a fall" >> {
+        PortfolioMetrics.of(withWithdrawal).map(_.maxDrawdown) must beSome(BigDecimal(0))
+      }
+
+      "does not count a deposit as volatility" >> {
+        // With the deposit taken out both daily returns are 10%, so they do not vary.
+        PortfolioMetrics.of(withDeposit).map(_.volatility) must beSome(BigDecimal(0))
+      }
+
+      "annualizes volatility over 365 calendar days" >> {
+        // sqrt(0.02) * sqrt(365) = sqrt(7.3), to 8 decimals; 252 trading days would give 2.24499443.
+        PortfolioMetrics.of(noFlows).map(_.volatility) must beSome(BigDecimal("2.70185122"))
+      }
+
+      "annualizes the Sharpe ratio over 365 calendar days" >> {
+        // 0.2 / sqrt(0.02) * sqrt(365) = sqrt(730), to 8 decimals; 252 days would give 22.44994432.
+        PortfolioMetrics.of(noFlows).map(_.sharpe) must beSome(BigDecimal("27.01851217"))
+      }
+
+      "measures max drawdown on the value net of cash flows" >> {
+        // Net of the 400 deposit, day 3 returns 1250 / (1100 + 400) - 1: the index runs 1, 1.1, then
+        // 1.1 * 1250 / 1500 = 0.91666667, a fall of 1 - 1250 / 1500 = 1/6 from the peak of 1.1.
+        val withLoss = Vector(
+          ValuationPoint(day1, 1000, 1000, 1000),
+          ValuationPoint(day2, 1100, 1000, 0),
+          ValuationPoint(day3, 1250, 1400, 400)
+        )
+
+        PortfolioMetrics
+          .of(withLoss)
+          .map(_.maxDrawdown.setScale(8, BigDecimal.RoundingMode.HALF_UP)) must
+          beSome(BigDecimal("0.16666667"))
       }
     }
 

@@ -594,6 +594,8 @@ Reads the *stored* valuation series (`PortfolioValuationStorage.series`, written
 is `today` minus the period token (`1m`/`3m`/`6m`/`1y`, default `1y`, or `today - 50y` for `all`,
 a bound no real account history predates). `MWR: n/a` when `Performance.moneyWeighted` has fewer
 than two points or its solver finds no root in range (see [`analytics.md`](analytics.md#moneyweighted--xirr)).
+`Total return` is the change in value, deposits and withdrawals included; TWR, MWR, volatility,
+Sharpe and max drawdown take them out (see [`analytics.md`](analytics.md#periods-and-metrics)).
 `No valuation history yet.` when the account has no stored points in the window. Single-account
 app, same as `/watchlist`: the handler is constructed with a fixed `AccountId`, not derived from
 the chat.

@@ -34,21 +34,28 @@ object Performance {
       BigDecimal(math.pow((1 + total).toDouble, DaysPerYear.toDouble / calendarDays.toDouble) - 1)
         .setScale(ReportScale, RoundingMode.HALF_UP)
 
-  /** Chains sub-period returns `value(t) / (value(t-1) + flow(t)) - 1`, so a deposit or withdrawal
-    * on day `t` is added to the prior value before measuring that day's return (it is assumed to
-    * land at the start of day `t`). `valuations` are consumed in the order given, not re-sorted.
+  /** The return of each period between consecutive valuations with that period's external flow
+    * taken out: `value(t) / (value(t-1) + flow(t)) - 1`, so a deposit or withdrawal on day `t` is
+    * added to the prior value before measuring that day's return (it is assumed to land at the
+    * start of day `t`). `valuations` are consumed in the order given, not re-sorted.
     *
     * @return
-    *   `0` for fewer than two valuations; a period whose denominator is not positive is skipped
-    *   rather than folded in as an undefined return
+    *   one return per consecutive pair, none for fewer than two valuations; a period whose
+    *   denominator is not positive is skipped rather than given an undefined return
     */
-  def timeWeighted(valuations: Vector[Valuation]): BigDecimal = {
-    val periodReturns = valuations.zip(valuations.drop(1)).flatMap { case (prev, curr) =>
+  def subPeriodReturns(valuations: Vector[Valuation]): Vector[BigDecimal] =
+    valuations.zip(valuations.drop(1)).flatMap { case (prev, curr) =>
       val base = prev.value + curr.externalFlow
       if (base > 0) Some(divide(curr.value, base) - 1) else None
     }
-    periodReturns.foldLeft(BigDecimal(1))((acc, r) => acc * (1 + r)) - 1
-  }
+
+  /** Chains [[subPeriodReturns]], so deposits and withdrawals do not count as performance.
+    *
+    * @return
+    *   `0` for fewer than two valuations
+    */
+  def timeWeighted(valuations: Vector[Valuation]): BigDecimal =
+    subPeriodReturns(valuations).foldLeft(BigDecimal(1))((acc, r) => acc * (1 + r)) - 1
 
   /** The annualized XIRR of the valuation series' external cash flows, viewed from the investor's
     * side: paying in to open the position at the first date, each flow in between, and the value

@@ -33,6 +33,28 @@ class PerformanceSpec extends Specification {
       }
     }
 
+    "subPeriodReturns" >> {
+      "gives each period's return with its flow added to the prior value" >> {
+        // 110 / (100 + 0) - 1 = 10%; 176 / (110 + 50) - 1 = 10%.
+        val valuations = Vector(
+          Valuation(LocalDate.of(2024, 1, 1), 100, 0),
+          Valuation(LocalDate.of(2024, 2, 1), 110, 0),
+          Valuation(LocalDate.of(2024, 3, 1), 176, 50)
+        )
+
+        Performance.subPeriodReturns(valuations) must_== Vector(
+          BigDecimal("0.1"),
+          BigDecimal("0.1")
+        )
+      }
+
+      "is empty for fewer than two valuations" >> {
+        Performance.subPeriodReturns(
+          Vector(Valuation(LocalDate.of(2024, 1, 1), 100, 0))
+        ) must beEmpty
+      }
+    }
+
     "timeWeighted" >> {
       "chains sub-period returns, adding each flow to the prior value before measuring that period's return" >> {
         // 100 -> 110 is +10%; a 50 deposit lands, then 110+50=160 -> 176 is another +10%: TWR = 21%
