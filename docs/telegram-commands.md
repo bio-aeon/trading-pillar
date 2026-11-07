@@ -23,28 +23,26 @@ Package `st.btu.trading.pillar.services.commands` (parsing, router, handlers) an
 
 ## Built-in vs. registered handlers
 
-`TgUpdatesProcessImpl.resource` always builds `PingHandler` and `InfoHandler` (they need a
-`TcsFacade`, constructed internally); every other handler below is a plain `CommandHandler[F]` a
-consumer constructs and passes in as `extraHandlers`:
+The library ships 27 commands. `TgUpdatesProcessImpl.resource` always builds `PingHandler`; every
+other handler below except `/help` is a plain `CommandHandler[F]` a consumer constructs and passes
+in as `extraHandlers`:
 
 ```scala
 def resource[I[_]: Sync, F[_]: Async: Throws](
   tgToken: tg.Token,
-  brokerAccountId: tcs.BrokerAccountId,
-  tcsToken: tcs.Token,
   backend: SttpBackend[F, Any],
   extraHandlers: List[CommandHandler[F]] = Nil
-)(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TgUpdatesProcessImpl[F]]
+)(implicit logs: Logs[I, F]): Resource[I, TgUpdatesProcessImpl[F]]
 ```
 
-`CommandHandlers.standard(tgGateway, tcsFacade, extraHandlers)` assembles that list, and
-`TgUpdatesProcessImpl.resource` uses it: `PingHandler`, `InfoHandler`, `extraHandlers`, then a
-`HelpHandler` built from `(pingHandler :: infoHandler :: extraHandlers).map(_.usage) :+
-HelpHandler.Usage` - so `/help`'s reply always lists exactly the handlers actually wired in, in
-that order. The same function serves the [MCP server](mcp.md), which builds the handlers a second
-time over a gateway that keeps the replies instead of sending them. A handler you don't pass as
-`extraHandlers` simply doesn't exist for that deployment: its command falls through to
-`"Unknown command. Try /help"`, and it's absent from `/help`'s output.
+`CommandHandlers.standard(tgGateway, extraHandlers)` assembles that list, and
+`TgUpdatesProcessImpl.resource` uses it: `PingHandler`, `extraHandlers`, then a `HelpHandler` built
+from `(pingHandler :: extraHandlers).map(_.usage) :+ HelpHandler.Usage` - so `/help`'s reply always
+lists exactly the handlers actually wired in, in that order. The same function serves the
+[MCP server](mcp.md), which builds the handlers a second time over a gateway that keeps the replies
+instead of sending them. A handler you don't pass as `extraHandlers` simply doesn't exist for that
+deployment: its command falls through to `"Unknown command. Try /help"`, and it's absent from
+`/help`'s output.
 
 ## `TgGateway.sendDocument`
 
@@ -101,20 +99,6 @@ Usage: `/ping - health check`
 ```
 Working normally. Time is: 2026-09-28 14:32:07.
 ```
-
-### `/info`
-
-Usage: `/info - portfolio positions`
-
-```
-/info
-```
-```
-Sberbank - 15000
-Gazprom - 3200
-```
-
-One line per Tinkoff portfolio position, `"<name> - <balance rounded to an Int>"`.
 
 ### `/watchlist`
 
@@ -971,7 +955,6 @@ Usage: `/help - list available commands`
 ```
 ```
 /ping - health check
-/info - portfolio positions
 /watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
 /source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), or /source SYM default
 /strategies - list registered strategies

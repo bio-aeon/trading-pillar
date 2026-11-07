@@ -35,8 +35,8 @@ Each tool declares its effect to clients, which show it to the model and to the 
 | `changing` | `bot_command` | destructive, not idempotent, open world | `command` | Runs any command line, including the ones that change the bot. |
 
 `live_quote`, `bot_query` and `bot_command` are declared open world because they can reach Yahoo
-and Tinkoff, as `/news`, `/screen` and `/info` do. `ticker_status` and `bot_backtest` read stored
-data only.
+and Tinkoff, as `/news`, `/screen` and `/analyze` do. `ticker_status` and `bot_backtest` read
+stored data only.
 
 The tools' names, titles and descriptions are what a client lists in `tools/list`. The server
 lists them sorted by name, whatever order `McpToolServer` was given; the order of the list is kept
@@ -161,14 +161,13 @@ The consumer builds the gateway first, its handlers over it, and then the runner
 ```scala
 for {
   gateway <- CapturingTgGateway.create[I, F]
-  handlers = CommandHandlers.standard(gateway, tcsFacade, extraHandlers(gateway))
+  handlers = CommandHandlers.standard(gateway, extraHandlers(gateway))
   runner <- CommandRunnerImpl.create[I, F](gateway, handlers)
 } yield runner
 ```
 
-`CommandHandlers.standard(tgGateway, tcsFacade, extraHandlers)` is also what
-`TgUpdatesProcessImpl.resource` uses: `/ping`, `/info`, the extra handlers, then `/help` listing
-their usages. Building the extra handlers a second time over the capturing gateway gives the MCP
+`CommandHandlers.standard(tgGateway, extraHandlers)` is also what `TgUpdatesProcessImpl.resource`
+uses: `/ping`, the extra handlers, then `/help` listing their usages. Building the extra handlers a second time over the capturing gateway gives the MCP
 server its own handlers without touching the chat's.
 
 ### Ports, tools and the tool server

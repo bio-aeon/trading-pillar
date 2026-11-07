@@ -9,13 +9,11 @@ import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import fs2.Stream
 import sttp.client3.SttpBackend
-import st.btu.trading.pillar.facades.TcsFacadeImpl
 import st.btu.trading.pillar.gateways.{TgGateway, TgGatewayImpl}
-import st.btu.trading.pillar.models.{tcs, tg}
+import st.btu.trading.pillar.models.tg
 import st.btu.trading.pillar.services.commands.*
 import st.btu.trading.pillar.services.{CommandHandleService, CommandHandleServiceImpl}
 import tofu.kernel.types.Throws
-import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
 
@@ -80,23 +78,19 @@ final class TgUpdatesProcessImpl[F[_]: Logging](
 
 object TgUpdatesProcessImpl {
 
-  /** Wires the Telegram updates process: a gateway for `tgToken`, the built-in ping/info/help
-    * handlers plus `extraHandlers`, and the command router, holding the Tinkoff gRPC channel (for
-    * `/info`) open for the resource's lifetime.
+  /** Wires the Telegram updates process: a gateway for `tgToken`, the built-in ping and help
+    * handlers plus `extraHandlers`, and the command router.
     */
   def resource[I[_]: Sync, F[_]: Async: Throws](
     tgToken: tg.Token,
-    brokerAccountId: tcs.BrokerAccountId,
-    tcsToken: tcs.Token,
     backend: SttpBackend[F, Any],
     extraHandlers: List[CommandHandler[F]] = Nil
-  )(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TgUpdatesProcessImpl[F]] =
+  )(implicit logs: Logs[I, F]): Resource[I, TgUpdatesProcessImpl[F]] =
     for {
       tgGateway <- Resource.eval(TgGatewayImpl.create[I, F](tgToken, backend))
-      tcsFacade <- TcsFacadeImpl.resource[I, F](brokerAccountId, tcsToken)
       commandHandleService <- Resource.eval(
         CommandHandleServiceImpl
-          .create[I, F](tgGateway, CommandHandlers.standard(tgGateway, tcsFacade, extraHandlers))
+          .create[I, F](tgGateway, CommandHandlers.standard(tgGateway, extraHandlers))
       )
       tgUpdatesProcess <- Resource.eval(
         TgUpdatesProcessImpl.create[I, F](tgGateway, commandHandleService)

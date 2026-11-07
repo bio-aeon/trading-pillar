@@ -26,39 +26,34 @@ class CommandHandlersSpec extends Specification with CatsEffect {
   "CommandHandlers" >> {
     "standard" >> {
 
-      "serves ping, info, the extra handlers and help, in that order" >> {
-        for {
-          tgGateway <- Fakes.tgGateway()
-          tcsFacade <- Fakes.tcsFacade()
-        } yield CommandHandlers
-          .standard[IO](tgGateway, tcsFacade, extras)
-          .map(_.command) must_== List(
-          Command.Ping,
-          Command.Info,
-          Command.Watchlist,
-          Command.Strategies,
-          Command.Help
-        )
+      "serves ping, the extra handlers and help, in that order" >> {
+        Fakes.tgGateway().map { tgGateway =>
+          CommandHandlers
+            .standard[IO](tgGateway, extras)
+            .map(_.command) must_== List(
+            Command.Ping,
+            Command.Watchlist,
+            Command.Strategies,
+            Command.Help
+          )
+        }
       }
 
-      "serves only ping, info and help when there are no extra handlers" >> {
-        for {
-          tgGateway <- Fakes.tgGateway()
-          tcsFacade <- Fakes.tcsFacade()
-        } yield CommandHandlers
-          .standard[IO](tgGateway, tcsFacade, Nil)
-          .map(_.command) must_== List(Command.Ping, Command.Info, Command.Help)
+      "serves only ping and help when there are no extra handlers" >> {
+        Fakes.tgGateway().map { tgGateway =>
+          CommandHandlers
+            .standard[IO](tgGateway, Nil)
+            .map(_.command) must_== List(Command.Ping, Command.Help)
+        }
       }
 
       "lets help list the usage of every handler before it, in order" >> {
         for {
           tgGateway <- Fakes.tgGateway()
-          tcsFacade <- Fakes.tcsFacade()
-          help = CommandHandlers.standard[IO](tgGateway, tcsFacade, extras).last
+          help = CommandHandlers.standard[IO](tgGateway, extras).last
           _ <- help.handle(chatId, Nil)
           messages <- tgGateway.sentMessages
         } yield messages.map(_.message) must_== List("""/ping - health check
-            |/info - portfolio positions
             |/watchlist - the watchlist
             |/strategies - the strategies
             |/help - list available commands""".stripMargin)

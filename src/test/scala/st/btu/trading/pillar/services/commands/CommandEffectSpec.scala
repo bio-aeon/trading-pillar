@@ -21,7 +21,6 @@ class CommandEffectSpec extends Specification {
         classify(CommandEffect.ReadOnly, "reads")(
           List(
             "/ping",
-            "/info",
             "/strategies",
             "/sweep ma-cross-50-200 AAPL fast=10:50:10",
             "/alerts 20",

@@ -23,7 +23,6 @@ class CommandUsageSpec extends Specification with CatsEffect {
   private def allHandlers: IO[List[CommandHandler[IO]]] =
     for {
       tgGateway <- Fakes.tgGateway()
-      tcsFacade <- Fakes.tcsFacade()
       watchlist <- MarketDataFakes.watchlistStorage()
       tickerSources <- MarketDataFakes.tickerSourceStorage()
       sources <- MarketDataFakes.marketDataSources()
@@ -45,7 +44,6 @@ class CommandUsageSpec extends Specification with CatsEffect {
       taxService <- TaxFakes.taxService()
     } yield CommandHandlers.standard[IO](
       tgGateway,
-      tcsFacade,
       List(
         new WatchlistHandler[IO](tgGateway, watchlist, tickerSources, sources, accountId),
         new SourceHandler[IO](tgGateway, tickerSources, sources),

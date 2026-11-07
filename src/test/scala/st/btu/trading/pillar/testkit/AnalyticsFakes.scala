@@ -7,6 +7,7 @@ import st.btu.trading.pillar.analytics.portfolio.*
 import st.btu.trading.pillar.models.Account
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.storages.{
+  AccountOperationStorage,
   AccountStorage,
   AllocationTargetStorage,
   PortfolioSnapshotStorage,
@@ -14,7 +15,7 @@ import st.btu.trading.pillar.storages.{
   TcsPortfolioOperationStorage
 }
 
-import java.time.{LocalDate, ZonedDateTime}
+import java.time.{Instant, LocalDate, ZonedDateTime}
 import java.util.concurrent.atomic.AtomicLong
 
 object AnalyticsFakes {
@@ -33,28 +34,77 @@ object AnalyticsFakes {
 
   // --- TcsPortfolioOperationStorage ---
 
-  trait FakeTcsPortfolioOperationStorage extends TcsPortfolioOperationStorage[IO]
+  // Also the read port of the shared operations, over the translations the records carried.
+  trait FakeTcsPortfolioOperationStorage
+      extends TcsPortfolioOperationStorage[IO]
+      with AccountOperationStorage[IO] {
 
+    /** How many records each `record` call carried, oldest first. */
+    def recordedBatchSizes: IO[List[Int]]
+  }
+
+  // `record` upserts as the contract says: an operation by (account, extId, operationType), keeping
+  // the id it was stored under, and a translation by (account, ref).
   def tcsPortfolioOperationStorage(
-    operations: List[TcsPortfolioOperation] = List.empty
+    operations: List[TcsPortfolioOperation] = List.empty,
+    translations: List[AccountOperation] = List.empty
   ): IO[FakeTcsPortfolioOperationStorage] =
-    Ref.of[IO, List[TcsPortfolioOperation]](operations).map { ref =>
-      new FakeTcsPortfolioOperationStorage {
-        def lastOperation(accountId: AccountId): IO[Option[TcsPortfolioOperation]] =
-          ref.get
-            .map(_.filter(_.accountId == accountId).maxByOption(_.createdAt.toInstant.toEpochMilli))
+    for {
+      operationsRef <- Ref.of[IO, List[TcsPortfolioOperation]](operations)
+      translationsRef <- Ref.of[IO, List[AccountOperation]](translations)
+      batchSizesRef <- Ref.of[IO, List[Int]](List.empty)
+    } yield new FakeTcsPortfolioOperationStorage {
+      def lastOperation(accountId: AccountId): IO[Option[TcsPortfolioOperation]] =
+        operationsRef.get
+          .map(_.filter(_.accountId == accountId).maxByOption(_.createdAt.toInstant.toEpochMilli))
 
-        def operationsByDtRange(accountId: AccountId, since: ZonedDateTime, until: ZonedDateTime)
-          : IO[Set[TcsPortfolioOperation]] =
-          ref.get.map(_.filter { op =>
-            op.accountId == accountId && !op.createdAt.isBefore(since) && op.createdAt
-              .isBefore(until)
-          }.toSet)
+      def operationsByDtRange(
+        accountId: AccountId,
+        since: ZonedDateTime,
+        until: ZonedDateTime
+      ): IO[Set[TcsPortfolioOperation]] =
+        operationsRef.get.map(_.filter { op =>
+          op.accountId == accountId && !op.createdAt.isBefore(since) && op.createdAt
+            .isBefore(until)
+        }.toSet)
 
-        def saveOperations(newOperations: List[TcsPortfolioOperation]): IO[Unit] =
-          ref.update(_ ++ newOperations)
-      }
+      def record(records: List[TcsOperationRecord]): IO[Unit] =
+        batchSizesRef.update(_ :+ records.size) >>
+          operationsRef.update(records.map(_.operation).foldLeft(_)(upsertOperation)) >>
+          translationsRef.update(records.map(_.translation).foldLeft(_)(upsertTranslation))
+
+      def operations(
+        accountId: AccountId,
+        since: Instant,
+        until: Instant
+      ): IO[Vector[AccountOperation]] =
+        translationsRef.get.map(_.filter { op =>
+          op.accountId == accountId && !op.occurredAt.isBefore(since) && op.occurredAt
+            .isBefore(until)
+        }.sortBy(op => (op.occurredAt, op.ref.value)).toVector)
+
+      def recordedBatchSizes: IO[List[Int]] = batchSizesRef.get
     }
+
+  private def upsertOperation(
+    stored: List[TcsPortfolioOperation],
+    operation: TcsPortfolioOperation
+  ): List[TcsPortfolioOperation] = {
+    val at = stored.indexWhere(s =>
+      s.accountId == operation.accountId && s.extId == operation.extId &&
+        s.operationType == operation.operationType
+    )
+    if (at < 0) stored :+ operation else stored.updated(at, operation.copy(id = stored(at).id))
+  }
+
+  private def upsertTranslation(
+    stored: List[AccountOperation],
+    translation: AccountOperation
+  ): List[AccountOperation] = {
+    val at =
+      stored.indexWhere(s => s.accountId == translation.accountId && s.ref == translation.ref)
+    if (at < 0) stored :+ translation else stored.updated(at, translation)
+  }
 
   // Terse fixture builder for a TcsPortfolioOperation; every field irrelevant to the valuation
   // pipeline gets an arbitrary but valid default.

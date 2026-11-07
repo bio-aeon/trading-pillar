@@ -37,11 +37,11 @@ object CommandEffect {
       case Command.Alert => alert(args)
       case Command.Backtest => backtest(args)
       case Command.Mute | Command.Unmute => Changing
-      case Command.Ping | Command.Info | Command.Strategies | Command.Sweep | Command.Alerts |
-          Command.Dividends | Command.Analyze | Command.Compare | Command.Menu |
-          Command.Performance | Command.Portfolio | Command.Positions | Command.Allocation |
-          Command.Drift | Command.Rebalance | Command.Paper | Command.News | Command.Screen |
-          Command.Tax | Command.Lots | Command.Export | Command.Help | Command.Unknown =>
+      case Command.Ping | Command.Strategies | Command.Sweep | Command.Alerts | Command.Dividends |
+          Command.Analyze | Command.Compare | Command.Menu | Command.Performance |
+          Command.Portfolio | Command.Positions | Command.Allocation | Command.Drift |
+          Command.Rebalance | Command.Paper | Command.News | Command.Screen | Command.Tax |
+          Command.Lots | Command.Export | Command.Help | Command.Unknown =>
         ReadOnly
     }
 

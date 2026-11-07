@@ -13,7 +13,10 @@ ports such as storage traits and alert channels, and leaves persistence, configu
 credentials and user strategies to the applications that consume it.
 
 Strategies, backtests, alerts and the analytics math don't depend on a broker; the portfolio side
-(operations sync, valuation, tax lots, `/info`) is built on Tinkoff Invest. `Source` is a closed
+(operations sync, valuation, tax lots) is built on Tinkoff Invest. The sync runs for each Tinkoff
+account a consumer gives it and records every operation as Tinkoff sent it together with its
+translation into the broker-neutral `AccountOperation`. Until the readers move to the translations,
+the valuation, the tax services and `/export` still read the Tinkoff records. `Source` is a closed
 set of data sources, so supporting another broker's data means changing the library.
 
 The artifact is `st.btu %% trading-pillar % 0.1.0-SNAPSHOT`. Consumers build against a locally
@@ -49,7 +52,7 @@ Package root `st.btu.trading.pillar`:
 
 | Package | Contents |
 |---|---|
-| `models` | `domain` (accounts, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
+| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
 | `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router and the `InstrumentDirectory` port; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
@@ -97,8 +100,9 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   sanitizes and caps the text; alert notifications pass through the same sanitizer.
 - **Persisted values are contracts.** Consumers store the circe encodings of backtest results, of
   `Proximity` and `QuietHours`, and of `Allocation` and `PortfolioMetrics`, the string values of
-  enumeratum enums such as `Source`, `AlertKind`, `BindingMode` and `Period`, and the names of
-  `Side` and `PriceCrossed.Direction`. Renaming any of them breaks stored data.
+  enumeratum enums such as `Source`, `Broker`, `OperationKind`, `OperationState`, `AlertKind`,
+  `BindingMode` and `Period`, and the names of `Side` and `PriceCrossed.Direction`. Renaming any of
+  them breaks stored data.
 - **Public API.** Every public type and member gets Scaladoc with a one-sentence summary; internals
   are `private` or `private[pillar]`. Narrowing or removing a public member breaks consumers, so
   propose it rather than doing it as part of another change.

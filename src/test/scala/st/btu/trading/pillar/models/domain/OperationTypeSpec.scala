@@ -58,6 +58,17 @@ class OperationTypeSpec extends Specification {
         OperationType.Output.isExternalFlow must beTrue
         OperationType.Buy.isExternalFlow must beFalse
       }
+
+      "is false for the other transfers of cash" >> {
+        List(
+          OperationType.InputSwift,
+          OperationType.InputAcquiring,
+          OperationType.InpMulti,
+          OperationType.OutputSwift,
+          OperationType.OutputAcquiring,
+          OperationType.OutMulti
+        ).exists(_.isExternalFlow) must beFalse
+      }
     }
 
     "isDividendOrCoupon" >> {
@@ -65,6 +76,10 @@ class OperationTypeSpec extends Specification {
         OperationType.Dividend.isDividendOrCoupon must beTrue
         OperationType.Coupon.isDividendOrCoupon must beTrue
         OperationType.DividendTax.isDividendOrCoupon must beFalse
+      }
+
+      "is false for a dividend paid to a card" >> {
+        OperationType.DivExt.isDividendOrCoupon must beFalse
       }
     }
 
@@ -94,18 +109,24 @@ class OperationTypeSpec extends Specification {
         OperationType.Dividend.isWithheldTax must beFalse
         OperationType.Buy.isWithheldTax must beFalse
       }
+
+      "is false for the correction of tax withheld on coupons" >> {
+        OperationType.TaxCorrectionCoupon.isWithheldTax must beFalse
+      }
     }
   }
 
   "OperationStatus" >> {
     "decode" >> {
-      "decodes the known Executed value" >> {
+      "decodes the known values to their named cases" >> {
         OperationStatus.decode("OPERATION_STATE_EXECUTED") must_== OperationStatus.Executed
+        OperationStatus.decode("OPERATION_STATE_CANCELED") must_== OperationStatus.Canceled
+        OperationStatus.decode("OPERATION_STATE_PROGRESS") must_== OperationStatus.Progress
       }
 
       "falls back to Unknown(raw) for anything else" >> {
-        OperationStatus.decode("OPERATION_STATE_CANCELED") must_==
-          OperationStatus.Unknown("OPERATION_STATE_CANCELED")
+        OperationStatus.decode("OPERATION_STATE_SOME_FUTURE_STATE") must_==
+          OperationStatus.Unknown("OPERATION_STATE_SOME_FUTURE_STATE")
       }
     }
   }

@@ -3,9 +3,10 @@ package st.btu.trading.pillar.models.domain
 import enumeratum.values.*
 
 /** Every Tinkoff `OPERATION_TYPE_*` name trading-pillar itself inspects (tax lots/report, portfolio
-  * valuation). An open set: a raw value that doesn't match any named case decodes to `Unknown(raw)`
-  * via [[OperationType.decode]] rather than being rejected, since an operation type this library
-  * doesn't yet recognize must still round-trip unchanged.
+  * valuation, translation into [[AccountOperation]]s). An open set: a raw value that doesn't match
+  * any named case decodes to `Unknown(raw)` via [[OperationType.decode]] rather than being
+  * rejected, since an operation type this library doesn't yet recognize must still round-trip
+  * unchanged.
   */
 sealed abstract class OperationType(val value: String) extends StringEnumEntry {
 
@@ -53,6 +54,29 @@ object OperationType extends StringEnum[OperationType] {
       extends OperationType("OPERATION_TYPE_TAX_REPO_HOLD_PROGRESSIVE")
   case object TaxRepoRefundProgressive
       extends OperationType("OPERATION_TYPE_TAX_REPO_REFUND_PROGRESSIVE")
+  case object TaxCorrectionCoupon extends OperationType("OPERATION_TYPE_TAX_CORRECTION_COUPON")
+  case object InputSwift extends OperationType("OPERATION_TYPE_INPUT_SWIFT")
+  case object InputAcquiring extends OperationType("OPERATION_TYPE_INPUT_ACQUIRING")
+  case object InpMulti extends OperationType("OPERATION_TYPE_INP_MULTI")
+  case object OutputSwift extends OperationType("OPERATION_TYPE_OUTPUT_SWIFT")
+  case object OutputAcquiring extends OperationType("OPERATION_TYPE_OUTPUT_ACQUIRING")
+  case object OutMulti extends OperationType("OPERATION_TYPE_OUT_MULTI")
+  case object DivExt extends OperationType("OPERATION_TYPE_DIV_EXT")
+  case object Overnight extends OperationType("OPERATION_TYPE_OVERNIGHT")
+  case object OverIncome extends OperationType("OPERATION_TYPE_OVER_INCOME")
+  case object ServiceFee extends OperationType("OPERATION_TYPE_SERVICE_FEE")
+  case object MarginFee extends OperationType("OPERATION_TYPE_MARGIN_FEE")
+  case object SuccessFee extends OperationType("OPERATION_TYPE_SUCCESS_FEE")
+  case object TrackMfee extends OperationType("OPERATION_TYPE_TRACK_MFEE")
+  case object TrackPfee extends OperationType("OPERATION_TYPE_TRACK_PFEE")
+  case object CashFee extends OperationType("OPERATION_TYPE_CASH_FEE")
+  case object OutFee extends OperationType("OPERATION_TYPE_OUT_FEE")
+  case object AdviceFee extends OperationType("OPERATION_TYPE_ADVICE_FEE")
+  case object OtherFee extends OperationType("OPERATION_TYPE_OTHER_FEE")
+  case object OutStampDuty extends OperationType("OPERATION_TYPE_OUT_STAMP_DUTY")
+  case object OutputPenalty extends OperationType("OPERATION_TYPE_OUTPUT_PENALTY")
+  case object OverCom extends OperationType("OPERATION_TYPE_OVER_COM")
+  case object Funding extends OperationType("OPERATION_TYPE_FUNDING")
 
   // Not part of `values` (findValues would reject a non-singleton case as a value member, and
   // this one is intentionally outside the closed set it enumerates).
@@ -94,7 +118,30 @@ object OperationType extends StringEnum[OperationType] {
     TaxRepoHold,
     TaxRepoRefund,
     TaxRepoHoldProgressive,
-    TaxRepoRefundProgressive
+    TaxRepoRefundProgressive,
+    TaxCorrectionCoupon,
+    InputSwift,
+    InputAcquiring,
+    InpMulti,
+    OutputSwift,
+    OutputAcquiring,
+    OutMulti,
+    DivExt,
+    Overnight,
+    OverIncome,
+    ServiceFee,
+    MarginFee,
+    SuccessFee,
+    TrackMfee,
+    TrackPfee,
+    CashFee,
+    OutFee,
+    AdviceFee,
+    OtherFee,
+    OutStampDuty,
+    OutputPenalty,
+    OverCom,
+    Funding
   )
 
   /** Decodes a raw Tinkoff operation-type string, falling back to [[Unknown]] rather than throwing.
@@ -108,7 +155,8 @@ object OperationType extends StringEnum[OperationType] {
 
   // BOND_TAX, DIVIDEND_TAX, TAX, TAX_CORRECTION, BENEFIT_TAX, their _PROGRESSIVE variants, and
   // every TAX_REPO* variant - the broker-withheld-tax family TaxReport treats as "already paid".
-  // Deliberately excludes TAX_CORRECTION_COUPON (matches neither this family nor its own name).
+  // TAX_CORRECTION_COUPON is left out on purpose: the report counts only the family docs/tax.md
+  // lists.
   private val WithheldTaxTypes: Set[OperationType] = Set(
     BondTax,
     DividendTax,
@@ -136,12 +184,14 @@ sealed abstract class OperationStatus(val value: String) extends StringEnumEntry
 
 object OperationStatus extends StringEnum[OperationStatus] {
   case object Executed extends OperationStatus("OPERATION_STATE_EXECUTED")
+  case object Canceled extends OperationStatus("OPERATION_STATE_CANCELED")
+  case object Progress extends OperationStatus("OPERATION_STATE_PROGRESS")
 
   /** Carries any raw value not among the named cases above. */
   final case class Unknown(raw: String) extends OperationStatus(raw)
 
   /** Every named case, in declaration order. */
-  val values: IndexedSeq[OperationStatus] = IndexedSeq(Executed)
+  val values: IndexedSeq[OperationStatus] = IndexedSeq(Executed, Canceled, Progress)
 
   /** Decodes a raw Tinkoff operation-state string, falling back to [[Unknown]] rather than
     * throwing.

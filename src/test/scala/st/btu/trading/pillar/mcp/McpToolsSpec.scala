@@ -13,7 +13,7 @@ import st.btu.trading.pillar.models.domain.{AccountId, Command, Currency}
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.services.commands.*
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
-import st.btu.trading.pillar.testkit.{Fakes, MarketDataFakes, McpFakes}
+import st.btu.trading.pillar.testkit.{MarketDataFakes, McpFakes}
 import tofu.logging.{Logging, Logs}
 
 import java.time.{Instant, LocalDate, ZoneOffset, ZonedDateTime}
@@ -105,7 +105,6 @@ class McpToolsSpec extends Specification with CatsEffect {
     implicit val logs: Logs[IO, IO] = plainLogs
     for {
       gateway <- CapturingTgGateway.create[IO, IO]
-      tcsFacade <- Fakes.tcsFacade()
       settings <- MarketDataFakes.tickerSourceStorage()
       watchlist <- MarketDataFakes.watchlistStorage()
       priceHistory <- MarketDataFakes.priceHistoryStorage()
@@ -113,7 +112,6 @@ class McpToolsSpec extends Specification with CatsEffect {
       sources = new MarketDataSourcesImpl[IO](None, None, settings, SourceSetting.Yahoo(None))
       handlers = CommandHandlers.standard[IO](
         gateway,
-        tcsFacade,
         List(new WatchlistHandler[IO](gateway, watchlist, settings, sources, accountId))
       )
       runner <- CommandRunnerImpl.create[IO, IO](gateway, handlers)
@@ -440,7 +438,6 @@ class McpToolsSpec extends Specification with CatsEffect {
           tools <- toolsOver(env)
           response <- McpFakes.call(botQuery(tools), "command" -> "/help")
         } yield response must_== answered("""/ping - health check
-            |/info - portfolio positions
             |/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
             |/help - list available commands""".stripMargin)
       }

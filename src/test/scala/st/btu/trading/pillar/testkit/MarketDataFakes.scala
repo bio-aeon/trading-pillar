@@ -1,7 +1,7 @@
 package st.btu.trading.pillar.testkit
 
 import cats.Functor
-import cats.effect.{IO, Ref}
+import cats.effect.{IO, IOLocal, Ref}
 import cats.syntax.apply.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
@@ -12,7 +12,7 @@ import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.services.{PriceHistorySyncService, SyncReport}
 import st.btu.trading.pillar.storages.*
-import tofu.Delay
+import tofu.{Delay, WithLocal}
 
 import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 
@@ -24,9 +24,9 @@ object MarketDataFakes {
     def delay[A](a: => A): IO[A] = IO(a)
   }
 
-  def withLocal(initial: ProcessContext): IO[tofu.WithLocal[IO, ProcessContext]] =
+  def withLocal(initial: ProcessContext): IO[WithLocal[IO, ProcessContext]] =
     Ref.of[IO, ProcessContext](initial).map { ref =>
-      new tofu.WithLocal[IO, ProcessContext] {
+      new WithLocal[IO, ProcessContext] {
         def functor: Functor[IO] = Functor[IO]
 
         def context: IO[ProcessContext] = ref.get
@@ -34,6 +34,22 @@ object MarketDataFakes {
         def local[A](fa: IO[A])(project: ProcessContext => ProcessContext): IO[A] =
           ref.get.flatMap { original =>
             ref.set(project(original)) *> fa.guarantee(ref.set(original))
+          }
+      }
+    }
+
+  // Unlike withLocal, whose one context is shared by every fiber, this context belongs to the fiber
+  // that sets it, so processes running side by side each see the context they set.
+  def withFiberLocal(initial: ProcessContext): IO[WithLocal[IO, ProcessContext]] =
+    IOLocal(initial).map { fiberLocal =>
+      new WithLocal[IO, ProcessContext] {
+        def functor: Functor[IO] = Functor[IO]
+
+        def context: IO[ProcessContext] = fiberLocal.get
+
+        def local[A](fa: IO[A])(project: ProcessContext => ProcessContext): IO[A] =
+          fiberLocal.get.flatMap { original =>
+            fiberLocal.set(project(original)) *> fa.guarantee(fiberLocal.set(original))
           }
       }
     }

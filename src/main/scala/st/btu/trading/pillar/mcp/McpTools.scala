@@ -75,7 +75,8 @@ object McpTools {
     isOpenWorld = true
   )
 
-  // Open world, like CommandInfo: commands such as /news, /screen and /info call Yahoo and Tinkoff.
+  // Open world, like CommandInfo: commands such as /news, /screen and /analyze call Yahoo and
+  // Tinkoff.
   private val QueryInfo = ToolFunction.Info(
     name = ToolNames.Query,
     title = Some("Query the bot"),

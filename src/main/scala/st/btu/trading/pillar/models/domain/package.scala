@@ -112,4 +112,38 @@ package object domain {
     def apply(value: String): ProtocolVersion = value
     extension (version: ProtocolVersion) def value: String = version
   }
+
+  /** The broker's own id for an operation, unique within an account: a later state of the same
+    * operation carries the same reference, so it replaces the earlier one.
+    */
+  opaque type OperationRef = String
+
+  object OperationRef {
+    def apply(value: String): OperationRef = value
+    extension (ref: OperationRef) def value: String = ref
+    implicit val show: Show[OperationRef] = Show.catsShowForString
+    implicit val loggable: Loggable[OperationRef] = Loggable.stringValue
+  }
+
+  /** The id a broker knows an instrument by, such as a FIGI at Tinkoff. */
+  opaque type BrokerInstrumentId = String
+
+  object BrokerInstrumentId {
+    def apply(value: String): BrokerInstrumentId = value
+    extension (instrumentId: BrokerInstrumentId) def value: String = instrumentId
+    implicit val show: Show[BrokerInstrumentId] = Show.catsShowForString
+    implicit val loggable: Loggable[BrokerInstrumentId] = Loggable.stringValue
+  }
+
+  /** A broker's own name for the kind of an operation, such as `OPERATION_TYPE_BUY` at Tinkoff,
+    * kept as received for display.
+    */
+  opaque type BrokerOperationType = String
+
+  object BrokerOperationType {
+    def apply(value: String): BrokerOperationType = value
+    extension (operationType: BrokerOperationType) def value: String = operationType
+    implicit val show: Show[BrokerOperationType] = Show.catsShowForString
+    implicit val loggable: Loggable[BrokerOperationType] = Loggable.stringValue
+  }
 }

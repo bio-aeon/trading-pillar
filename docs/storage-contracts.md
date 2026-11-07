@@ -23,10 +23,11 @@ back as `RUB`, and `GBp` stays `GBp`. Persist `Currency.value` and read it throu
 trait AccountStorage[F[_]] { def allAccounts: F[List[Account]] }
 ```
 
-Read-only from trading-pillar's side: `TcsPortfolioSyncProcess` and `AnalyticsProcess` iterate
-`allAccounts`, and the consumer provides the accounts by whatever means it chooses. A relational
-implementation could use a table such as `accounts` with an integer `id` (it maps to
-`AccountId(value: Int)`), a unique `name` and `created_at`.
+Read-only from trading-pillar's side: `AnalyticsProcess` iterates `allAccounts`, and the consumer
+provides the accounts by whatever means it chooses. An `Account` names the `Broker` it is held at,
+which decides where its operations come from. A relational implementation could use a table such
+as `accounts` with an integer `id` (it maps to `AccountId(value: Int)`), a unique `name`, a
+`broker` (`tinkoff`, the `Broker` values) and `created_at`.
 
 ## `TcsPortfolioOperationStorage[F[_]]`
 
@@ -34,19 +35,62 @@ implementation could use a table such as `accounts` with an integer `id` (it map
 trait TcsPortfolioOperationStorage[F[_]] {
   def lastOperation(accountId: AccountId): F[Option[TcsPortfolioOperation]]
   def operationsByDtRange(accountId: AccountId, since: ZonedDateTime, until: ZonedDateTime): F[Set[TcsPortfolioOperation]]
-  def saveOperations(operations: List[TcsPortfolioOperation]): F[Unit]
+  def record(records: List[TcsOperationRecord]): F[Unit]
 }
 ```
 
-Written by the library, via `TcsPortfolioSyncProcess`, through `saveOperations`, which skips any
-operation already on record. An operation is identified by `(accountId, extId, operationType)`.
-T-Invest warns that an operation's id can change over time, so an operation that comes back under a
-new id is stored again. `protocolVersion` is `TcsFacade.ApiVersion`, the contracts version the
+Tinkoff's own records, as received. Written by the library, via `TcsPortfolioSyncProcess`, through
+`record`. A `TcsOperationRecord` pairs a Tinkoff operation with its translation into an
+`AccountOperation` (see [`AccountOperationStorage`](#accountoperationstoragef_) below), and
+`record` stores both:
+
+- **The operation** is identified by `(accountId, extId, operationType)`. One not stored yet is
+  inserted. One stored already has every other field replaced, `id` aside, so a later state of an
+  operation overwrites the earlier one: its `status`, its `quantity` and `quantityRest`, its
+  payment. The sync fetches an account's operations of the last days again on every run, so a
+  record usually arrives for an operation stored already.
+- **The translation** is stored the same way, keyed by `(accountId, ref)`.
+- **Both in one transaction**: a failure leaves neither stored. A relational implementation can
+  group the records of a call into batches and run each batch in one transaction.
+
+T-Invest warns that an operation's id can change over time, so an operation that comes back under
+a new id is stored again. `protocolVersion` is `TcsFacade.ApiVersion`, the contracts version the
 operation was fetched with.
-Operations are read back through `lastOperation` and `operationsByDtRange` (by the sync itself, the
-valuation and tax services, and `/export`). A relational implementation could use a table such as
-`tcs_portfolio_operations` with a generated `id`, one column per remaining `TcsPortfolioOperation`
-field, and a unique key on `(account_id, ext_id, operation_type)`.
+
+The stored operations are read back through `lastOperation` and `operationsByDtRange` (by the sync
+itself, which also records every stored operation again with its translation each time it starts,
+and by the valuation and tax services and `/export`, which do not read the translations yet). A
+relational implementation could use a table such as `tcs_portfolio_operations` with a generated
+`id`, one column per remaining `TcsPortfolioOperation` field, and a unique key on
+`(account_id, ext_id, operation_type)`.
+
+## `AccountOperationStorage[F[_]]`
+
+```scala
+trait AccountOperationStorage[F[_]] {
+  def operations(accountId: AccountId, since: Instant, until: Instant): F[Vector[AccountOperation]]
+}
+```
+
+An account's operations in terms shared by every broker. Read-only: each broker's own storage
+records its operations together with their translations, so for Tinkoff the translations are
+written by `TcsPortfolioOperationStorage.record`. Nothing in the library reads this port yet; the
+valuation, the tax services and `/export` still read the Tinkoff records.
+
+`operations` returns the operations that occurred from `since` (inclusive) until `until`
+(exclusive), oldest first, and in `ref` order among those at the same instant.
+
+An `AccountOperation` names the broker's record it was translated from through its `ref`, which
+is unique within the account and built from the raw record's own key (for Tinkoff, the operation's
+id and type, joined with a slash). One raw record can give several operations, never the reverse.
+`kind`, `state`, `instrument.broker` and `brokerType` are persisted by their string values (the
+`value` of `OperationKind`, `OperationState` and `Broker`; `brokerType` is the broker's own name
+for the operation). A relational implementation could use a table such as `account_operations`
+with a generated `id`, `account_id`, `ref`, `kind`, `state`, `occurred_at`, a nullable
+`instrument_broker` and `instrument_id` that are both null or both set, `quantity`, a nullable
+`price`, `amount`, `currency`, `broker_type` and `updated_at`, a unique key on
+`(account_id, ref)` and an index on `(account_id, occurred_at)`. Quantities and amounts are best
+held as wide fixed-point decimals, since coins have many decimal places.
 
 ## `PriceHistoryStorage[F[_]]`
 
@@ -378,7 +422,8 @@ implementation runs its statements in one transaction.
 | Trait | Suggested table | Library writes | Library reads |
 |---|---|---|---|
 | `AccountStorage` | `accounts` | none | `allAccounts` |
-| `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` | `saveOperations` | `lastOperation`, `operationsByDtRange` |
+| `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` (and `account_operations`) | `record` | `lastOperation`, `operationsByDtRange` |
+| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` | none yet |
 | `PriceHistoryStorage` | `price_history` | `upsertBars` | `lastBarDate`, `bars`, `latestBars` |
 | `InstrumentStorage` | `instrument_metadata` | `upsert` | `find` |
 | `WatchlistStorage` | `watchlist_items` | `add`, `remove` | `allEnabled`, `byAccount` |

@@ -1,14 +1,14 @@
 package st.btu.trading.pillar.testkit
 
-import cats.Applicative
 import cats.effect.{IO, Ref}
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
 import st.btu.trading.pillar.facades.TcsFacade
 import st.btu.trading.pillar.gateways.TgGateway
-import st.btu.trading.pillar.models.domain.Portfolio
 import st.btu.trading.pillar.models.tg.{ChatId, InlineButton, Result, Update}
 import ru.tinkoff.piapi.contract.v1.operations.OperationItem
 
-import java.time.ZonedDateTime
+import java.time.{Instant, ZonedDateTime}
 
 object Fakes {
 
@@ -93,26 +93,35 @@ object Fakes {
       def sentPhotos: IO[List[SentPhoto]] = photos.get
     }
 
-  trait FakeTcsFacade[F[_]] extends TcsFacade[F] {
-    def setPortfolio(portfolio: Portfolio): F[Unit]
+  case class RequestedWindow(since: Instant, until: Instant)
+
+  trait FakeTcsFacade extends TcsFacade[IO] {
+
+    /** Replaces what Tinkoff reports from now on. */
+    def report(operations: List[OperationItem]): IO[Unit]
+
+    /** The windows `operations` was asked for, oldest first. */
+    def requests: IO[List[RequestedWindow]]
   }
 
-  def tcsFacade(
-    portfolioRef: Ref[IO, Portfolio],
-    operationsResponse: List[OperationItem] = List.empty
-  ): FakeTcsFacade[IO] = new FakeTcsFacade[IO] {
-    def portfolio: IO[Portfolio] = portfolioRef.get
+  // Answers each request with the reported operations dated within its window, as the broker does.
+  def tcsFacade(reported: List[OperationItem] = List.empty): IO[FakeTcsFacade] =
+    for {
+      reportedRef <- Ref.of[IO, List[OperationItem]](reported)
+      requestsRef <- Ref.of[IO, List[RequestedWindow]](List.empty)
+    } yield new FakeTcsFacade {
+      def operations(since: ZonedDateTime, until: ZonedDateTime): IO[List[OperationItem]] =
+        requestsRef.update(
+          _ :+ RequestedWindow(since.toInstant, until.toInstant)
+        ) >> reportedRef.get.map(_.filter { item =>
+          item.date.exists { date =>
+            val dated = Instant.ofEpochSecond(date.seconds, date.nanos)
+            !dated.isBefore(since.toInstant) && !dated.isAfter(until.toInstant)
+          }
+        })
 
-    def operations(since: ZonedDateTime, until: ZonedDateTime): IO[List[OperationItem]] =
-      IO.pure(operationsResponse)
+      def report(operations: List[OperationItem]): IO[Unit] = reportedRef.set(operations)
 
-    def setPortfolio(portfolio: Portfolio): IO[Unit] =
-      portfolioRef.set(portfolio)
-  }
-
-  def tcsFacade(): IO[FakeTcsFacade[IO]] =
-    tcsFacade(Portfolio(List.empty))
-
-  def tcsFacade(portfolio: Portfolio): IO[FakeTcsFacade[IO]] =
-    Ref.of[IO, Portfolio](portfolio).map(tcsFacade(_))
+      def requests: IO[List[RequestedWindow]] = requestsRef.get
+    }
 }

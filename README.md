@@ -3,7 +3,7 @@
 Reusable building blocks for trading bots: Telegram bot plumbing, market-data gateways, a pluggable
 strategy/backtesting engine, and a spam-resistant alert pipeline. Strategies, backtests, alerts and
 the analytics math don't depend on a broker; the portfolio side (operations sync, valuation, tax
-lots, `/info`) is built on Tinkoff Invest. A consumer application wires these pieces together and
+lots) is built on Tinkoff Invest. A consumer application wires these pieces together and
 owns its strategies, storage implementations and configuration; nothing account- or
 credential-specific lives here.
 
@@ -24,7 +24,7 @@ trading-pillar gives you:
 - **An alert pipeline** - evaluates price-threshold rules and live strategy signals, and delivers
   them through a channel (Telegram today) behind a six-guard anti-spam chain (mute, cooldown,
   hysteresis, dedup, daily cap, quiet hours).
-- **Existing broker integrations** - Tinkoff Invest (gRPC: portfolio, operations) and a Binance
+- **Existing broker integrations** - Tinkoff Invest (gRPC: operations) and a Binance
   gateway (HMAC-SHA256 signed HTTP; not yet wired to a sync process).
 
 None of this is a runnable application by itself. A consumer application wires these pieces
@@ -36,13 +36,14 @@ strategy is registered.
 
 | Package | Contents |
 |---|---|
-| `models.domain` | `Account`, `Command`, `Portfolio`, `TcsPortfolioOperation`, opaque types (`AccountId`, `Figi`, ...) |
+| `models.domain` | `Command`, `Broker`, `AccountOperation` (an account's operation in terms shared by every broker) with `OperationKind`, `OperationState` and `InstrumentKey`, `TcsPortfolioOperation` (Tinkoff's own record) with `TcsOperationRecord`, opaque types (`AccountId`, `Figi`, ...) |
+| `models` | `Account` |
 | `models.market` | `Ticker`, `YahooSymbol`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board or Yahoo symbol), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.binance` | Telegram, Tinkoff and Binance wire/domain types |
 | `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
 | `gateways.news` | `NewsSource`, `YahooNewsSource`, `NewsItem` - per-ticker headlines, backs `/news` |
-| `facades` | `TcsFacade` - high-level Tinkoff gRPC API (portfolio, operations) |
+| `facades` | `TcsFacade` - high-level Tinkoff gRPC API (operations) |
 | `strategy` | `Strategy`, `StrategyContext`, `BarHistory`, `StrategyRegistry`, `StrategySignal`/`Sizing`, `indicators.Indicators` (SMA/EMA/RSI/ATR) |
 | `strategy.backtest` | `BacktestEngine`, `BacktestConfig`, `BacktestResult`/`BacktestMetrics`, `BacktestService`, `BacktestSweep`/`Grid` (parameter sweeps), `WalkForward`, `BacktestRunStorage` |
 | `strategy.reference` | `MovingAverageCrossoverStrategy`, `RsiReversionStrategy` - **examples/tests only**, not for production use as-is |
@@ -52,10 +53,10 @@ strategy is registered.
 | `alerts` | `Alert`, `AlertKind`, `AlertRule` (`PriceCrossed`, `StrategyBinding`), `Proximity`, `QuietHours`, `DeliveryPolicy`, `AlertEngine`, `AlertDispatcher`, `LiveStrategyService`, `AlertProcess`, `TelegramAlertChannel`, `FailureTracker` (consecutive-failure counter), `SystemAlerts` (infrastructure alerts, e.g. a crashed process loop or a sync failure) |
 | `paper` | `PaperBroker`/`PaperBrokerImpl`, `PaperAccount`/`PaperPosition`/`PaperOrder`, `PaperBrokerConfig` - simulated order execution for a paper-mode `StrategyBinding`; see [`docs/paper-trading.md`](docs/paper-trading.md) |
 | `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
-| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` |
+| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`) |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
-| `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping/info built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
-| `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess`, `PriceHistorySyncProcess`, `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
+| `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
+| `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess` (one loop per Tinkoff account it is given), `PriceHistorySyncProcess`, `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
 | `mcp` | MCP server for AI agents: `McpTools` (`ticker_status`, `live_quote`, `bot_query`, `bot_backtest`, `bot_command`), `McpToolBuilder` (the conventions of a tool, for the consumer's own tools too), `McpToolServer`, `McpHttpServer` behind a bearer token (`McpHttpConfig`, `AccessToken`), `EffectBridge`; see [`docs/mcp.md`](docs/mcp.md) |
 | `data` | `ProcessContext`, `TraceIds`, `UtcClock` - the trace/account context threaded through every process via `tofu.WithLocal`, and a UTC-normalized clock helper |
 | `storages` | Storage traits a consumer implements; see [`docs/storage-contracts.md`](docs/storage-contracts.md) |
@@ -358,6 +359,10 @@ trading-pillar change the consumer needs to see.
 
 - Telegram bot plumbing and the Tinkoff Invest portfolio-operations sync: used in production by an
   earlier version of this library.
+- The operations sync for each Tinkoff account it is given, with the translation of every operation
+  into the broker-neutral `AccountOperation`: implemented and covered by the test suite, but not
+  yet used in production. The valuation, the tax services and `/export` still read Tinkoff's own
+  records, not the translations.
 - Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategies and
   backtesting (multi-symbol runs, parameter sweeps, walk-forward validation), alerts and system
   alerts, analytics, dividends, paper trading and the tax-estimate report: implemented and covered

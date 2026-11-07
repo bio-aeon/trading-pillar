@@ -4,8 +4,8 @@ import cats.effect.Clock
 import cats.syntax.applicative.*
 import cats.syntax.apply.*
 import cats.syntax.flatMap.*
+import cats.syntax.foldable.*
 import cats.syntax.functor.*
-import cats.syntax.show.*
 import cats.syntax.traverse.*
 import cats.{Functor, Monad}
 import ru.tinkoff.piapi.contract.v1.common.MoneyValue
@@ -21,20 +21,22 @@ import tofu.syntax.context.*
 import tofu.syntax.logging.*
 import tofu.syntax.raise.*
 
-import java.time.{Instant, ZoneId, ZonedDateTime}
+import java.time.{Instant, ZoneId, ZoneOffset, ZonedDateTime}
 import scala.concurrent.duration.FiniteDuration
 
 final class TcsPortfolioServiceImpl[F[_]: Logging] private (
-  initialYearsAgo: Int,
+  config: TcsPortfolioSyncConfig,
   operationStorage: TcsPortfolioOperationStorage[F],
   tcsFacade: TcsFacade[F]
 )(implicit F: Monad[F], R: Throws[F], clock: Clock[F], WC: WithContext[F, ProcessContext])
     extends TcsPortfolioService[F] {
+  import TcsPortfolioServiceImpl.*
+
   def syncOperations(
     interval: FiniteDuration,
     overlap: FiniteDuration,
     lastDt: Option[ZonedDateTime] = None
-  ): F[Option[ZonedDateTime]] =
+  ): F[ZonedDateTime] =
     for {
       accountId <- context[F].map(_.accountId)
       now <- nowF
@@ -42,26 +44,35 @@ final class TcsPortfolioServiceImpl[F[_]: Logging] private (
         case some @ Some(_) => some.pure[F]
         case None => operationStorage.lastOperation(accountId) >>= (_.map(_.createdAt).pure[F])
       }
-      sinceWithoutOverlap = since_?.getOrElse(now.minusYears(initialYearsAgo))
+      sinceWithoutOverlap = since_?.getOrElse(now.minusYears(config.initialYearsAgo))
       nextDt = sinceWithoutOverlap.plusSeconds(interval.toSeconds)
       untilWithoutOverlap = Either.cond(nextDt.isBefore(now), nextDt, now).merge
-      actualSince = sinceWithoutOverlap.minusSeconds(overlap.toSeconds)
-      actualUntil = untilWithoutOverlap.plusSeconds(overlap.toSeconds)
-      _ <- info"Attempt to get new operations. Interval [$actualSince, $actualUntil]"
-      tcsOperations <- tcsFacade.operations(actualSince, actualUntil)
-      existingOperations <- F.ifM(since_?.isDefined.pure[F])(
-        operationStorage
-          .operationsByDtRange(accountId, actualSince, actualUntil)
-          .map(_.map(x => (x.operationType.show, x.extId.show))),
-        Set.empty[(String, String)].pure[F]
+      actualSince = earlier(
+        sinceWithoutOverlap.minusSeconds(overlap.toSeconds),
+        now.minusSeconds(config.rereadWindow.toSeconds)
       )
-      operationsToSave <- tcsOperations
-        .filter(x => !existingOperations.contains((x.`type`.name, x.id)))
+      actualUntil = untilWithoutOverlap.plusSeconds(overlap.toSeconds)
+      _ <- info"Attempt to get operations. Interval [$actualSince, $actualUntil]"
+      tcsOperations <- tcsFacade.operations(actualSince, actualUntil)
+      records <- tcsOperations
         .traverse(toDomainOperation(_, accountId))
-        .map(_.sortBy(_.createdAt))
-      _ <- info"Received ${operationsToSave.length} new tcs operations"
-      _ <- operationStorage.saveOperations(operationsToSave)
-    } yield operationsToSave.lastOption.map(_.createdAt).orElse(Some(untilWithoutOverlap))
+        .map(_.sortBy(_.createdAt).map(TcsOperationTranslation.recordOf))
+      _ <- info"Received ${records.length} tcs operations"
+      _ <- operationStorage.record(records)
+    } yield untilWithoutOverlap
+
+  def rebuildTranslations: F[Unit] =
+    for {
+      accountId <- context[F].map(_.accountId)
+      now <- nowF
+      stored <- operationStorage.operationsByDtRange(accountId, EarliestOperation, now)
+      _ <- info"Recording again the ${stored.size} stored tcs operations with their translations"
+      _ <- stored.toList
+        .sortBy(_.createdAt)
+        .grouped(RebuildBatchSize)
+        .toList
+        .traverse_(batch => operationStorage.record(batch.map(TcsOperationTranslation.recordOf)))
+    } yield ()
 
   private[services] def toDomainOperation(
     tcsOperation: OperationItem,
@@ -115,15 +126,23 @@ final class TcsPortfolioServiceImpl[F[_]: Logging] private (
 
 object TcsPortfolioServiceImpl {
 
+  // No operation is dated before the epoch, so reading from it reads every stored operation.
+  private val EarliestOperation: ZonedDateTime =
+    ZonedDateTime.ofInstant(Instant.EPOCH, ZoneOffset.UTC)
+
+  // How many stored operations a rebuild records per storage call.
+  private val RebuildBatchSize = 500
+
+  private def earlier(a: ZonedDateTime, b: ZonedDateTime): ZonedDateTime =
+    if (b.isBefore(a)) b else a
+
   /** Wires a `TcsPortfolioService` backed by `tcsFacade` and `operationStorage`. */
   def create[I[_]: Functor, F[_]: Monad: Clock: Throws](
-    initialYearsAgo: Int,
+    config: TcsPortfolioSyncConfig,
     operationStorage: TcsPortfolioOperationStorage[F],
     tcsFacade: TcsFacade[F]
   )(implicit logs: Logs[I, F], WC: WithContext[F, ProcessContext]): I[TcsPortfolioService[F]] =
     logs
       .forService[TcsPortfolioService[F]]
-      .map(implicit log =>
-        new TcsPortfolioServiceImpl[F](initialYearsAgo, operationStorage, tcsFacade)
-      )
+      .map(implicit log => new TcsPortfolioServiceImpl[F](config, operationStorage, tcsFacade))
 }

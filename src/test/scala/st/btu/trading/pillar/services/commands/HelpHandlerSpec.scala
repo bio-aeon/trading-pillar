@@ -11,13 +11,13 @@ class HelpHandlerSpec extends Specification with CatsEffect {
   "HelpHandler" >> {
     "handle" >> {
       "replies with every usage line, one per command" >> {
-        val usages = List("/ping - health check", "/info - portfolio positions")
+        val usages = List("/ping - health check", "/positions - current positions by value")
         for {
           tgGateway <- Fakes.tgGateway()
           handler = new HelpHandler[IO](tgGateway, usages)
           _ <- handler.handle(ChatId(1L), Nil)
           messages <- tgGateway.sentMessages
-        } yield messages.head.message must_== "/ping - health check\n/info - portfolio positions"
+        } yield messages.head.message must_== "/ping - health check\n/positions - current positions by value"
       }
     }
   }

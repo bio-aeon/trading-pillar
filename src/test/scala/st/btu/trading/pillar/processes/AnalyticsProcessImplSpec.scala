@@ -7,7 +7,7 @@ import st.btu.trading.pillar.alerts.{AlertDispatcher, AlertKind, SystemAlerts}
 import st.btu.trading.pillar.analytics.portfolio.*
 import st.btu.trading.pillar.data.{ProcessContext, UtcClock}
 import st.btu.trading.pillar.models.Account
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Broker, Currency, Figi}
 import st.btu.trading.pillar.storages.{
   AccountStorage,
   AllocationTargetStorage,
@@ -31,7 +31,7 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
   private val fastConfig = AnalyticsConfig(interval = 10.millis, recomputeDays = 30)
 
   private def account(id: AccountId, name: String): Account =
-    Account(id, name, ZonedDateTime.now)
+    Account(id, name, Broker.Tinkoff, ZonedDateTime.now)
 
   private def position(
     instrumentType: String,

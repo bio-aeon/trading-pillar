@@ -405,7 +405,7 @@ about *when* to raise anything; that policy lives in the caller.
 | `PriceHistorySyncProcessImpl` | `sync-recovered:<ticker>` | The next `syncSymbol` success for a ticker that previously crossed the failure threshold (tracked in-process, independently of `FailureTracker`'s own per-key count, so it pairs 1:1 with a `sync-failed` that was actually raised) |
 | `PriceHistorySyncProcessImpl` | `process-crashed:price-history-sync` | The loop-level `handleErrorWith` catches an otherwise-uncaught exception from a sync batch |
 | `AlertProcessImpl` | `process-crashed:alerts` | The loop-level `handleErrorWith` catches an otherwise-uncaught exception from an evaluation batch |
-| `TcsPortfolioSyncProcessImpl` | `process-crashed:tcs-portfolio-sync` | The per-account loop-level `handleErrorWith` catches an otherwise-uncaught exception |
+| `TcsPortfolioSyncProcessImpl` | `process-crashed:tcs-portfolio-sync:<accountId>` | The loop-level `handleErrorWith` of one account's loop catches an otherwise-uncaught exception, from the sync or from recording the account's stored operations again at startup. Each account has a loop, and an alert name, of its own |
 
 `PriceHistorySyncProcessImpl.create` and `AlertProcessImpl.create` both take `SystemAlerts[F]` (and
 `PriceHistorySyncProcessImpl` also a `FailureTracker[F]`) as required constructor/`create`

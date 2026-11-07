@@ -6,7 +6,6 @@ sealed abstract class Command(val value: String) extends StringEnumEntry
 
 object Command extends StringEnum[Command] {
   case object Ping extends Command("ping")
-  case object Info extends Command("info")
   case object Watchlist extends Command("watchlist")
   case object Source extends Command("source")
   case object Strategies extends Command("strategies")
