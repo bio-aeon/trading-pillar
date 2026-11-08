@@ -1,6 +1,6 @@
 package st.btu.trading.pillar.models.domain
 
-import java.time.Instant
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 /** One change to an account at a broker, in terms shared by every broker. Each broker's adapter
   * translates that broker's own records into these.
@@ -38,4 +38,8 @@ final case class AccountOperation(
   amount: BigDecimal,
   currency: Currency,
   brokerType: BrokerOperationType
-)
+) {
+
+  /** The UTC calendar date of `occurredAt`, the day every reader attributes the operation to. */
+  def occurredOn: LocalDate = LocalDate.ofInstant(occurredAt, ZoneOffset.UTC)
+}

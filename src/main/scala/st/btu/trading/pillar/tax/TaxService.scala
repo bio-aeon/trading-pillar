@@ -17,8 +17,8 @@ trait TaxService[F[_]] {
   /** `accountId`'s estimated tax picture for `year`. */
   def annualReport(accountId: AccountId, year: Int): F[AnnualTaxReport]
 
-  /** `ticker`'s open FIFO lots for `accountId`, oldest first, across every figi the ticker has (one
-    * per board); empty if there is no open position.
+  /** `ticker`'s open FIFO lots for `accountId`, oldest first, across every instrument the ticker
+    * has (one per board); empty if there is no open position.
     */
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]]
 }

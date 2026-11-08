@@ -13,11 +13,13 @@ ports such as storage traits and alert channels, and leaves persistence, configu
 credentials and user strategies to the applications that consume it.
 
 Strategies, backtests, alerts and the analytics math don't depend on a broker; the portfolio side
-(operations sync, valuation, tax lots) is built on Tinkoff Invest. The sync runs for each Tinkoff
-account a consumer gives it and records every operation as Tinkoff sent it together with its
-translation into the broker-neutral `AccountOperation`. Until the readers move to the translations,
-the valuation, the tax services and `/export` still read the Tinkoff records. `Source` is a closed
-set of data sources, so supporting another broker's data means changing the library.
+reads the broker-neutral `AccountOperation`s, and only the operations sync and the instrument
+directory are Tinkoff's. The sync runs for each Tinkoff account a consumer gives it and records
+every operation as Tinkoff sent it together with its translation into an `AccountOperation`. The
+valuation, the tax services and `/export` read those translations, and an instrument is looked up
+by its `InstrumentKey`, the broker and the id that broker gives it, through a directory per broker.
+`Source` is a closed set of data sources, so supporting another broker's data means changing the
+library.
 
 The artifact is `st.btu %% trading-pillar % 0.1.0-SNAPSHOT`. Consumers build against a locally
 published snapshot, so run `sbt publishLocal` after a change they need to see.
@@ -53,7 +55,7 @@ Package root `st.btu.trading.pillar`:
 | Package | Contents |
 |---|---|
 | `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
-| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router and the `InstrumentDirectory` port; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
+| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router, the `InstrumentDirectory` port and its `RoutingInstrumentDirectory` router; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |

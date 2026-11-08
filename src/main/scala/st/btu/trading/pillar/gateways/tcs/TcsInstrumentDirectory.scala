@@ -15,15 +15,16 @@ import ru.tinkoff.piapi.contract.v1.instruments.{
 import st.btu.trading.pillar.data.UtcClock
 import st.btu.trading.pillar.facades.TcsGrpc
 import st.btu.trading.pillar.gateways.InstrumentDirectory
-import st.btu.trading.pillar.models.domain.{Currency, Figi}
+import st.btu.trading.pillar.models.domain.{Broker, BrokerInstrumentId, Currency, InstrumentKey}
 import st.btu.trading.pillar.models.market.{BrokerInstrument, ClassCode, Ticker}
 import st.btu.trading.pillar.models.tcs
 import st.btu.trading.pillar.storages.BrokerInstrumentStorage
 import tofu.lift.Lift
 
-/** An [[InstrumentDirectory]] over Tinkoff Invest. A FIGI already in the storage is answered from
-  * it; any other is fetched from the broker and, when the broker knows it, stored, so a FIGI the
-  * broker knows is fetched once. A stored record is never refreshed.
+/** An [[InstrumentDirectory]] over Tinkoff Invest, whose instrument ids are FIGIs. A key already in
+  * the storage is answered from it; any other is fetched from the broker and, when the broker knows
+  * it, stored, so an instrument the broker knows is fetched once. A stored record is never
+  * refreshed.
   */
 final class TcsInstrumentDirectory[F[_]] private (
   instruments: InstrumentsServiceFs2Grpc[F, Unit],
@@ -31,23 +32,32 @@ final class TcsInstrumentDirectory[F[_]] private (
 )(implicit F: MonadThrow[F], clock: Clock[F])
     extends InstrumentDirectory[F] {
 
-  def byFigi(figi: Figi): F[Option[BrokerInstrument]] =
-    storage.find(figi).flatMap {
-      case stored @ Some(_) => F.pure(stored)
-      case None => fetchAndStore(figi)
+  def byKey(key: InstrumentKey): F[Option[BrokerInstrument]] =
+    key.broker match {
+      case Broker.Tinkoff => lookUp(key)
     }
 
-  private def fetchAndStore(figi: Figi): F[Option[BrokerInstrument]] =
-    fetch(figi).flatMap {
+  private def lookUp(key: InstrumentKey): F[Option[BrokerInstrument]] =
+    storage.find(key).flatMap {
+      case stored @ Some(_) => F.pure(stored)
+      case None => fetchAndStore(key)
+    }
+
+  private def fetchAndStore(key: InstrumentKey): F[Option[BrokerInstrument]] =
+    fetch(key).flatMap {
       case Some(instrument) =>
         toBrokerInstrument(instrument).flatMap(known => storage.upsert(known).as(known.some))
       case None => F.pure(None)
     }
 
-  // A FIGI the broker does not know is an answer (None), not a failure.
-  private def fetch(figi: Figi): F[Option[Instrument]] = {
+  // An instrument the broker does not know is an answer (None), not a failure.
+  private def fetch(key: InstrumentKey): F[Option[Instrument]] = {
     val request =
-      InstrumentRequest(InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, classCode = None, id = figi.value)
+      InstrumentRequest(
+        InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
+        classCode = None,
+        id = key.id.value
+      )
     F.adaptError(
       instruments
         .getInstrumentBy(request, ())
@@ -59,9 +69,9 @@ final class TcsInstrumentDirectory[F[_]] private (
   private def toBrokerInstrument(instrument: Instrument): F[BrokerInstrument] =
     UtcClock.nowUtc[F].map { now =>
       BrokerInstrument(
-        Figi(instrument.figi),
+        InstrumentKey(Broker.Tinkoff, BrokerInstrumentId(instrument.figi)),
         Ticker(instrument.ticker),
-        ClassCode(instrument.classCode),
+        Option(instrument.classCode).filter(_.nonEmpty).map(ClassCode(_)),
         instrument.name,
         instrument.instrumentType,
         Currency(instrument.currency),

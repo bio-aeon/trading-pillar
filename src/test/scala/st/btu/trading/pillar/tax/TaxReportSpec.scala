@@ -1,10 +1,11 @@
 package st.btu.trading.pillar.tax
 
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.testkit.AnalyticsFakes
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
-import java.time.{LocalDate, ZoneOffset}
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 class TaxReportSpec extends Specification {
 
@@ -12,29 +13,33 @@ class TaxReportSpec extends Specification {
   private val rub = Currency("RUB")
   private val usd = Currency("USD")
 
+  private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
+
   private def rg(
-    figi: String,
+    instrument: String,
     sellDate: LocalDate,
     gain: BigDecimal,
     holdingDays: Long,
-    quantity: Long = 1
+    quantity: BigDecimal = 1
   ): RealizedGain =
-    RealizedGain(Figi(figi), None, sellDate, quantity, gain, 0, gain, holdingDays)
+    RealizedGain(instrumentKey(instrument), None, sellDate, quantity, gain, 0, gain, holdingDays)
 
   private def op(
-    opType: String,
+    kind: OperationKind,
     amount: BigDecimal,
     date: LocalDate,
-    figi: Option[String] = None,
-    currency: String = "RUB"
-  ) =
-    AnalyticsFakes.operation(
+    instrument: Option[String] = None,
+    currency: String = "RUB",
+    state: OperationState = OperationState.Executed
+  ): AccountOperation =
+    AnalyticsFakes.accountOperation(
       accountId,
-      opType,
+      kind,
       amount,
-      date.atStartOfDay(ZoneOffset.UTC),
-      figi,
-      currency = currency
+      at(date),
+      instrument,
+      currency = currency,
+      state = state
     )
 
   private val noRate: (Currency, LocalDate) => Option[BigDecimal] = (_, _) => None
@@ -45,7 +50,7 @@ class TaxReportSpec extends Specification {
       "sums realized gains and taxes them at the lower rate under the threshold" >> {
         val ledger =
           LotLedger(Map.empty, List(rg("F1", LocalDate.of(2025, 6, 1), 600, 30)), Map.empty)
-        val ops = List(op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2024, 1, 1), Some("F1")))
+        val ops = List(op(OperationKind.Buy, -1000, LocalDate.of(2024, 1, 1), Some("F1")))
 
         val report = TaxReport.annual(2025, ledger, ops, noRate)
 
@@ -64,7 +69,7 @@ class TaxReportSpec extends Specification {
         val shortTermGain = rg("F1", LocalDate.of(year, 5, 1), 300, holdingDays = 100)
         val ledger =
           LotLedger(Map.empty, List(longTermGain, longTermLoss, shortTermGain), Map.empty)
-        val ops = List(op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2020, 1, 1), Some("F1")))
+        val ops = List(op(OperationKind.Buy, -1000, LocalDate.of(2020, 1, 1), Some("F1")))
 
         val report = TaxReport.annual(year, ledger, ops, noRate)
 
@@ -78,7 +83,7 @@ class TaxReportSpec extends Specification {
         val longTermGain = rg("F1", LocalDate.of(year, 3, 1), 500, holdingDays = 1200)
         val shortTermLoss = rg("F1", LocalDate.of(year, 4, 1), -900, holdingDays = 50)
         val ledger = LotLedger(Map.empty, List(longTermGain, shortTermLoss), Map.empty)
-        val ops = List(op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2020, 1, 1), Some("F1")))
+        val ops = List(op(OperationKind.Buy, -1000, LocalDate.of(2020, 1, 1), Some("F1")))
 
         val report = TaxReport.annual(year, ledger, ops, noRate)
 
@@ -93,7 +98,7 @@ class TaxReportSpec extends Specification {
         val longTermGain = rg("F1", LocalDate.of(year, 3, 1), 500, holdingDays = 1200)
         val shortTermGain = rg("F1", LocalDate.of(year, 5, 1), 300, holdingDays = 100)
         val ledger = LotLedger(Map.empty, List(longTermGain, shortTermGain), Map.empty)
-        val ops = List(op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2020, 1, 1), Some("F1")))
+        val ops = List(op(OperationKind.Buy, -1000, LocalDate.of(2020, 1, 1), Some("F1")))
 
         val report = TaxReport.annual(year, ledger, ops, noRate, TaxConfig(longTermYears = None))
 
@@ -105,7 +110,7 @@ class TaxReportSpec extends Specification {
         val year = 2025
         val ledger =
           LotLedger(Map.empty, List(rg("F1", LocalDate.of(year, 6, 1), 2500, 10)), Map.empty)
-        val ops = List(op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2024, 1, 1), Some("F1")))
+        val ops = List(op(OperationKind.Buy, -1000, LocalDate.of(2024, 1, 1), Some("F1")))
         val config = TaxConfig(
           progressiveThreshold = BigDecimal(1000),
           lowerRate = BigDecimal("0.10"),
@@ -126,8 +131,8 @@ class TaxReportSpec extends Specification {
         val unconvertibleLongTermGain = rg("FEU", LocalDate.of(year, 4, 1), 50, holdingDays = 2000)
         val ledger = LotLedger(Map.empty, List(usGain, unconvertibleLongTermGain), Map.empty)
         val ops = List(
-          op("OPERATION_TYPE_BUY", -900, LocalDate.of(2024, 1, 1), Some("FUS"), currency = "USD"),
-          op("OPERATION_TYPE_BUY", -900, LocalDate.of(2024, 1, 1), Some("FEU"), currency = "EUR")
+          op(OperationKind.Buy, -900, LocalDate.of(2024, 1, 1), Some("FUS"), currency = "USD"),
+          op(OperationKind.Buy, -900, LocalDate.of(2024, 1, 1), Some("FEU"), currency = "EUR")
         )
         val fxRate: (Currency, LocalDate) => Option[BigDecimal] =
           (ccy, _) => if (ccy == usd) Some(BigDecimal(90)) else None
@@ -140,41 +145,70 @@ class TaxReportSpec extends Specification {
         report.unconverted must_== 1
       }
 
-      "sums dividend and coupon income and withheld tax as a positive magnitude, for the requested year only" >> {
+      "income and tax of the year" >> {
+
         val year = 2025
-        val dividend = op("OPERATION_TYPE_DIVIDEND", 100, LocalDate.of(year, 5, 1))
-        val coupon = op("OPERATION_TYPE_COUPON", 50, LocalDate.of(year, 6, 1))
-        val withheld = op("OPERATION_TYPE_DIVIDEND_TAX", -13, LocalDate.of(year, 5, 1))
-        val lastYearDividend = op("OPERATION_TYPE_DIVIDEND", 9999, LocalDate.of(year - 1, 12, 31))
-        val unrelatedBuy = op("OPERATION_TYPE_BUY", -500, LocalDate.of(year, 1, 1), Some("F1"))
-        val ops = List(dividend, coupon, withheld, lastYearDividend, unrelatedBuy)
 
-        val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
+        "sums dividend and coupon income and the tax withheld, for the requested year only" >> {
+          val dividend = op(OperationKind.Dividend, 100, LocalDate.of(year, 5, 1))
+          val coupon = op(OperationKind.Coupon, 50, LocalDate.of(year, 6, 1))
+          val withheld = op(OperationKind.Tax, -13, LocalDate.of(year, 5, 1))
+          val lastYearDividend =
+            op(OperationKind.Dividend, 9999, LocalDate.of(year - 1, 12, 31))
+          val lastYearTax = op(OperationKind.Tax, -777, LocalDate.of(year - 1, 12, 31))
+          val unrelatedBuy = op(OperationKind.Buy, -500, LocalDate.of(year, 1, 1), Some("F1"))
+          val ops = List(dividend, coupon, withheld, lastYearDividend, lastYearTax, unrelatedBuy)
 
-        report.dividendIncome must_== BigDecimal(100)
-        report.couponIncome must_== BigDecimal(50)
-        report.taxesWithheld must_== BigDecimal(13)
-        report.realizedGains must_== BigDecimal(0)
-        report.estimatedTax must_== BigDecimal(0)
-      }
+          val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
 
-      "treats tax-correction and its progressive and repo siblings as withheld, but not the coupon correction variant" >> {
-        val year = 2025
-        def taxOp(opType: String, amount: BigDecimal) =
-          op(opType, amount, LocalDate.of(year, 1, 15))
-        val ops = List(
-          taxOp("OPERATION_TYPE_TAX_CORRECTION", -10),
-          taxOp("OPERATION_TYPE_TAX_CORRECTION_PROGRESSIVE", -20),
-          taxOp("OPERATION_TYPE_TAX_REPO_HOLD", -5),
-          taxOp("OPERATION_TYPE_TAX_REPO_REFUND", -3),
-          taxOp("OPERATION_TYPE_TAX_CORRECTION_COUPON", -9999)
-        )
+          report.dividendIncome must_== BigDecimal(100)
+          report.couponIncome must_== BigDecimal(50)
+          report.taxesWithheld must_== BigDecimal(13)
+          report.realizedGains must_== BigDecimal(0)
+          report.estimatedTax must_== BigDecimal(0)
+        }
 
-        val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
+        "lowers the tax withheld by a refund" >> {
+          val ops = List(
+            op(OperationKind.Tax, -13, LocalDate.of(year, 5, 1)),
+            op(OperationKind.Tax, -20, LocalDate.of(year, 6, 1)),
+            op(OperationKind.Tax, 4, LocalDate.of(year, 12, 20))
+          )
 
-        report.taxesWithheld must_== BigDecimal(
-          38
-        ) // 10 + 20 + 5 + 3, excluding TAX_CORRECTION_COUPON
+          val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
+
+          report.taxesWithheld must_== BigDecimal(29) // 13 + 20 - 4
+        }
+
+        "is negative when the refunds of the year exceed the tax withheld in it" >> {
+          val ops = List(
+            op(OperationKind.Tax, -5, LocalDate.of(year, 5, 1)),
+            op(OperationKind.Tax, 8, LocalDate.of(year, 12, 20))
+          )
+
+          val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
+
+          report.taxesWithheld must_== BigDecimal(-3)
+        }
+
+        "leaves out operations that are not executed" >> {
+          val ops = List(
+            op(OperationKind.Dividend, 100, LocalDate.of(year, 5, 1)),
+            op(
+              OperationKind.Dividend,
+              999,
+              LocalDate.of(year, 5, 2),
+              state = OperationState.Canceled
+            ),
+            op(OperationKind.Tax, -13, LocalDate.of(year, 5, 1)),
+            op(OperationKind.Tax, -999, LocalDate.of(year, 5, 2), state = OperationState.Pending)
+          )
+
+          val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
+
+          report.dividendIncome must_== BigDecimal(100)
+          report.taxesWithheld must_== BigDecimal(13)
+        }
       }
     }
   }

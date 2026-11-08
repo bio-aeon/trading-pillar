@@ -8,7 +8,7 @@ import cats.syntax.functor.*
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.gateways.*
 import st.btu.trading.pillar.gateways.yahoo.{YahooApi, YahooChart, YahooDividend, YahooMetadata}
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.services.{PriceHistorySyncService, SyncReport}
 import st.btu.trading.pillar.storages.*
@@ -296,29 +296,36 @@ object MarketDataFakes {
   def brokerInstrumentStorage(
     initial: List[BrokerInstrument] = List.empty
   ): IO[FakeBrokerInstrumentStorage] =
-    Ref.of[IO, Map[Figi, BrokerInstrument]](initial.map(i => i.figi -> i).toMap).map { ref =>
-      new FakeBrokerInstrumentStorage {
-        def find(figi: Figi): IO[Option[BrokerInstrument]] = ref.get.map(_.get(figi))
+    Ref
+      .of[IO, Map[InstrumentKey, BrokerInstrument]](initial.map(i => i.instrument -> i).toMap)
+      .map { ref =>
+        new FakeBrokerInstrumentStorage {
+          def find(instrument: InstrumentKey): IO[Option[BrokerInstrument]] =
+            ref.get.map(_.get(instrument))
 
-        def upsert(instrument: BrokerInstrument): IO[Unit] =
-          ref.update(_.updated(instrument.figi, instrument))
+          def upsert(instrument: BrokerInstrument): IO[Unit] =
+            ref.update(_.updated(instrument.instrument, instrument))
 
-        def all: IO[List[BrokerInstrument]] = ref.get.map(_.values.toList)
+          def all: IO[List[BrokerInstrument]] = ref.get.map(_.values.toList)
+        }
       }
-    }
+
+  // The key of an instrument at Tinkoff, whose ids are FIGIs.
+  def instrumentKey(instrumentId: String): InstrumentKey =
+    InstrumentKey(Broker.Tinkoff, BrokerInstrumentId(instrumentId))
 
   // Terse fixture builder: only the fields a spec cares about are named, the rest get arbitrary
-  // but valid values.
+  // but valid values. The instrument is a Tinkoff one.
   def brokerInstrument(
-    figi: String,
+    instrumentId: String,
     ticker: Ticker,
     currency: String = "RUB",
     classCode: String = "TQBR"
   ): BrokerInstrument =
     BrokerInstrument(
-      Figi(figi),
+      instrumentKey(instrumentId),
       ticker,
-      ClassCode(classCode),
+      Some(ClassCode(classCode)),
       name = ticker.value,
       instrumentType = "share",
       currency = Currency(currency),
@@ -327,7 +334,8 @@ object MarketDataFakes {
 
   def instrumentDirectory(known: List[BrokerInstrument] = List.empty): IO[InstrumentDirectory[IO]] =
     IO.pure(new InstrumentDirectory[IO] {
-      def byFigi(figi: Figi): IO[Option[BrokerInstrument]] = IO.pure(known.find(_.figi == figi))
+      def byKey(key: InstrumentKey): IO[Option[BrokerInstrument]] =
+        IO.pure(known.find(_.instrument == key))
     })
 
   // --- WatchlistStorage ---

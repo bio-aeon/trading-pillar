@@ -7,9 +7,9 @@ import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import st.btu.trading.pillar.analytics.{FxRates, OperationHistoryYears}
 import st.btu.trading.pillar.gateways.{InstrumentDirectory, MarketDataSources}
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi, TcsPortfolioOperation}
+import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation, Currency, InstrumentKey}
 import st.btu.trading.pillar.models.market.Ticker
-import st.btu.trading.pillar.storages.{PriceHistoryStorage, TcsPortfolioOperationStorage}
+import st.btu.trading.pillar.storages.{AccountOperationStorage, PriceHistoryStorage}
 
 import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 
@@ -18,7 +18,7 @@ import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 // opened long before the report's own year is still on hand to be matched against a sale inside
 // it.
 final class TaxServiceImpl[F[_]: Monad: Clock] private (
-  operations: TcsPortfolioOperationStorage[F],
+  operations: AccountOperationStorage[F],
   directory: InstrumentDirectory[F],
   sources: MarketDataSources[F],
   priceHistory: PriceHistoryStorage[F],
@@ -32,40 +32,44 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
       fxRate <- fxRateFn(ops)
     } yield TaxReport.annual(year, ledger, ops, fxRate, config)
 
-  // Resolves the ticker back to its figis through the same tickerByFigi mapping buildLedger already
-  // computed, because the directory only looks up by figi. A ticker can have a figi per board, so
-  // the lots of every one are returned: concatenated in figi order, then stably sorted by date,
-  // which leaves lots acquired on the same date in figi order.
+  // Resolves the ticker back to its instruments through the same tickerByInstrument mapping
+  // buildLedger already computed, because the directory only looks up by key. A ticker can have an
+  // instrument per board, so the lots of every one are returned: concatenated in instrument order,
+  // then stably sorted by date, which leaves lots acquired on the same date in instrument order.
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]] =
     for {
       ops <- loadOperations(accountId)
-      (ledger, tickerByFigi) <- buildLedger(ops)
-    } yield tickerByFigi.toList
-      .collect { case (figi, t) if t == ticker => figi }
-      .sortBy(_.value)
-      .flatMap(figi => ledger.open.getOrElse(figi, Nil))
+      (ledger, tickerByInstrument) <- buildLedger(ops)
+    } yield tickerByInstrument.toList
+      .collect { case (instrument, t) if t == ticker => instrument }
+      .sorted
+      .flatMap(instrument => ledger.open.getOrElse(instrument, Nil))
       .sortBy(_.acquiredOn.toEpochDay)
 
-  private def loadOperations(accountId: AccountId): F[List[TcsPortfolioOperation]] =
-    Clock[F].realTimeInstant.flatMap { instant =>
-      val now = ZonedDateTime.ofInstant(instant, ZoneOffset.UTC)
-      operations
-        .operationsByDtRange(accountId, now.minusYears(OperationHistoryYears.toLong), now)
-        .map(_.toList)
+  private def loadOperations(accountId: AccountId): F[List[AccountOperation]] =
+    Clock[F].realTimeInstant.flatMap { now =>
+      val since =
+        ZonedDateTime
+          .ofInstant(now, ZoneOffset.UTC)
+          .minusYears(OperationHistoryYears.toLong)
+          .toInstant
+      operations.operations(accountId, since, now).map(_.toList)
     }
 
-  // tickerByFigi is resolved once per call, over the distinct figis actually present in `ops` - at
-  // most one InstrumentDirectory lookup per figi, not per operation. Returned alongside the ledger
-  // so openLots can resolve a ticker back to its figis through the very same mapping.
-  private def buildLedger(ops: List[TcsPortfolioOperation]): F[(LotLedger, Map[Figi, Ticker])] =
+  // tickerByInstrument is resolved once per call, over the distinct instruments actually present
+  // in `ops` - at most one InstrumentDirectory lookup per instrument, not per operation. Returned
+  // alongside the ledger so openLots can resolve a ticker back to its instruments through the very
+  // same mapping.
+  private def buildLedger(ops: List[AccountOperation]): F[(LotLedger, Map[InstrumentKey, Ticker])] =
     ops.iterator
-      .flatMap(_.figi)
+      .flatMap(_.instrument)
       .toSet
       .toVector
-      .traverse(figi => directory.byFigi(figi).map(found => figi -> found.map(_.ticker)))
+      .traverse(key => directory.byKey(key).map(found => key -> found.map(_.ticker)))
       .map { pairs =>
-        val tickerByFigi = pairs.collect { case (figi, Some(ticker)) => figi -> ticker }.toMap
-        (TaxLots.fifo(ops, tickerByFigi.get), tickerByFigi)
+        val tickerByInstrument =
+          pairs.collect { case (key, Some(ticker)) => key -> ticker }.toMap
+        (TaxLots.fifo(ops, tickerByInstrument.get), tickerByInstrument)
       }
 
   // One PriceHistoryStorage.bars call per non-base currency actually used by `ops`, on the source
@@ -73,7 +77,7 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   // loadOperations reads from - then a plain, F-free lookup function TaxReport.annual can call as
   // many times as it needs.
   private def fxRateFn(
-    ops: List[TcsPortfolioOperation]
+    ops: List[AccountOperation]
   ): F[(Currency, LocalDate) => Option[BigDecimal]] =
     Clock[F].realTimeInstant.flatMap { instant =>
       val today = LocalDate.ofInstant(instant, ZoneOffset.UTC)
@@ -103,11 +107,11 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
 
 object TaxServiceImpl {
 
-  /** Wires a [[TaxService]] that maps FIGIs through `directory` and reads exchange rates from
-    * `priceHistory` as `sources` configures them.
+  /** Wires a [[TaxService]] over the operations in `operations` that maps instruments through
+    * `directory` and reads exchange rates from `priceHistory` as `sources` configures them.
     */
   def create[F[_]: Monad: Clock](
-    operations: TcsPortfolioOperationStorage[F],
+    operations: AccountOperationStorage[F],
     directory: InstrumentDirectory[F],
     sources: MarketDataSources[F],
     priceHistory: PriceHistoryStorage[F],

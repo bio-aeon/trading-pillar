@@ -32,6 +32,66 @@ object AnalyticsFakes {
       def allAccounts: IO[List[Account]] = result
     })
 
+  // --- AccountOperationStorage ---
+
+  // Serves the operations as the port promises: those that occurred from `since` until `until`,
+  // oldest first, in ref order among those at the same instant.
+  def accountOperationStorage(
+    stored: List[AccountOperation] = List.empty
+  ): IO[AccountOperationStorage[IO]] =
+    IO.pure(new AccountOperationStorage[IO] {
+      def operations(
+        accountId: AccountId,
+        since: Instant,
+        until: Instant
+      ): IO[Vector[AccountOperation]] =
+        IO.pure(operationsInRange(stored, accountId, since, until))
+    })
+
+  private def operationsInRange(
+    stored: List[AccountOperation],
+    accountId: AccountId,
+    since: Instant,
+    until: Instant
+  ): Vector[AccountOperation] =
+    stored
+      .filter { op =>
+        op.accountId == accountId && !op.occurredAt.isBefore(since) && op.occurredAt.isBefore(until)
+      }
+      .sortBy(op => (op.occurredAt, op.ref.value))
+      .toVector
+
+  private val refCounter = new AtomicLong(0)
+
+  // Terse fixture builder for an AccountOperation: `instrument` is the id of a Tinkoff instrument,
+  // and every field a spec does not name gets an arbitrary but valid value, a ref of its own
+  // included. `quantity` is signed, positive for what grows a position.
+  def accountOperation(
+    accountId: AccountId,
+    kind: OperationKind,
+    amount: BigDecimal,
+    occurredAt: Instant,
+    instrument: Option[String] = None,
+    quantity: BigDecimal = 0,
+    currency: String = "RUB",
+    state: OperationState = OperationState.Executed,
+    price: Option[BigDecimal] = None,
+    brokerType: Option[String] = None
+  ): AccountOperation =
+    AccountOperation(
+      accountId,
+      OperationRef(f"ref-${refCounter.incrementAndGet()}%06d"),
+      kind,
+      state,
+      occurredAt,
+      instrument.map(MarketDataFakes.instrumentKey),
+      quantity,
+      price,
+      amount,
+      Currency(currency),
+      BrokerOperationType(brokerType.getOrElse(kind.value))
+    )
+
   // --- TcsPortfolioOperationStorage ---
 
   // Also the read port of the shared operations, over the translations the records carried.
@@ -78,10 +138,7 @@ object AnalyticsFakes {
         since: Instant,
         until: Instant
       ): IO[Vector[AccountOperation]] =
-        translationsRef.get.map(_.filter { op =>
-          op.accountId == accountId && !op.occurredAt.isBefore(since) && op.occurredAt
-            .isBefore(until)
-        }.sortBy(op => (op.occurredAt, op.ref.value)).toVector)
+        translationsRef.get.map(operationsInRange(_, accountId, since, until))
 
       def recordedBatchSizes: IO[List[Int]] = batchSizesRef.get
     }
@@ -106,10 +163,10 @@ object AnalyticsFakes {
     if (at < 0) stored :+ translation else stored.updated(at, translation)
   }
 
-  // Terse fixture builder for a TcsPortfolioOperation; every field irrelevant to the valuation
-  // pipeline gets an arbitrary but valid default.
   private val idCounter = new AtomicLong(0)
 
+  // Terse fixture builder for a TcsPortfolioOperation: every field a spec does not name gets an
+  // arbitrary but valid value.
   def operation(
     accountId: AccountId,
     operationType: String,

@@ -7,7 +7,7 @@ import st.btu.trading.pillar.alerts.{AlertDispatcher, AlertKind, SystemAlerts}
 import st.btu.trading.pillar.analytics.portfolio.*
 import st.btu.trading.pillar.data.{ProcessContext, UtcClock}
 import st.btu.trading.pillar.models.Account
-import st.btu.trading.pillar.models.domain.{AccountId, Broker, Currency, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Broker, Currency}
 import st.btu.trading.pillar.storages.{
   AccountStorage,
   AllocationTargetStorage,
@@ -15,7 +15,7 @@ import st.btu.trading.pillar.storages.{
   PortfolioValuationStorage
 }
 import st.btu.trading.pillar.testkit.{AlertFakes, AnalyticsFakes, MarketDataFakes}
-import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
+import st.btu.trading.pillar.testkit.MarketDataFakes.{delayForIO, instrumentKey}
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
@@ -39,7 +39,7 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
     currency: Option[String] = None
   ): PositionValue =
     PositionValue(
-      Figi("F1"),
+      instrumentKey("F1"),
       ticker = None,
       name = None,
       instrumentType = Some(instrumentType),

@@ -3,12 +3,12 @@ package st.btu.trading.pillar.tax
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi, TcsPortfolioOperation}
+import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation, Currency, OperationKind}
 import st.btu.trading.pillar.models.market.*
-import st.btu.trading.pillar.testkit.MarketDataFakes.brokerInstrument
+import st.btu.trading.pillar.testkit.MarketDataFakes.{brokerInstrument, instrumentKey}
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, MarketDataFakes}
 
-import java.time.{LocalDate, ZoneOffset}
+import java.time.{Instant, LocalDate, ZoneOffset}
 
 class TaxServiceImplSpec extends Specification with CatsEffect {
 
@@ -16,29 +16,32 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
   private val rub = Currency("RUB")
   private val usd = Currency("USD")
 
+  private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
+
+  // `quantity` is signed, positive for what grows a position.
   private def op(
-    opType: String,
+    kind: OperationKind,
     amount: BigDecimal,
     date: LocalDate,
-    figi: Option[String] = None,
-    quantity: Int = 0,
+    instrument: Option[String] = None,
+    quantity: BigDecimal = 0,
     currency: String = "RUB"
   ) =
-    AnalyticsFakes.operation(
+    AnalyticsFakes.accountOperation(
       accountId,
-      opType,
+      kind,
       amount,
-      date.atStartOfDay(ZoneOffset.UTC),
-      figi,
+      at(date),
+      instrument,
       quantity,
       currency
     )
 
   // Five shares bought for 500 dollars and sold for 700 in 2024.
-  private val dollarRoundTrip: List[TcsPortfolioOperation] =
+  private val dollarRoundTrip: List[AccountOperation] =
     List(
       op(
-        "OPERATION_TYPE_BUY",
+        OperationKind.Buy,
         -500,
         LocalDate.of(2024, 1, 1),
         Some("FIGI2"),
@@ -46,11 +49,11 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
         currency = "USD"
       ),
       op(
-        "OPERATION_TYPE_SELL",
+        OperationKind.Sell,
         700,
         LocalDate.of(2024, 2, 1),
         Some("FIGI2"),
-        quantity = 5,
+        quantity = -5,
         currency = "USD"
       )
     )
@@ -62,17 +65,17 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
     source: Source = Source.Yahoo
   ): Bar = Bar(ticker, date, close, close, close, close, close, 0, source)
 
-  // `directory` is what the broker knows by FIGI; `settings` set individual tickers to a source,
-  // the rest use the default, Yahoo.
+  // `directory` is what the broker knows by instrument id; `settings` set individual tickers to a
+  // source, the rest use the default, Yahoo.
   private def build(
-    ops: List[TcsPortfolioOperation],
+    ops: List[AccountOperation],
     directory: List[BrokerInstrument] = Nil,
     bars: List[Bar] = Nil,
     settings: List[TickerSource] = Nil,
     config: TaxConfig = TaxConfig()
   ): IO[TaxService[IO]] =
     for {
-      operations <- AnalyticsFakes.tcsPortfolioOperationStorage(ops)
+      operations <- AnalyticsFakes.accountOperationStorage(ops)
       instrumentDirectory <- MarketDataFakes.instrumentDirectory(directory)
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       sources <- MarketDataFakes.marketDataSources(settings = settings)
@@ -84,10 +87,10 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
 
       "builds the ledger from stored operations and reports gains, dividends and withheld tax" >> {
         val ops = List(
-          op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2024, 1, 1), Some("FIGI1"), quantity = 10),
-          op("OPERATION_TYPE_SELL", 1800, LocalDate.of(2024, 6, 1), Some("FIGI1"), quantity = 10),
-          op("OPERATION_TYPE_DIVIDEND", 50, LocalDate.of(2024, 7, 1)),
-          op("OPERATION_TYPE_DIVIDEND_TAX", -5, LocalDate.of(2024, 7, 1))
+          op(OperationKind.Buy, -1000, LocalDate.of(2024, 1, 1), Some("FIGI1"), quantity = 10),
+          op(OperationKind.Sell, 1800, LocalDate.of(2024, 6, 1), Some("FIGI1"), quantity = -10),
+          op(OperationKind.Dividend, 50, LocalDate.of(2024, 7, 1)),
+          op(OperationKind.Tax, -5, LocalDate.of(2024, 7, 1))
         )
         for {
           service <- build(ops, directory = List(brokerInstrument("FIGI1", Ticker("AAA"))))
@@ -167,7 +170,7 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
 
         "reports amounts in the configured base currency without converting them" >> {
           val dividend =
-            op("OPERATION_TYPE_DIVIDEND", 50, LocalDate.of(2024, 7, 1), currency = "USD")
+            op(OperationKind.Dividend, 50, LocalDate.of(2024, 7, 1), currency = "USD")
           for {
             service <- build(List(dividend), config = TaxConfig(baseCurrency = usd))
             report <- service.annualReport(accountId, 2024)
@@ -184,37 +187,37 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
 
       "returns a ticker's open lots, oldest first, found through the directory" >> {
         val ops = List(
-          op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2019, 1, 1), Some("FIGI3"), quantity = 10),
-          op("OPERATION_TYPE_BUY", -600, LocalDate.of(2020, 1, 1), Some("FIGI3"), quantity = 5)
+          op(OperationKind.Buy, -1000, LocalDate.of(2019, 1, 1), Some("FIGI3"), quantity = 10),
+          op(OperationKind.Buy, -600, LocalDate.of(2020, 1, 1), Some("FIGI3"), quantity = 5)
         )
         for {
           service <- build(ops, directory = List(brokerInstrument("FIGI3", Ticker("CCC"))))
           lots <- service.openLots(accountId, Ticker("CCC"))
         } yield lots must_== List(
-          Lot(Figi("FIGI3"), 10, 100, LocalDate.of(2019, 1, 1)),
-          Lot(Figi("FIGI3"), 5, 120, LocalDate.of(2020, 1, 1))
+          Lot(instrumentKey("FIGI3"), 10, 100, LocalDate.of(2019, 1, 1)),
+          Lot(instrumentKey("FIGI3"), 5, 120, LocalDate.of(2020, 1, 1))
         )
       }
 
       "keeps lots of different tickers apart" >> {
         val ops = List(
-          op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2019, 1, 1), Some("FIGI3"), quantity = 10),
-          op("OPERATION_TYPE_BUY", -600, LocalDate.of(2020, 1, 1), Some("FIGI4"), quantity = 5)
+          op(OperationKind.Buy, -1000, LocalDate.of(2019, 1, 1), Some("FIGI3"), quantity = 10),
+          op(OperationKind.Buy, -600, LocalDate.of(2020, 1, 1), Some("FIGI4"), quantity = 5)
         )
         val directory =
           List(brokerInstrument("FIGI3", Ticker("CCC")), brokerInstrument("FIGI4", Ticker("DDD")))
         for {
           service <- build(ops, directory)
           lots <- service.openLots(accountId, Ticker("DDD"))
-        } yield lots must_== List(Lot(Figi("FIGI4"), 5, 120, LocalDate.of(2020, 1, 1)))
+        } yield lots must_== List(Lot(instrumentKey("FIGI4"), 5, 120, LocalDate.of(2020, 1, 1)))
       }
 
-      "returns the lots of every figi a ticker has, oldest first, same-day lots in figi order" >> {
-        // One ticker on two boards, each with its own figi.
+      "returns the lots of every instrument a ticker has, oldest first, same-day lots in instrument order" >> {
+        // One ticker on two boards, each with its own instrument id.
         val ops = List(
-          op("OPERATION_TYPE_BUY", -1000, LocalDate.of(2019, 1, 1), Some("FIGI6"), quantity = 10),
-          op("OPERATION_TYPE_BUY", -600, LocalDate.of(2020, 1, 1), Some("FIGI5"), quantity = 5),
-          op("OPERATION_TYPE_BUY", -150, LocalDate.of(2019, 1, 1), Some("FIGI5"), quantity = 2)
+          op(OperationKind.Buy, -1000, LocalDate.of(2019, 1, 1), Some("FIGI6"), quantity = 10),
+          op(OperationKind.Buy, -600, LocalDate.of(2020, 1, 1), Some("FIGI5"), quantity = 5),
+          op(OperationKind.Buy, -150, LocalDate.of(2019, 1, 1), Some("FIGI5"), quantity = 2)
         )
         val directory =
           List(brokerInstrument("FIGI5", Ticker("EEE")), brokerInstrument("FIGI6", Ticker("EEE")))
@@ -222,9 +225,9 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
           service <- build(ops, directory)
           lots <- service.openLots(accountId, Ticker("EEE"))
         } yield lots must_== List(
-          Lot(Figi("FIGI5"), 2, 75, LocalDate.of(2019, 1, 1)),
-          Lot(Figi("FIGI6"), 10, 100, LocalDate.of(2019, 1, 1)),
-          Lot(Figi("FIGI5"), 5, 120, LocalDate.of(2020, 1, 1))
+          Lot(instrumentKey("FIGI5"), 2, 75, LocalDate.of(2019, 1, 1)),
+          Lot(instrumentKey("FIGI6"), 10, 100, LocalDate.of(2019, 1, 1)),
+          Lot(instrumentKey("FIGI5"), 5, 120, LocalDate.of(2020, 1, 1))
         )
       }
 
@@ -235,11 +238,9 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
         } yield lots must beEmpty
       }
 
-      "returns nothing for a ticker whose figi the directory does not know, even though its operations carry it" >> {
+      "returns nothing for a ticker whose instrument the directory does not know, even though its operations carry it" >> {
         val ops =
-          List(
-            op("OPERATION_TYPE_BUY", -500, LocalDate.of(2019, 1, 1), Some("FIGI4"), quantity = 5)
-          )
+          List(op(OperationKind.Buy, -500, LocalDate.of(2019, 1, 1), Some("FIGI4"), quantity = 5))
         for {
           service <- build(ops)
           lots <- service.openLots(accountId, Ticker("DDD"))

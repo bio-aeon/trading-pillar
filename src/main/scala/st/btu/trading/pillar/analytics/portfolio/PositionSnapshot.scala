@@ -7,8 +7,8 @@ import java.time.LocalDate
 /** A point-in-time view of an account's holdings as of `date`, in `currency`.
   *
   * @param positions
-  *   excludes any instrument whose net quantity as of `date` is exactly zero; order is not
-  *   otherwise significant
+  *   one per instrument whose net quantity as of `date` is not zero; `positionsAsOf` orders them by
+  *   instrument: the broker's value, then the instrument id
   * @param cash
   *   the base-currency total across every operation currency; a currency with no FX rate on or
   *   before `date` is silently excluded

@@ -3,11 +3,12 @@ package st.btu.trading.pillar.services.commands
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Figi}
+import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.tax.{Lot, TaxConfig}
 import st.btu.trading.pillar.testkit.{Fakes, TaxFakes}
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
 import java.time.{LocalDate, ZoneOffset}
 
@@ -21,8 +22,8 @@ class LotsHandlerSpec extends Specification with CatsEffect {
     "handle" >> {
 
       "replies with one line per open lot, marking a long-term (>= 3 years) one" >> {
-        val longTermLot = Lot(Figi("F1"), 10, BigDecimal("102.5"), today.minusDays(1200))
-        val shortTermLot = Lot(Figi("F1"), 5, BigDecimal(200), today.minusDays(10))
+        val longTermLot = Lot(instrumentKey("F1"), 10, BigDecimal("102.5"), today.minusDays(1200))
+        val shortTermLot = Lot(instrumentKey("F1"), 5, BigDecimal(200), today.minusDays(10))
         for {
           tgGateway <- Fakes.tgGateway()
           taxService <- TaxFakes.taxService(
@@ -43,7 +44,7 @@ class LotsHandlerSpec extends Specification with CatsEffect {
       }
 
       "marks no lot long-term under a regime without a long-term exemption" >> {
-        val longHeldLot = Lot(Figi("F1"), 10, BigDecimal("102.5"), today.minusDays(1200))
+        val longHeldLot = Lot(instrumentKey("F1"), 10, BigDecimal("102.5"), today.minusDays(1200))
         for {
           tgGateway <- Fakes.tgGateway()
           taxService <- TaxFakes.taxService(
@@ -55,6 +56,21 @@ class LotsHandlerSpec extends Specification with CatsEffect {
           messages <- tgGateway.sentMessages
         } yield messages.head.message must_==
           s"10 @ 102.50 acquired ${today.minusDays(1200)} (1200 day(s))"
+      }
+
+      "prints a quantity as plain digits, without trailing zeros or an exponent" >> {
+        val fraction = Lot(instrumentKey("F1"), BigDecimal("0.300000000000000000"), 800, today)
+        val whole = Lot(instrumentKey("F1"), BigDecimal("2E+1"), 5, today)
+        for {
+          tgGateway <- Fakes.tgGateway()
+          taxService <- TaxFakes.taxService(openLotsByTicker =
+            Map((accountId, Ticker("AAPL")) -> List(fraction, whole))
+          )
+          handler = new LotsHandler[IO](tgGateway, taxService, accountId)
+          _ <- handler.handle(chatId, List("aapl"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must_==
+          s"0.3 @ 800.00 acquired $today (0 day(s))\n20 @ 5.00 acquired $today (0 day(s))"
       }
 
       "replies with 'No open lots for SYM.' when the ticker has none" >> {

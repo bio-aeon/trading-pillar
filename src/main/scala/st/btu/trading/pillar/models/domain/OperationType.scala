@@ -2,20 +2,13 @@ package st.btu.trading.pillar.models.domain
 
 import enumeratum.values.*
 
-/** Every Tinkoff `OPERATION_TYPE_*` name trading-pillar itself inspects (tax lots/report, portfolio
-  * valuation, translation into [[AccountOperation]]s). An open set: a raw value that doesn't match
-  * any named case decodes to `Unknown(raw)` via [[OperationType.decode]] rather than being
+/** Every Tinkoff `OPERATION_TYPE_*` name trading-pillar itself inspects, which is what the
+  * translation into [[AccountOperation]]s needs to classify. An open set: a raw value that doesn't
+  * match any named case decodes to `Unknown(raw)` via [[OperationType.decode]] rather than being
   * rejected, since an operation type this library doesn't yet recognize must still round-trip
   * unchanged.
   */
-sealed abstract class OperationType(val value: String) extends StringEnumEntry {
-
-  def isBuy: Boolean = OperationType.BuyTypes.contains(this)
-  def isSell: Boolean = OperationType.SellTypes.contains(this)
-  def isExternalFlow: Boolean = this == OperationType.Input || this == OperationType.Output
-  def isDividendOrCoupon: Boolean = this == OperationType.Dividend || this == OperationType.Coupon
-  def isWithheldTax: Boolean = OperationType.WithheldTaxTypes.contains(this)
-}
+sealed abstract class OperationType(val value: String) extends StringEnumEntry
 
 object OperationType extends StringEnum[OperationType] {
   case object Buy extends OperationType("OPERATION_TYPE_BUY")
@@ -147,34 +140,6 @@ object OperationType extends StringEnum[OperationType] {
   /** Decodes a raw Tinkoff operation-type string, falling back to [[Unknown]] rather than throwing.
     */
   def decode(raw: String): OperationType = withValueOpt(raw).getOrElse(Unknown(raw))
-
-  private val BuyTypes: Set[OperationType] = Set(Buy, BuyCard, BuyMargin, DeliveryBuy)
-
-  private val SellTypes: Set[OperationType] =
-    Set(Sell, SellCard, SellMargin, DeliverySell, BondRepaymentFull)
-
-  // BOND_TAX, DIVIDEND_TAX, TAX, TAX_CORRECTION, BENEFIT_TAX, their _PROGRESSIVE variants, and
-  // every TAX_REPO* variant - the broker-withheld-tax family TaxReport treats as "already paid".
-  // TAX_CORRECTION_COUPON is left out on purpose: the report counts only the family docs/tax.md
-  // lists.
-  private val WithheldTaxTypes: Set[OperationType] = Set(
-    BondTax,
-    DividendTax,
-    Tax,
-    TaxCorrection,
-    BenefitTax,
-    TaxProgressive,
-    BondTaxProgressive,
-    DividendTaxProgressive,
-    BenefitTaxProgressive,
-    TaxCorrectionProgressive,
-    TaxRepo,
-    TaxRepoProgressive,
-    TaxRepoHold,
-    TaxRepoRefund,
-    TaxRepoHoldProgressive,
-    TaxRepoRefundProgressive
-  )
 }
 
 /** The Tinkoff `OPERATION_STATE_*` names trading-pillar inspects; an open set with the same

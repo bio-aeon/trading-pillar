@@ -36,7 +36,7 @@ class CommandUsageSpec extends Specification with CatsEffect {
       valuationStorage <- AnalyticsFakes.portfolioValuationStorage()
       valuationService <- AnalyticsFakes.portfolioValuationService()
       targets <- AnalyticsFakes.allocationTargetStorage()
-      operations <- AnalyticsFakes.tcsPortfolioOperationStorage()
+      operations <- AnalyticsFakes.accountOperationStorage()
       analysis <- AnalysisFakes.analysisService()
       paper <- PaperFakes.paperStorage()
       news <- NewsFakes.newsSource()

@@ -4,9 +4,10 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.{PositionSnapshot, PositionValue}
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
 import java.time.LocalDate
 
@@ -25,7 +26,7 @@ class AllocationHandlerSpec extends Specification with CatsEffect {
     weight: Option[BigDecimal]
   ): PositionValue =
     PositionValue(
-      Figi(figi),
+      instrumentKey(figi),
       ticker = None,
       name = None,
       instrumentType = instrumentType,

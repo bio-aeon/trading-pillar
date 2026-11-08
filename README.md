@@ -2,8 +2,9 @@
 
 Reusable building blocks for trading bots: Telegram bot plumbing, market-data gateways, a pluggable
 strategy/backtesting engine, and a spam-resistant alert pipeline. Strategies, backtests, alerts and
-the analytics math don't depend on a broker; the portfolio side (operations sync, valuation, tax
-lots) is built on Tinkoff Invest. A consumer application wires these pieces together and
+the analytics math don't depend on a broker; the portfolio side (valuation, tax lots, `/export`)
+reads each account's operations in terms shared by every broker, and only the operations sync and
+the instrument directory are Tinkoff's. A consumer application wires these pieces together and
 owns its strategies, storage implementations and configuration; nothing account- or
 credential-specific lives here.
 
@@ -40,7 +41,7 @@ strategy is registered.
 | `models` | `Account` |
 | `models.market` | `Ticker`, `YahooSymbol`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board or Yahoo symbol), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.binance` | Telegram, Tinkoff and Binance wire/domain types |
-| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (broker FIGI to instrument), `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
+| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (the id a broker gives an instrument to the instrument) with `RoutingInstrumentDirectory` choosing each broker's directory, `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
 | `gateways.news` | `NewsSource`, `YahooNewsSource`, `NewsItem` - per-ticker headlines, backs `/news` |
 | `facades` | `TcsFacade` - high-level Tinkoff gRPC API (operations) |

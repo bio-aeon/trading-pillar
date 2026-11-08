@@ -620,14 +620,15 @@ Total: 45916.00
 
 One line per open position (a fully closed position - net quantity 0 - is omitted), computed live
 from `PortfolioValuationService.positionsAsOf(accountId, today)` - see
-[`analytics.md`](analytics.md#positions-and-allocation), not read from storage. Priced
-positions come first, largest `value` first; unpriced ones (no known close, no FX rate, or a FIGI
-the `InstrumentDirectory` does not know) follow, marked `(unpriced)`, ordered by ticker (or FIGI
-when there's no ticker). `price` is the instrument's own last known close in its own currency,
-unconverted; `value` and the trailing `Cash`/`Total` lines are all in the account's base currency.
-`No positions.` in place of the list when the snapshot has none. Single-account app, same as
-`/performance`: the handler is constructed with a fixed `AccountId`, not derived from the chat, and
-uses today's date (UTC).
+[`analytics.md`](analytics.md#positions-and-allocation), not read from storage. Priced positions
+come first, largest `value` first; unpriced ones (no known close, no FX rate, or an instrument the
+`InstrumentDirectory` does not know) follow, marked `(unpriced)`, ordered by ticker (or by the
+broker's instrument id when there's no ticker). A quantity is a decimal and prints as plain digits,
+without trailing zeros or an exponent: half a unit reads `0.5`. `price` is the instrument's own last
+known close in its own currency, unconverted; `value` and the trailing `Cash`/`Total` lines are all
+in the account's base currency. `No positions.` in place of the list when the snapshot has none.
+Single-account app, same as `/performance`: the handler is constructed with a fixed `AccountId`, not
+derived from the chat, and uses today's date (UTC).
 
 ### `/allocation`
 
@@ -654,12 +655,13 @@ Cash: 12.50%
 
 Three breakdowns of `Allocation.of(positionsAsOf(accountId, today))` - see
 [`analytics.md`](analytics.md#positions-and-allocation) - each largest weight first. Only priced
-positions appear in them, so a FIGI the `InstrumentDirectory` does not know (an unpriced position)
-is in none of the three. A priced position whose ticker has no stored instrument metadata from its
-configured source falls under `unknown` in `By exchange` only, since its type and currency fall back
-to the broker's record. An empty breakdown prints `(none)`. `Cash` is always its own trailing line,
-never folded into `By currency`. When any position is unpriced, one more trailing line reads
-`Unpriced positions (weight unknown): N`. Single-account app, same as `/positions`.
+positions appear in them, so an instrument the `InstrumentDirectory` does not know (an unpriced
+position) is in none of the three. A priced position whose ticker has no stored instrument
+metadata from its configured source falls under `unknown` in `By exchange` only, since its type and
+currency fall back to the broker's record. An empty breakdown prints `(none)`. `Cash` is always its
+own trailing line, never folded into `By currency`. When any position is unpriced, one more
+trailing line reads `Unpriced positions (weight unknown): N`. Single-account app, same as
+`/positions`.
 
 ### `/drift`
 
@@ -836,10 +838,11 @@ Usage: `/lots SYM - open FIFO tax lots for a ticker`
 5 @ 165.00 acquired 2025-06-10 (115 day(s))
 ```
 
-One line per open lot for that ticker (`TaxService.openLots`, oldest first): quantity, unit cost,
-acquisition date, holding days as of today (UTC) and a trailing `, long-term` when `holdingDays >=
-TaxConfig.longTermYears * 365`, never while `longTermYears` is unset. `No open lots for SYM.` when
-there are none (including an unknown ticker). `Usage: ...` when the ticker is missing.
+One line per open lot for that ticker (`TaxService.openLots`, oldest first): quantity (plain digits,
+without trailing zeros or an exponent), unit cost, acquisition date, holding days as of today (UTC)
+and a trailing `, long-term` when `holdingDays >= TaxConfig.longTermYears * 365`, never while
+`longTermYears` is unset. `No open lots for SYM.` when there are none (including an unknown ticker).
+`Usage: ...` when the ticker is missing.
 
 ### `/export`
 
@@ -857,9 +860,23 @@ and sends it with [`TgGateway.sendDocument`](#tggatewaysenddocument) as `<kind>-
 
 | `kind` | Rows | Source |
 |---|---|---|
-| `operations` | every executed-or-not operation of the account in `year`, oldest first | `TcsPortfolioOperationStorage.operationsByDtRange` |
+| `operations` | every operation of the account in `year`, in every state, oldest first | `AccountOperationStorage.operations` |
 | `valuations` | the stored daily valuation series for `year` | `PortfolioValuationStorage.series` |
 | `dividends` | dividend events of `year`, across the account's watchlist tickers, by ex-date | `DividendStorage.byTicker` per `WatchlistStorage.byAccount` ticker, from the source the ticker is set to use |
+
+The `operations` file has one row per operation, in terms shared by every broker, under the header
+
+```
+occurred_at,kind,state,broker_type,instrument_broker,instrument_id,quantity,price,amount,currency
+2025-03-01T09:30:00Z,buy,executed,OPERATION_TYPE_BUY,tinkoff,BBG004730N88,10,285.5,-2855,RUB
+```
+
+where `occurred_at` is the UTC instant, `kind` and `state` are the `OperationKind` and
+`OperationState` values, and `broker_type` is the broker's own name for the operation. The two
+`instrument_*` columns are the broker and the id that broker gives the instrument, both empty for an
+operation that names none. `quantity` is the signed change of the position in executed units and
+`price` is empty when the broker gives none; `amount` is the signed change of cash in `currency`.
+Numbers are plain decimal digits, without trailing zeros or an exponent.
 
 `year` defaults to the current year (UTC) when omitted or not an integer; the `kind` token is
 matched case-insensitively. When there is nothing to export, the reply is a short text instead of a

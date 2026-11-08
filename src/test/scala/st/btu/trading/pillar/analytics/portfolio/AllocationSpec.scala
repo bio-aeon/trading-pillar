@@ -3,7 +3,8 @@ package st.btu.trading.pillar.analytics.portfolio
 import io.circe.parser.parse
 import io.circe.syntax.*
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{Currency, Figi}
+import st.btu.trading.pillar.models.domain.Currency
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
 import java.time.LocalDate
 
@@ -21,7 +22,7 @@ class AllocationSpec extends Specification {
     weight: Option[BigDecimal] = None
   ): PositionValue =
     PositionValue(
-      Figi(figi),
+      instrumentKey(figi),
       ticker = None,
       name = None,
       instrumentType = instrumentType,

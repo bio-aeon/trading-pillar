@@ -3,13 +3,13 @@ package st.btu.trading.pillar.tax
 import cats.syntax.functor.*
 import st.btu.trading.pillar.models.domain.*
 
-import java.time.{LocalDate, ZoneOffset}
+import java.time.LocalDate
 
 /** Builds one year's [[AnnualTaxReport]] from a FIFO ledger plus the operations it was built from.
-  * `operations` supplies what the ledger alone cannot: each figi's trading currency (resolved from
-  * any operation that references it), and dividend/coupon/withheld-tax amounts, which never open or
-  * close a lot. This is an estimate for personal reference, not tax advice: it does not know about
-  * loss carry-forward, IIS deductions, or any rule beyond the ones implemented here.
+  * `operations` supplies what the ledger alone cannot: each instrument's trading currency (resolved
+  * from any operation that references it), and dividend/coupon/withheld-tax amounts, which never
+  * open or close a lot. This is an estimate for personal reference, not tax advice: it does not
+  * know about loss carry-forward, IIS deductions, or any rule beyond the ones implemented here.
   */
 object TaxReport {
 
@@ -36,7 +36,7 @@ object TaxReport {
   def annual(
     year: Int,
     ledger: LotLedger,
-    operations: List[TcsPortfolioOperation],
+    operations: List[AccountOperation],
     fxRate: (Currency, LocalDate) => Option[BigDecimal],
     config: TaxConfig = TaxConfig()
   ): AnnualTaxReport = {
@@ -45,14 +45,16 @@ object TaxReport {
     def convert(amount: BigDecimal, currency: Currency, date: LocalDate): Option[BigDecimal] =
       if (currency == base) Some(amount) else fxRate(currency, date).map(amount * _)
 
-    val figiCurrency: Map[Figi, Currency] =
-      operations.iterator.flatMap(op => op.figi.map(_ -> op.currency)).toMap
+    val instrumentCurrency: Map[InstrumentKey, Currency] =
+      operations.iterator.flatMap(op => op.instrument.map(_ -> op.currency)).toMap
 
     val yearGains = ledger.realized.filter(_.sellDate.getYear == year)
 
     val (realizedGains, exemptTotal, gainsUnconverted) =
       yearGains.foldLeft((Zero, Zero, 0)) { case ((realized, exempt, unconverted), rg) =>
-        figiCurrency.get(rg.figi).flatMap(ccy => convert(rg.gain, ccy, rg.sellDate)) match {
+        instrumentCurrency
+          .get(rg.instrument)
+          .flatMap(ccy => convert(rg.gain, ccy, rg.sellDate)) match {
           case Some(converted) =>
             // An FX rate is always positive, so the sign of `converted` always matches the sign
             // of `rg.gain` - checking either is equivalent.
@@ -66,13 +68,12 @@ object TaxReport {
     val taxableGains = (realizedGains - exemptTotal).max(Zero)
 
     val yearOps =
-      operations.filter(op => op.statusEnum == OperationStatus.Executed && yearOf(op) == year)
+      operations.filter(op => op.state == OperationState.Executed && op.occurredOn.getYear == year)
     val dividends =
-      sumConverted(yearOps.filter(_.operationTypeEnum == OperationType.Dividend), convert, _.amount)
-    val coupons =
-      sumConverted(yearOps.filter(_.operationTypeEnum == OperationType.Coupon), convert, _.amount)
+      sumConverted(yearOps.filter(_.kind == OperationKind.Dividend), convert, _.amount)
+    val coupons = sumConverted(yearOps.filter(_.kind == OperationKind.Coupon), convert, _.amount)
     val withheld =
-      sumConverted(yearOps.filter(_.operationTypeEnum.isWithheldTax), convert, _.amount.abs)
+      sumConverted(yearOps.filter(_.kind == OperationKind.Tax), convert, op => -op.amount)
 
     val estimatedTax = progressiveTax(taxableGains, config)
     val unconverted =
@@ -92,18 +93,13 @@ object TaxReport {
     )
   }
 
-  private def yearOf(op: TcsPortfolioOperation): Int =
-    op.createdAt.withZoneSameInstant(ZoneOffset.UTC).toLocalDate.getYear
-
   private def sumConverted(
-    ops: List[TcsPortfolioOperation],
+    ops: List[AccountOperation],
     convert: (BigDecimal, Currency, LocalDate) => Option[BigDecimal],
-    amountOf: TcsPortfolioOperation => BigDecimal
+    amountOf: AccountOperation => BigDecimal
   ): Summed =
     ops.foldLeft(Summed(Zero, 0)) { (acc, op) =>
-      val amount = amountOf(op)
-      val date = op.createdAt.withZoneSameInstant(ZoneOffset.UTC).toLocalDate
-      convert(amount, op.currency, date) match {
+      convert(amountOf(op), op.currency, op.occurredOn) match {
         case Some(v) => acc.copy(total = acc.total + v)
         case None => acc.copy(unconverted = acc.unconverted + 1)
       }

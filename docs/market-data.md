@@ -4,7 +4,7 @@ Package `st.btu.trading.pillar.models.market` (domain), `gateways.MarketDataSour
 `gateways.yahoo` (Yahoo Finance implementation), `gateways.tcs` (Tinkoff Invest implementation),
 `gateways.MarketDataSources` (routes a ticker to the implementation its source setting selects,
 and to the Yahoo symbol or Tinkoff board that setting names),
-`gateways.InstrumentDirectory` (resolves a broker FIGI to an instrument),
+`gateways.InstrumentDirectory` (resolves the id a broker gives an instrument to the instrument),
 `services`/`processes` (sync loop), `storages` (persistence contracts - see
 [`storage-contracts.md`](storage-contracts.md)).
 
@@ -21,7 +21,7 @@ All in `st.btu.trading.pillar.models.market`:
 | `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo(symbol: Option[YahooSymbol])`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])` | Where one ticker's data comes from. `Yahoo(None)` looks the ticker up on Yahoo as given and `Yahoo(Some(symbol))` asks Yahoo for `symbol` instead; `Tinkoff(None)` means the Tinkoff adapter's default board. `Binance` has no setting, so a ticker cannot be set to it. |
 | `TickerSource` | `TickerSource(ticker, setting: SourceSetting)` | The setting stored for a ticker. A ticker with none uses the router's default setting. |
 | `SourcedTicker` | `SourcedTicker(ticker, source: Source)` | A ticker paired with the source its stored data is read from; the key `DividendStorage.upcoming` takes. |
-| `BrokerInstrument` | `BrokerInstrument(figi: Figi, ticker, classCode: ClassCode, name: String, instrumentType: String, currency: Currency, updatedAt)` | A broker's own record of an instrument, found by FIGI. `currency` is the currency the instrument settles in. |
+| `BrokerInstrument` | `BrokerInstrument(instrument: InstrumentKey, ticker, classCode: Option[ClassCode], name: String, instrumentType: String, currency: Currency, updatedAt)` | A broker's own record of an instrument, found by its `InstrumentKey`: the broker and the id that broker gives it, a FIGI at Tinkoff. `classCode` is the board, for a broker that names one. `currency` is the currency the instrument settles in. |
 | `Bar` | `Bar(ticker, date: LocalDate, open, high, low, close, adjClose, volume: Long, source)` | One daily OHLCV bar. All prices are `BigDecimal`. |
 | `Quote` | `Quote(ticker, price: BigDecimal, currency: Currency, asOf: ZonedDateTime, source)` | A single live/last price. |
 | `InstrumentInfo` | `InstrumentInfo(ticker, origin: SourceSetting, name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `origin` is the setting the metadata was read under, with Tinkoff's board resolved: a Tinkoff adapter always reports `Tinkoff(Some(board))`, a Yahoo one `Yahoo(None)` or `Yahoo(Some(symbol))`. Two origins can describe one ticker differently, in another currency for instance: one source against another, one board against another, one Yahoo symbol against another. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
@@ -310,30 +310,47 @@ see `TcsMarketDataSourceSpec`.
 
 ## Instrument directory (`InstrumentDirectory`)
 
-A broker operation identifies its instrument by FIGI alone, while market data is keyed by ticker.
-`gateways.InstrumentDirectory` is the bridge:
+A broker operation identifies its instrument by the id that broker gives it (a FIGI at Tinkoff),
+while market data is keyed by ticker. `gateways.InstrumentDirectory` is the bridge, looking an
+instrument up by its `InstrumentKey`, the broker together with that id:
 
 ```scala
+final case class InstrumentKey(broker: Broker, id: BrokerInstrumentId)
+
 trait InstrumentDirectory[F[_]] {
-  def byFigi(figi: Figi): F[Option[BrokerInstrument]]
+  def byKey(key: InstrumentKey): F[Option[BrokerInstrument]]
 }
 ```
 
-`byFigi` returns `None` for a FIGI the broker does not know and raises `MarketDataError` when the
-lookup itself fails. The tax service maps every FIGI on its operations through it, the valuation
-service only those on buy and sell operations - see [`tax.md`](tax.md) and
-[`analytics.md`](analytics.md#portfolio-valuation).
+`byKey` returns `None` for an instrument the broker does not know and raises `MarketDataError` when
+the lookup itself fails. The tax service maps every instrument on its operations through it, the
+valuation service only those that executed operations changed the position of - see
+[`tax.md`](tax.md) and [`analytics.md`](analytics.md#portfolio-valuation).
 
-`gateways.tcs.TcsInstrumentDirectory` implements it over the Tinkoff Invest API:
+`gateways.RoutingInstrumentDirectory` is the directory a consumer hands the services. It holds one
+directory per broker and answers each key from the directory of the key's broker, and with `None`
+for a key of a broker it has no directory for, so supporting another broker is one more entry:
 
-- A FIGI that `BrokerInstrumentStorage` already holds is answered from it, without a gRPC call.
-- Any other FIGI is fetched with `InstrumentsService.GetInstrumentBy`
+```scala
+object RoutingInstrumentDirectory {
+  def create[F[_]: Applicative](
+    directories: Map[Broker, InstrumentDirectory[F]]
+  ): RoutingInstrumentDirectory[F]
+}
+```
+
+`gateways.tcs.TcsInstrumentDirectory` is Tinkoff's directory. Its instrument ids are FIGIs, and it
+implements the lookup over the Tinkoff Invest API:
+
+- A key that `BrokerInstrumentStorage` already holds is answered from it, without a gRPC call.
+- Any other key is fetched with `InstrumentsService.GetInstrumentBy`
   (`InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI`, with no class code: a FIGI identifies the instrument
   on its own), mapped to a `BrokerInstrument` whose `updatedAt` is the time of the lookup, stored
-  through `BrokerInstrumentStorage.upsert` and returned. The next call finds it in the storage.
+  through `BrokerInstrumentStorage.upsert` and returned. The next call finds it in the storage. A
+  broker record that names no board gives a `classCode` of `None`.
 - A gRPC `NOT_FOUND`, or an answer that carries no instrument, gives `None` and stores nothing, so
-  a FIGI the broker does not know is asked about again on every call, while a FIGI the broker knows
-  is fetched once. Any other gRPC failure maps like the market data source above:
+  an instrument the broker does not know is asked about again on every call, while one the broker
+  knows is fetched once. Any other gRPC failure maps like the market data source above:
   `RESOURCE_EXHAUSTED` to `RateLimited(None)`, `UNAVAILABLE` and `DEADLINE_EXCEEDED` to
   `Transient`, anything else to `Other`.
 - Stored records are never refreshed. A ticker the broker renames under the same FIGI keeps its old

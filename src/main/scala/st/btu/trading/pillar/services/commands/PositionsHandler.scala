@@ -48,10 +48,10 @@ final class PositionsHandler[F[_]: Monad: Clock](
       case Some(value) =>
         val price = p.price.fold("?")(Replies.scaled)
         val weight = p.weight.fold("?")(w => Replies.pct(w))
-        s"${label(p)} ${p.quantity} @ $price = ${Replies.scaled(value)} ($weight)"
+        s"${label(p)} ${Replies.plain(p.quantity)} @ $price = ${Replies.scaled(value)} ($weight)"
       case None =>
-        s"${label(p)} ${p.quantity} (unpriced)"
+        s"${label(p)} ${Replies.plain(p.quantity)} (unpriced)"
     }
 
-  private def label(p: PositionValue): String = p.ticker.fold(p.figi.value)(_.value)
+  private def label(p: PositionValue): String = p.ticker.fold(p.instrument.id.value)(_.value)
 }

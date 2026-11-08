@@ -8,18 +8,18 @@ import cats.syntax.traverse.*
 import enumeratum.values.*
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
 import st.btu.trading.pillar.gateways.{MarketDataSources, TgGateway}
-import st.btu.trading.pillar.models.domain.{AccountId, Command, TcsPortfolioOperation}
+import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation, Command}
 import st.btu.trading.pillar.models.market.DividendEvent
 import st.btu.trading.pillar.models.tg
 import st.btu.trading.pillar.storages.{
+  AccountOperationStorage,
   DividendStorage,
   PortfolioValuationStorage,
-  TcsPortfolioOperationStorage,
   WatchlistStorage
 }
 
 import java.nio.charset.StandardCharsets
-import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
+import java.time.{Instant, LocalDate, ZoneOffset}
 import scala.util.Try
 
 // Single-account app for now, same as every other handler: accountId is a constructor argument
@@ -27,7 +27,7 @@ import scala.util.Try
 // to use.
 final class ExportHandler[F[_]: Monad: Clock](
   tgGateway: TgGateway[F],
-  operations: TcsPortfolioOperationStorage[F],
+  operations: AccountOperationStorage[F],
   valuations: PortfolioValuationStorage[F],
   dividends: DividendStorage[F],
   watchlist: WatchlistStorage[F],
@@ -60,14 +60,13 @@ final class ExportHandler[F[_]: Monad: Clock](
       case Kind.Dividends => exportDividends(chatId, year)
     }
 
-  private def exportOperations(chatId: tg.ChatId, year: Int): F[Unit] = {
-    val since = ZonedDateTime.of(year, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
-    val until = ZonedDateTime.of(year + 1, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
-    operations.operationsByDtRange(accountId, since, until).flatMap { ops =>
-      val rows = ops.toList.sortBy(_.createdAt.toInstant.toEpochMilli).map(operationRow)
-      sendOrEmpty(chatId, Kind.Operations, year, OperationsHeader, rows)
+  private def exportOperations(chatId: tg.ChatId, year: Int): F[Unit] =
+    operations.operations(accountId, startOf(year), startOf(year + 1)).flatMap { ops =>
+      sendOrEmpty(chatId, Kind.Operations, year, OperationsHeader, ops.toList.map(operationRow))
     }
-  }
+
+  private def startOf(year: Int): Instant =
+    LocalDate.of(year, 1, 1).atStartOfDay(ZoneOffset.UTC).toInstant
 
   private def exportValuations(chatId: tg.ChatId, year: Int): F[Unit] = {
     val from = LocalDate.of(year, 1, 1)
@@ -102,16 +101,18 @@ final class ExportHandler[F[_]: Monad: Clock](
       tgGateway.sendDocument(chatId, s"${kind.value}-$year.csv", bytes, "text/csv", None)
     }
 
-  private def operationRow(op: TcsPortfolioOperation): List[String] =
+  private def operationRow(op: AccountOperation): List[String] =
     List(
-      op.createdAt.toString,
-      op.operationType.value,
-      op.figi.fold("")(_.value),
-      op.currency.value,
-      op.price.toString,
-      op.quantity.toString,
-      op.amount.toString,
-      op.status.value
+      op.occurredAt.toString,
+      op.kind.value,
+      op.state.value,
+      op.brokerType.value,
+      op.instrument.fold("")(_.broker.value),
+      op.instrument.fold("")(_.id.value),
+      Replies.plain(op.quantity),
+      op.price.fold("")(Replies.plain),
+      Replies.plain(op.amount),
+      op.currency.value
     )
 
   private def valuationRow(p: ValuationPoint): List[String] =
@@ -131,14 +132,16 @@ object ExportHandler {
 
   private val OperationsHeader =
     List(
-      "created_at",
-      "operation_type",
-      "figi",
-      "currency",
-      "price",
+      "occurred_at",
+      "kind",
+      "state",
+      "broker_type",
+      "instrument_broker",
+      "instrument_id",
       "quantity",
+      "price",
       "amount",
-      "status"
+      "currency"
     )
   private val ValuationsHeader = List("date", "value", "invested", "cash_flow")
   private val DividendsHeader = List("ticker", "ex_date", "amount", "currency")

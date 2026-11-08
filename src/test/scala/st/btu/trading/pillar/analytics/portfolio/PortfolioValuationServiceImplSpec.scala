@@ -3,15 +3,15 @@ package st.btu.trading.pillar.analytics.portfolio
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, TcsPortfolioOperation}
-import st.btu.trading.pillar.models.domain.Figi.value
+import st.btu.trading.pillar.models.domain.*
+import st.btu.trading.pillar.models.domain.BrokerInstrumentId.value
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.market.Ticker.value
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, MarketDataFakes}
-import st.btu.trading.pillar.testkit.AnalyticsFakes.operation
-import st.btu.trading.pillar.testkit.MarketDataFakes.brokerInstrument
+import st.btu.trading.pillar.testkit.AnalyticsFakes.accountOperation
+import st.btu.trading.pillar.testkit.MarketDataFakes.{brokerInstrument, instrumentKey}
 
-import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
+import java.time.{Instant, LocalDate, ZoneOffset, ZonedDateTime}
 
 class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
 
@@ -21,27 +21,73 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
   private val usdRub = Ticker("USDRUB=X")
   private val usdOnMoex = Ticker("USD000UTSTOM")
 
-  private def dt(date: LocalDate): ZonedDateTime = date.atStartOfDay(ZoneOffset.UTC)
+  private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
-  // 1000 deposited, in roubles unless told otherwise, and `cost` of them spent on `quantity` units
-  // of the instrument `figi`, both on `date`.
-  private def depositAndBuy(
+  private def deposit(date: LocalDate, amount: BigDecimal, currency: String = "RUB") =
+    accountOperation(accountId, OperationKind.Deposit, amount, at(date), currency = currency)
+
+  private def withdrawal(date: LocalDate, amount: BigDecimal, currency: String = "RUB") =
+    accountOperation(accountId, OperationKind.Withdrawal, -amount, at(date), currency = currency)
+
+  // `quantity` units of the instrument bought for `cost` in total.
+  private def buy(
     date: LocalDate,
-    figi: String,
-    quantity: Int,
+    instrument: String,
+    quantity: BigDecimal,
     cost: BigDecimal,
     currency: String = "RUB"
-  ): List[TcsPortfolioOperation] =
+  ) =
+    accountOperation(
+      accountId,
+      OperationKind.Buy,
+      -cost,
+      at(date),
+      Some(instrument),
+      quantity,
+      currency
+    )
+
+  // `quantity` units of the instrument sold for `proceeds` in total.
+  private def sell(
+    date: LocalDate,
+    instrument: String,
+    quantity: BigDecimal,
+    proceeds: BigDecimal
+  ) =
+    accountOperation(accountId, OperationKind.Sell, proceeds, at(date), Some(instrument), -quantity)
+
+  // 1000 deposited, in roubles unless told otherwise, and `cost` of them spent on `quantity` units
+  // of the instrument, both on `date`.
+  private def depositAndBuy(
+    date: LocalDate,
+    instrument: String,
+    quantity: BigDecimal,
+    cost: BigDecimal,
+    currency: String = "RUB"
+  ): List[AccountOperation] =
+    List(deposit(date, 1000, currency), buy(date, instrument, quantity, cost, currency))
+
+  // 1000 deposited and 5 units of F1 bought for 100, both executed, beside a buy of 3 more units
+  // still pending and a deposit of 500 that was canceled, all on `date`.
+  private def executedPendingAndCanceled(date: LocalDate): List[AccountOperation] =
     List(
-      operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(date), currency = currency),
-      operation(
+      deposit(date, 1000),
+      buy(date, "F1", quantity = 5, cost = 100),
+      accountOperation(
         accountId,
-        "OPERATION_TYPE_BUY",
-        -cost,
-        dt(date),
-        figi = Some(figi),
-        quantity = quantity,
-        currency = currency
+        OperationKind.Buy,
+        -90,
+        at(date),
+        Some("F1"),
+        quantity = 3,
+        state = OperationState.Pending
+      ),
+      accountOperation(
+        accountId,
+        OperationKind.Deposit,
+        500,
+        at(date),
+        state = OperationState.Canceled
       )
     )
 
@@ -71,10 +117,10 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
       ZonedDateTime.now
     )
 
-  // `directory` is what the broker knows by FIGI; `instruments` is the metadata stored per ticker;
-  // `settings` set individual tickers to a source, the rest use the default, Yahoo.
+  // `directory` is what the broker knows by instrument id; `instruments` is the metadata stored
+  // per ticker; `settings` set individual tickers to a source, the rest use the default, Yahoo.
   private def buildService(
-    ops: List[TcsPortfolioOperation],
+    ops: List[AccountOperation],
     directory: List[BrokerInstrument] = Nil,
     instruments: Map[Ticker, InstrumentInfo] = Map.empty,
     bars: List[Bar] = Nil,
@@ -82,7 +128,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
     config: ValuationConfig = ValuationConfig()
   ): IO[PortfolioValuationService[IO]] =
     for {
-      opStorage <- AnalyticsFakes.tcsPortfolioOperationStorage(ops)
+      opStorage <- AnalyticsFakes.accountOperationStorage(ops)
       instrumentDirectory <- MarketDataFakes.instrumentDirectory(directory)
       instrumentStorage <- MarketDataFakes.instrumentStorage(instruments)
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
@@ -101,17 +147,10 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         val aaa = Ticker("AAA")
 
         val ops = List(
-          operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0)),
-          operation(
-            accountId,
-            "OPERATION_TYPE_BUY",
-            -500,
-            dt(d1),
-            figi = Some("F1"),
-            quantity = 10
-          ),
-          operation(accountId, "OPERATION_TYPE_OUTPUT", -200, dt(d2)),
-          operation(accountId, "OPERATION_TYPE_SELL", 240, dt(d3), figi = Some("F1"), quantity = 4)
+          deposit(d0, 1000),
+          buy(d1, "F1", quantity = 10, cost = 500),
+          withdrawal(d2, 200),
+          sell(d3, "F1", quantity = 4, proceeds = 240)
         )
         val bars = List(bar(aaa, d1, 60), bar(aaa, d2, 60), bar(aaa, d3, 60))
 
@@ -131,7 +170,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
             (d3, BigDecimal(900), BigDecimal(800), BigDecimal(0))
           )
           series.unpricedInstruments must beEmpty
-          series.unmappedFigis must beEmpty
+          series.unmappedInstruments must beEmpty
         }
       }
 
@@ -185,21 +224,14 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
-      "counts an unmapped FIGI and an unpriced mapped instrument, excluding both from value" >> {
+      "counts an unmapped instrument and an unpriced mapped one, excluding both from value" >> {
         val d0 = LocalDate.of(2026, 4, 1)
         val ddd = Ticker("DDD")
 
         val ops = List(
-          operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0)),
-          operation(
-            accountId,
-            "OPERATION_TYPE_BUY",
-            -50,
-            dt(d0),
-            figi = Some("UNMAPPED"),
-            quantity = 3
-          ),
-          operation(accountId, "OPERATION_TYPE_BUY", -70, dt(d0), figi = Some("F4"), quantity = 7)
+          deposit(d0, 1000),
+          buy(d0, "UNMAPPED", quantity = 3, cost = 50),
+          buy(d0, "F4", quantity = 7, cost = 70)
         )
         // DDD (F4) is mapped but has no stored bars in either source.
 
@@ -208,8 +240,46 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           series <- service.dailySeries(accountId, d0, d0)
         } yield {
           series.points.map(_.value) must_== Vector(BigDecimal(880))
-          series.unmappedFigis must_== Set("UNMAPPED")
+          series.unmappedInstruments must_== Set(instrumentKey("UNMAPPED"))
           series.unpricedInstruments must_== Set("DDD")
+        }
+      }
+
+      "operations that count" >> {
+
+        val d0 = LocalDate.of(2026, 9, 7)
+        val aaa = Ticker("AAA")
+
+        "includes executed operations only" >> {
+          for {
+            service <- buildService(
+              executedPendingAndCanceled(d0),
+              List(brokerInstrument("F1", aaa)),
+              bars = List(bar(aaa, d0, 20))
+            )
+            series <- service.dailySeries(accountId, d0, d0)
+          } yield
+          // cash 900 + 5 * 20, with neither the pending buy nor the canceled deposit
+          series.points.map(p => (p.value, p.invested)) must_==
+            Vector((BigDecimal(1000), BigDecimal(1000)))
+        }
+
+        "keeps income, fees and taxes in cash without counting them as invested" >> {
+          val ops = List(
+            deposit(d0, 1000),
+            accountOperation(accountId, OperationKind.Dividend, 50, at(d0), Some("F1")),
+            accountOperation(accountId, OperationKind.Fee, -4, at(d0), Some("F1")),
+            accountOperation(accountId, OperationKind.Tax, -6, at(d0), Some("F1"))
+          )
+          for {
+            service <- buildService(ops)
+            series <- service.dailySeries(accountId, d0, d0)
+          } yield {
+            series.points.map(p => (p.value, p.invested, p.cashFlow)) must_==
+              Vector((BigDecimal(1040), BigDecimal(1000), BigDecimal(1000)))
+            // F1 only paid and cost money, so no position of it is held to find a ticker for.
+            series.unmappedInstruments must beEmpty
+          }
         }
       }
 
@@ -231,7 +301,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           } yield {
             // cash 900 (1000 - 100) + 2 * 60
             series.points.map(_.value) must_== Vector(BigDecimal(1020))
-            series.unmappedFigis must beEmpty
+            series.unmappedInstruments must beEmpty
             series.unpricedInstruments must beEmpty
           }
         }
@@ -400,8 +470,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         val ddd = Ticker("DDD")
 
         "needs no exchange rate for cash in the configured base currency" >> {
-          val ops =
-            List(operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0), currency = "USD"))
+          val ops = List(deposit(d0, 1000, currency = "USD"))
           for {
             service <- buildService(ops, config = ValuationConfig(baseCurrency = usd))
             series <- service.dailySeries(accountId, d0, d0)
@@ -412,8 +481,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         }
 
         "reports the configured base currency on the series and the snapshot" >> {
-          val ops =
-            List(operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0), currency = "USD"))
+          val ops = List(deposit(d0, 1000, currency = "USD"))
           for {
             service <- buildService(ops, config = ValuationConfig(baseCurrency = usd))
             series <- service.dailySeries(accountId, d0, d0)
@@ -461,16 +529,8 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
 
         "converts foreign-currency cash, invested amount and cash flow at the rate of a position" >> {
           val ops = List(
-            operation(accountId, "OPERATION_TYPE_INPUT", 100, dt(d0), currency = "USD"),
-            operation(
-              accountId,
-              "OPERATION_TYPE_BUY",
-              -20,
-              dt(d0),
-              figi = Some("F7"),
-              quantity = 2,
-              currency = "USD"
-            )
+            deposit(d0, 100, currency = "USD"),
+            buy(d0, "F7", quantity = 2, cost = 20, currency = "USD")
           )
           val bars = List(bar(ddd, d0, 10), bar(usdRub, d0, 90))
           for {
@@ -499,16 +559,9 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         val bbb = Ticker("BBB")
 
         val ops = List(
-          operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0)),
-          operation(
-            accountId,
-            "OPERATION_TYPE_BUY",
-            -500,
-            dt(d0),
-            figi = Some("F1"),
-            quantity = 10
-          ),
-          operation(accountId, "OPERATION_TYPE_BUY", -300, dt(d0), figi = Some("F2"), quantity = 3)
+          deposit(d0, 1000),
+          buy(d0, "F1", quantity = 10, cost = 500),
+          buy(d0, "F2", quantity = 3, cost = 300)
         )
         val bars = List(bar(aaa, d0, 50), bar(bbb, d0, 100))
         val directory = List(brokerInstrument("F1", aaa), brokerInstrument("F2", bbb))
@@ -525,7 +578,8 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           snapshot.unpriced must_== 0
 
           val byTicker = snapshot.positions.map(p => p.ticker.map(_.value).get -> p).toMap
-          byTicker("AAA").quantity must_== 10
+          byTicker("AAA").instrument must_== instrumentKey("F1")
+          byTicker("AAA").quantity must_== BigDecimal(10)
           byTicker("AAA").price must beSome(BigDecimal(50))
           byTicker("AAA").value must beSome(BigDecimal(500))
           byTicker("AAA").weight must beSome(BigDecimal(0.5))
@@ -540,18 +594,84 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
-      "treats OPERATION_TYPE_INPUT_SECURITIES as a buy-like transfer-in, increasing the position's quantity" >> {
+      "counts executed operations only" >> {
+        val d0 = LocalDate.of(2026, 5, 4)
+        val aaa = Ticker("AAA")
+        for {
+          service <- buildService(
+            executedPendingAndCanceled(d0),
+            List(brokerInstrument("F1", aaa)),
+            bars = List(bar(aaa, d0, 20))
+          )
+          snapshot <- service.positionsAsOf(accountId, d0)
+        } yield {
+          // The 5 units bought, not the 3 still pending, and cash of 1000 - 100 without the
+          // canceled deposit.
+          snapshot.positions.map(_.quantity) must_== Vector(BigDecimal(5))
+          snapshot.cash must_== BigDecimal(900)
+        }
+      }
+
+      "lists the positions ordered by instrument" >> {
+        val d0 = LocalDate.of(2026, 5, 2)
+        val aaa = Ticker("AAA")
+        val bbb = Ticker("BBB")
+        // Bought in the opposite order, and under ids that sort as text, not as numbers.
+        val ops = List(
+          deposit(d0, 1000),
+          buy(d0, "B2", quantity = 1, cost = 100),
+          buy(d0, "B10", quantity = 1, cost = 100)
+        )
+        for {
+          service <- buildService(
+            ops,
+            List(brokerInstrument("B2", aaa), brokerInstrument("B10", bbb)),
+            bars = List(bar(aaa, d0, 100), bar(bbb, d0, 100))
+          )
+          snapshot <- service.positionsAsOf(accountId, d0)
+        } yield snapshot.positions.map(_.instrument.id.value) must_== Vector("B10", "B2")
+      }
+
+      "values a fractional quantity" >> {
+        val d0 = LocalDate.of(2026, 5, 3)
+        val aaa = Ticker("AAA")
+        // Half a unit bought for 400, so at 800; it closes at 900.
+        val ops = List(deposit(d0, 1000), buy(d0, "F1", quantity = BigDecimal("0.5"), cost = 400))
+        for {
+          service <- buildService(
+            ops,
+            List(brokerInstrument("F1", aaa)),
+            bars = List(bar(aaa, d0, 900))
+          )
+          snapshot <- service.positionsAsOf(accountId, d0)
+        } yield {
+          snapshot.positions.map(p => (p.quantity, p.value)) must_==
+            Vector((BigDecimal("0.5"), Some(BigDecimal(450))))
+          snapshot.cash must_== BigDecimal(600)
+          snapshot.total must_== BigDecimal(1050)
+        }
+      }
+
+      "treats a transfer of securities in as growing the position and a transfer out as shrinking it" >> {
         val d0 = LocalDate.of(2026, 7, 1)
         val aaa = Ticker("AAA")
 
         val ops = List(
-          operation(
+          accountOperation(
             accountId,
-            "OPERATION_TYPE_INPUT_SECURITIES",
+            OperationKind.SecurityIn,
             0,
-            dt(d0),
-            figi = Some("F1"),
+            at(d0),
+            Some("F1"),
             quantity = 5
+          ),
+          accountOperation(
+            accountId,
+            OperationKind.SecurityOut,
+            0,
+            at(d0),
+            Some("F1"),
+            quantity = -2
           )
         )
         val bars = List(bar(aaa, d0, 20))
@@ -567,10 +687,10 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         } yield {
           snapshot.positions must haveSize(1)
           val position = snapshot.positions.head
-          position.quantity must_== 5
-          position.value must beSome(BigDecimal(100)) // 5 * 20
+          position.quantity must_== BigDecimal(3)
+          position.value must beSome(BigDecimal(60)) // 3 * 20
           snapshot.cash must_== BigDecimal(0)
-          snapshot.total must_== BigDecimal(100)
+          snapshot.total must_== BigDecimal(60)
         }
       }
 
@@ -604,16 +724,9 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         val ddd = Ticker("DDD")
 
         val ops = List(
-          operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0)),
-          operation(
-            accountId,
-            "OPERATION_TYPE_BUY",
-            -50,
-            dt(d0),
-            figi = Some("UNMAPPED"),
-            quantity = 3
-          ),
-          operation(accountId, "OPERATION_TYPE_BUY", -70, dt(d0), figi = Some("F4"), quantity = 7)
+          deposit(d0, 1000),
+          buy(d0, "UNMAPPED", quantity = 3, cost = 50),
+          buy(d0, "F4", quantity = 7, cost = 70)
         )
 
         for {
@@ -623,22 +736,23 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           snapshot.total must_== BigDecimal(880)
           snapshot.unpriced must_== 2
 
-          val byFigi = snapshot.positions.map(p => p.figi.value -> p).toMap
-          byFigi.keySet must_== Set("UNMAPPED", "F4")
+          val byId = snapshot.positions.map(p => p.instrument.id.value -> p).toMap
+          byId.keySet must_== Set("UNMAPPED", "F4")
 
-          val unmapped = byFigi("UNMAPPED")
+          val unmapped = byId("UNMAPPED")
+          unmapped.instrument must_== instrumentKey("UNMAPPED")
           unmapped.ticker must beNone
           unmapped.instrumentType must beNone
           unmapped.currency must beNone
           unmapped.exchange must beNone
-          unmapped.quantity must_== 3
+          unmapped.quantity must_== BigDecimal(3)
           unmapped.price must beNone
           unmapped.value must beNone
           unmapped.weight must beNone
 
-          val mapped = byFigi("F4")
+          val mapped = byId("F4")
           mapped.ticker must beSome(ddd)
-          mapped.quantity must_== 7
+          mapped.quantity must_== BigDecimal(7)
           mapped.price must beNone
           mapped.value must beNone
           mapped.weight must beNone
@@ -650,16 +764,9 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         val aaa = Ticker("AAA")
 
         val ops = List(
-          operation(accountId, "OPERATION_TYPE_INPUT", 1000, dt(d0)),
-          operation(
-            accountId,
-            "OPERATION_TYPE_BUY",
-            -500,
-            dt(d0),
-            figi = Some("F1"),
-            quantity = 10
-          ),
-          operation(accountId, "OPERATION_TYPE_SELL", 550, dt(d0), figi = Some("F1"), quantity = 10)
+          deposit(d0, 1000),
+          buy(d0, "F1", quantity = 10, cost = 500),
+          sell(d0, "F1", quantity = 10, proceeds = 550)
         )
         val bars = List(bar(aaa, d0, 55))
 
@@ -719,13 +826,13 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
               settings = List(TickerSource(sber, SourceSetting.Tinkoff(None)))
             )
             snapshot <- service.positionsAsOf(accountId, d0)
-          } yield snapshot.positions.map(p => p.figi.value -> p.source) must_== Vector(
+          } yield snapshot.positions.map(p => p.instrument.id.value -> p.source) must_== Vector(
             "F1" -> Some(Source.Yahoo),
             "F2" -> Some(Source.Tinkoff)
           )
         }
 
-        "is absent for an unmapped FIGI" >> {
+        "is absent for an unmapped instrument" >> {
           for {
             service <- buildService(depositAndBuy(d0, "UNMAPPED", quantity = 1, cost = 50))
             snapshot <- service.positionsAsOf(accountId, d0)
@@ -772,7 +879,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           } yield snapshot.positions.map(_.dayReturn) must_== Vector(None)
         }
 
-        "is absent for an unmapped FIGI" >> {
+        "is absent for an unmapped instrument" >> {
           for {
             service <- buildService(depositAndBuy(d0, "UNMAPPED", quantity = 10, cost = 500))
             snapshot <- service.positionsAsOf(accountId, d0)
@@ -814,6 +921,19 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           // roubles: 1800 (the day before's rate of 80 would give 1600). DDD has one close and
           // adds nothing.
           snapshot.dayChange must_== BigDecimal(1850)
+        }
+
+        "multiplies by a fractional quantity" >> {
+          // Half a unit moving from 800 to 900.
+          val ops = List(deposit(d0, 1000), buy(d0, "F1", quantity = BigDecimal("0.5"), cost = 400))
+          for {
+            service <- buildService(
+              ops,
+              List(brokerInstrument("F1", aaa)),
+              bars = List(bar(aaa, d1, 800), bar(aaa, d0, 900))
+            )
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.dayChange must_== BigDecimal(50) // 0.5 * (900 - 800)
         }
 
         "is zero when no position has two closes" >> {

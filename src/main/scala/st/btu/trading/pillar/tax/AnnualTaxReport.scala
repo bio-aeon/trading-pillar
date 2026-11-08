@@ -13,12 +13,13 @@ import st.btu.trading.pillar.models.domain.Currency
   * @param taxableGains
   *   `realizedGains` less `exemptGains`, never below 0
   * @param taxesWithheld
-  *   summed as a positive magnitude
+  *   minus the sum of the year's tax amounts: positive when the broker withheld tax on balance, and
+  *   lowered by any refund or correction in the account's favour
   * @param estimatedTax
   *   the configured progressive rate applied to `taxableGains` only; dividend and coupon income is
   *   shown for reference, not re-estimated here
   * @param unconverted
-  *   how many individual amounts (gains, dividends, coupons, withheld tax) could not be converted
+  *   how many individual amounts (gains, dividends, coupons, tax operations) could not be converted
   *   into `currency` and were excluded from every sum above
   */
 final case class AnnualTaxReport(

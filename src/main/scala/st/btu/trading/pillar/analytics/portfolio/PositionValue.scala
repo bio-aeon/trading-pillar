@@ -1,17 +1,21 @@
 package st.btu.trading.pillar.analytics.portfolio
 
-import st.btu.trading.pillar.models.domain.{Currency, Figi}
+import st.btu.trading.pillar.models.domain.{Currency, InstrumentKey}
 import st.btu.trading.pillar.models.market.{Source, Ticker}
 
-/** `ticker`/`name`/`instrumentType`/`currency`/`source` are `None` together only when `figi` is
-  * unmapped, and `exchange` is also `None` for a mapped position whose ticker has no stored
+/** `ticker`/`name`/`instrumentType`/`currency`/`source` are `None` together only when `instrument`
+  * is unmapped, and `exchange` is also `None` for a mapped position whose ticker has no stored
   * instrument metadata from its configured source; `price`/`value`/`weight`/`dayReturn` can still
   * be `None` separately on a mapped position, each as its own parameter says.
   *
+  * @param instrument
+  *   the instrument as the account's broker knows it
   * @param currency
   *   the currency the position is priced in
   * @param source
   *   the source the position's ticker is configured to use, whose bars priced it
+  * @param quantity
+  *   the units held, fractional for an instrument that trades in fractions
   * @param price
   *   the last known close in this position's own `currency`, unconverted
   * @param value
@@ -25,14 +29,14 @@ import st.btu.trading.pillar.models.market.{Source, Ticker}
   *   is `None` without two of them or when the earlier one is not positive
   */
 final case class PositionValue(
-  figi: Figi,
+  instrument: InstrumentKey,
   ticker: Option[Ticker],
   name: Option[String],
   instrumentType: Option[String],
   currency: Option[Currency],
   exchange: Option[String],
   source: Option[Source],
-  quantity: Int,
+  quantity: BigDecimal,
   price: Option[BigDecimal],
   value: Option[BigDecimal],
   weight: Option[BigDecimal],

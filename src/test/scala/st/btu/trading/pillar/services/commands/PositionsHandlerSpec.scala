@@ -4,10 +4,11 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.{PositionSnapshot, PositionValue}
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
 import java.time.LocalDate
 
@@ -21,13 +22,13 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
   private def position(
     figi: String,
     ticker: Option[String],
-    quantity: Int,
+    quantity: BigDecimal,
     price: Option[BigDecimal],
     value: Option[BigDecimal],
     weight: Option[BigDecimal]
   ): PositionValue =
     PositionValue(
-      Figi(figi),
+      instrumentKey(figi),
       ticker.map(Ticker(_)),
       name = None,
       instrumentType = Some("share"),
@@ -92,7 +93,7 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
         }
       }
 
-      "marks an unpriced position and falls back to the figi when there is no ticker" >> {
+      "marks an unpriced position and falls back to the instrument id when there is no ticker" >> {
         val snapshot = PositionSnapshot(
           today,
           rub,
@@ -113,6 +114,40 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
         } yield {
           val msg = messages.head.message
           msg must contain("UNMAPPED 5 (unpriced)")
+        }
+      }
+
+      "prints a quantity as plain digits, without trailing zeros or an exponent" >> {
+        val priced = Some(BigDecimal(100))
+        val snapshot = PositionSnapshot(
+          today,
+          rub,
+          Vector(
+            // As a numeric column of scale 18 reads back a whole number, a fraction and a speck.
+            position("F1", Some("AAA"), BigDecimal("10.000000000000000000"), priced, priced, None),
+            position("F2", Some("BBB"), BigDecimal("0.500000000000000000"), priced, priced, None),
+            position("F3", Some("CCC"), BigDecimal("0.00000012"), priced, priced, None),
+            position("F4", None, BigDecimal("1E+3"), None, None, None)
+          ),
+          cash = BigDecimal(0),
+          total = BigDecimal(0),
+          dayChange = BigDecimal(0),
+          unpriced = 1
+        )
+        for {
+          tgGateway <- Fakes.tgGateway()
+          valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =
+            Map(accountId -> IO.pure(snapshot))
+          )
+          handler = new PositionsHandler[IO](tgGateway, valuations, accountId)
+          _ <- handler.handle(chatId, Nil)
+          messages <- tgGateway.sentMessages
+        } yield {
+          val msg = messages.head.message
+          msg must contain("AAA 10 @ 100.00")
+          msg must contain("BBB 0.5 @ 100.00")
+          msg must contain("CCC 0.00000012 @ 100.00")
+          msg must contain("F4 1000 (unpriced)")
         }
       }
 

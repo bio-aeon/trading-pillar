@@ -14,8 +14,8 @@ import scala.math.BigDecimal.RoundingMode
 // through TgGateway with CommandReply's sanitization, the "now"/"today" UTC convention most
 // handlers use for their own snapshot instant (delegating to data.UtcClock, also used by the
 // background processes), a BigDecimal scaled to 2 decimals for display, that same figure read as
-// a 0-1 fraction and rendered as a percentage, and the yyyy-MM-dd HH:mm:ss timestamp format a few
-// handlers show a date in.
+// a 0-1 fraction and rendered as a percentage, a BigDecimal as its plain decimal digits for a
+// quantity, and the yyyy-MM-dd HH:mm:ss timestamp format a few handlers show a date in.
 private[pillar] object Replies {
 
   val TimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -28,6 +28,10 @@ private[pillar] object Replies {
   def nowUtc[F[_]: Functor: Clock]: F[ZonedDateTime] = UtcClock.nowUtc[F]
 
   def scaled(v: BigDecimal): String = v.setScale(2, RoundingMode.HALF_UP).toString
+
+  // The digits of v without trailing zeros or an exponent: 0.5, 10 and 0.00000012 print as
+  // "0.5", "10" and "0.00000012" whatever scale the value carries.
+  def plain(v: BigDecimal): String = v.bigDecimal.stripTrailingZeros.toPlainString
 
   // v is a 0-1 fraction, e.g. pct(0.05) == "5.00%". A figure already expressed in percentage
   // points (Rebalancer's Drift, StockAnalysis's *Pct fields) formats with `scaled` directly

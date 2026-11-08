@@ -4,13 +4,13 @@ import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.analytics.portfolio.ValuationPoint
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, TcsPortfolioOperation}
+import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes, MarketDataFakes}
 
 import java.nio.charset.StandardCharsets
-import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
+import java.time.{Instant, LocalDate, ZoneOffset, ZonedDateTime}
 
 class ExportHandlerSpec extends Specification with CatsEffect {
 
@@ -20,7 +20,7 @@ class ExportHandlerSpec extends Specification with CatsEffect {
   private val usd = Currency("USD")
 
   private def handlerWith(
-    operations: List[TcsPortfolioOperation] = Nil,
+    operations: List[AccountOperation] = Nil,
     valuations: Vector[ValuationPoint] = Vector.empty,
     dividends: List[DividendEvent] = Nil,
     watchlist: List[WatchlistItem] = Nil,
@@ -28,7 +28,7 @@ class ExportHandlerSpec extends Specification with CatsEffect {
   ): IO[(ExportHandler[IO], Fakes.FakeTgGateway[IO])] =
     for {
       tgGateway <- Fakes.tgGateway()
-      operationsStorage <- AnalyticsFakes.tcsPortfolioOperationStorage(operations)
+      operationsStorage <- AnalyticsFakes.accountOperationStorage(operations)
       valuationsStorage <- AnalyticsFakes.portfolioValuationStorage()
       _ <- valuationsStorage.upsert(accountId, rub, valuations)
       dividendStorage <- MarketDataFakes.dividendStorage(dividends)
@@ -50,42 +50,132 @@ class ExportHandlerSpec extends Specification with CatsEffect {
   private def csvOf(doc: Fakes.SentDocument): String =
     new String(doc.content, StandardCharsets.UTF_8)
 
+  // An operation of the account, as it happened at the instant written in `occurredAt`.
+  private def accountOperation(
+    kind: OperationKind,
+    amount: BigDecimal,
+    occurredAt: String,
+    instrument: Option[String] = None,
+    quantity: BigDecimal = 0,
+    price: Option[BigDecimal] = None,
+    state: OperationState = OperationState.Executed,
+    currency: String = "RUB",
+    brokerType: String = "OPERATION_TYPE_OTHER"
+  ): AccountOperation =
+    AnalyticsFakes.accountOperation(
+      accountId,
+      kind,
+      amount,
+      Instant.parse(occurredAt),
+      instrument,
+      quantity,
+      currency,
+      state,
+      price,
+      Some(brokerType)
+    )
+
   "ExportHandler" >> {
     "handle" >> {
 
-      "exports this year's operations as a CSV document" >> {
-        val op2024 = AnalyticsFakes.operation(
-          accountId,
-          "OPERATION_TYPE_BUY",
-          -1000,
-          ZonedDateTime.of(2024, 3, 1, 0, 0, 0, 0, ZoneOffset.UTC),
-          figi = Some("F1"),
-          quantity = 10
+      "operations" >> {
+
+        // Stored as a numeric column hands them back, with every decimal place of its scale.
+        val deposit = accountOperation(
+          OperationKind.Deposit,
+          BigDecimal("5000.000000000000000000"),
+          "2024-02-10T00:00:00Z",
+          brokerType = "OPERATION_TYPE_INPUT_SWIFT"
         )
-        val op2023 = AnalyticsFakes.operation(
-          accountId,
-          "OPERATION_TYPE_SELL",
-          1234,
-          ZonedDateTime.of(2023, 3, 1, 0, 0, 0, 0, ZoneOffset.UTC),
-          figi = Some("F1"),
-          quantity = 999
+        val executedBuy = accountOperation(
+          OperationKind.Buy,
+          BigDecimal("-1000.500000000000000000"),
+          "2024-03-01T09:30:00Z",
+          instrument = Some("BBG004730N88"),
+          quantity = BigDecimal("10.000000000000000000"),
+          price = Some(BigDecimal("100.050000000000000000")),
+          brokerType = "OPERATION_TYPE_BUY"
         )
-        for {
-          pair <- handlerWith(operations = List(op2024, op2023))
-          (handler, tgGateway) = pair
-          _ <- handler.handle(chatId, List("operations", "2024"))
-          docs <- tgGateway.sentDocuments
-          messages <- tgGateway.sentMessages
-        } yield {
-          docs must have size 1
-          val doc = docs.head
-          doc.filename must_== "operations-2024.csv"
-          doc.mimeType must_== "text/csv"
-          val csv = csvOf(doc)
-          csv must startWith("created_at,operation_type,figi,currency,price,quantity,amount,status")
-          csv must contain("OPERATION_TYPE_BUY")
-          csv must not(contain("999")) // op2023's marker quantity must not appear
-          messages must beEmpty
+        val pendingBuy = accountOperation(
+          OperationKind.Buy,
+          BigDecimal("-0.2"),
+          "2024-03-05T10:00:00Z",
+          instrument = Some("BBG000B9XRY4"),
+          quantity = BigDecimal("0.00000012"),
+          price = Some(BigDecimal("1666666.666666666667")),
+          state = OperationState.Pending,
+          currency = "USD",
+          brokerType = "OPERATION_TYPE_BUY"
+        )
+        val canceledBuy = accountOperation(
+          OperationKind.Buy,
+          BigDecimal(0),
+          "2024-03-06T10:00:00Z",
+          instrument = Some("BBG000B9XRY4"),
+          state = OperationState.Canceled,
+          currency = "USD",
+          brokerType = "OPERATION_TYPE_BUY"
+        )
+
+        "exports the year's operations of every state, one row each, under the shared columns" >> {
+          for {
+            pair <- handlerWith(operations = List(canceledBuy, executedBuy, deposit, pendingBuy))
+            (handler, tgGateway) = pair
+            _ <- handler.handle(chatId, List("operations", "2024"))
+            docs <- tgGateway.sentDocuments
+            messages <- tgGateway.sentMessages
+          } yield {
+            docs must have size 1
+            val doc = docs.head
+            doc.filename must_== "operations-2024.csv"
+            doc.mimeType must_== "text/csv"
+            csvOf(doc) must_== List(
+              "occurred_at,kind,state,broker_type,instrument_broker,instrument_id,quantity,price,amount,currency",
+              "2024-02-10T00:00:00Z,deposit,executed,OPERATION_TYPE_INPUT_SWIFT,,,0,,5000,RUB",
+              "2024-03-01T09:30:00Z,buy,executed,OPERATION_TYPE_BUY,tinkoff,BBG004730N88,10,100.05,-1000.5,RUB",
+              "2024-03-05T10:00:00Z,buy,pending,OPERATION_TYPE_BUY,tinkoff,BBG000B9XRY4,0.00000012,1666666.666666666667,-0.2,USD",
+              "2024-03-06T10:00:00Z,buy,canceled,OPERATION_TYPE_BUY,tinkoff,BBG000B9XRY4,0,,0,USD",
+              ""
+            ).mkString("\r\n")
+            messages must beEmpty
+          }
+        }
+
+        "leaves out operations of other years, from the first instant of the next year on" >> {
+          val lastInstantOf2023 =
+            accountOperation(OperationKind.Deposit, 111, "2023-12-31T23:59:59Z")
+          val firstInstantOf2024 =
+            accountOperation(OperationKind.Deposit, 222, "2024-01-01T00:00:00Z")
+          val firstInstantOf2025 =
+            accountOperation(OperationKind.Deposit, 333, "2025-01-01T00:00:00Z")
+          for {
+            pair <- handlerWith(operations =
+              List(lastInstantOf2023, firstInstantOf2024, firstInstantOf2025)
+            )
+            (handler, tgGateway) = pair
+            _ <- handler.handle(chatId, List("operations", "2024"))
+            docs <- tgGateway.sentDocuments
+          } yield {
+            val csv = csvOf(docs.head)
+            csv must contain("222")
+            csv must not(contain("111"))
+            csv must not(contain("333"))
+          }
+        }
+
+        "leaves out the operations of other accounts" >> {
+          val ofOtherAccount = AnalyticsFakes.accountOperation(
+            AccountId(2),
+            OperationKind.Deposit,
+            999,
+            Instant.parse("2024-02-10T00:00:00Z")
+          )
+          for {
+            pair <- handlerWith(operations = List(deposit, ofOtherAccount))
+            (handler, tgGateway) = pair
+            _ <- handler.handle(chatId, List("operations", "2024"))
+            docs <- tgGateway.sentDocuments
+          } yield csvOf(docs.head) must not(contain("999"))
         }
       }
 
@@ -182,12 +272,12 @@ class ExportHandlerSpec extends Specification with CatsEffect {
 
       "defaults to the current year when no year argument is given" >> {
         val thisYear = ZonedDateTime.now(ZoneOffset.UTC).getYear
-        val op = AnalyticsFakes.operation(
+        val op = AnalyticsFakes.accountOperation(
           accountId,
-          "OPERATION_TYPE_BUY",
+          OperationKind.Buy,
           -100,
-          ZonedDateTime.now(ZoneOffset.UTC),
-          figi = Some("F1"),
+          Instant.now(),
+          instrument = Some("F1"),
           quantity = 1
         )
         for {

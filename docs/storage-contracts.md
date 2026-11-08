@@ -57,12 +57,12 @@ T-Invest warns that an operation's id can change over time, so an operation that
 a new id is stored again. `protocolVersion` is `TcsFacade.ApiVersion`, the contracts version the
 operation was fetched with.
 
-The stored operations are read back through `lastOperation` and `operationsByDtRange` (by the sync
-itself, which also records every stored operation again with its translation each time it starts,
-and by the valuation and tax services and `/export`, which do not read the translations yet). A
-relational implementation could use a table such as `tcs_portfolio_operations` with a generated
-`id`, one column per remaining `TcsPortfolioOperation` field, and a unique key on
-`(account_id, ext_id, operation_type)`.
+The stored operations are read back through `lastOperation` and `operationsByDtRange` by the sync
+alone, which also records every stored operation again with its translation each time it starts.
+The portfolio readers, the valuation and tax services and `/export`, read the translations through
+[`AccountOperationStorage`](#accountoperationstoragef_) instead. A relational implementation could
+use a table such as `tcs_portfolio_operations` with a generated `id`, one column per remaining
+`TcsPortfolioOperation` field, and a unique key on `(account_id, ext_id, operation_type)`.
 
 ## `AccountOperationStorage[F[_]]`
 
@@ -74,8 +74,9 @@ trait AccountOperationStorage[F[_]] {
 
 An account's operations in terms shared by every broker. Read-only: each broker's own storage
 records its operations together with their translations, so for Tinkoff the translations are
-written by `TcsPortfolioOperationStorage.record`. Nothing in the library reads this port yet; the
-valuation, the tax services and `/export` still read the Tinkoff records.
+written by `TcsPortfolioOperationStorage.record`. The valuation, the tax services and `/export` read
+this port, and nothing else, for an account's operations: only executed operations count towards
+positions, cash and tax, and `/export operations` lists the operations of every state.
 
 `operations` returns the operations that occurred from `since` (inclusive) until `until`
 (exclusive), oldest first, and in `ref` order among those at the same instant.
@@ -90,7 +91,8 @@ with a generated `id`, `account_id`, `ref`, `kind`, `state`, `occurred_at`, a nu
 `instrument_broker` and `instrument_id` that are both null or both set, `quantity`, a nullable
 `price`, `amount`, `currency`, `broker_type` and `updated_at`, a unique key on
 `(account_id, ref)` and an index on `(account_id, occurred_at)`. Quantities and amounts are best
-held as wide fixed-point decimals, since coins have many decimal places.
+held as wide fixed-point decimals, since coins have many decimal places: a `quantity` is read back
+with the scale of its column, which the readers print without the trailing zeros.
 
 ## `PriceHistoryStorage[F[_]]`
 
@@ -130,13 +132,13 @@ Yahoo symbol, since a board or a symbol can describe it differently too. The syn
 to compare that origin with the adapter's, and refetches the ticker's whole window when they differ.
 The portfolio valuation pipeline reads it through `find` for a position's price currency and uses a
 row only when its origin's source is the ticker's configured one (see
-[`analytics.md`](analytics.md#portfolio-valuation)); resolving a FIGI to a ticker is the job of
-`InstrumentDirectory`, backed by `BrokerInstrumentStorage` below. A relational implementation could
-use a table such as `instrument_metadata` with the ticker (`symbol`) as primary key, `source`
-(`yahoo` | `tinkoff`, the `Source` values), a nullable `class_code` (the board; null unless the
-origin is a Tinkoff board), a nullable `yahoo_symbol` (the Yahoo symbol; null unless the origin is
-Yahoo under a symbol), `name`, `instrument_type`, `currency`, `exchange`, `timezone`, a nullable
-`figi` and `updated_at`.
+[`analytics.md`](analytics.md#portfolio-valuation)); resolving an instrument a broker knows to a
+ticker is the job of `InstrumentDirectory`, backed by `BrokerInstrumentStorage` below. A relational
+implementation could use a table such as `instrument_metadata` with the ticker (`symbol`) as
+primary key, `source` (`yahoo` | `tinkoff`, the `Source` values), a nullable `class_code` (the
+board; null unless the origin is a Tinkoff board), a nullable `yahoo_symbol` (the Yahoo symbol; null
+unless the origin is Yahoo under a symbol), `name`, `instrument_type`, `currency`, `exchange`,
+`timezone`, a nullable `figi` and `updated_at`.
 
 `InstrumentInfo.origin` maps to those columns as follows, and back:
 
@@ -219,17 +221,21 @@ may set (a `SourceSetting.Yahoo` with no symbol, which looks the ticker up as gi
 
 ```scala
 trait BrokerInstrumentStorage[F[_]] {
-  def find(figi: Figi): F[Option[BrokerInstrument]]
+  def find(instrument: InstrumentKey): F[Option[BrokerInstrument]]
   def upsert(instrument: BrokerInstrument): F[Unit]
 }
 ```
 
-Broker reference data keyed by FIGI. Read and written by the library through `TcsInstrumentDirectory`,
-which answers a FIGI from `find` when it can and otherwise fetches it from the broker and stores it
-with `upsert`, so a FIGI the broker knows is fetched once - see
-[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). A relational
-implementation could use a table such as `broker_instruments` with the FIGI (`figi`) as primary key,
-`ticker`, `class_code`, `name`, `instrument_type`, `currency` and `updated_at`.
+Broker reference data keyed by an `InstrumentKey`, the broker and the id that broker gives the
+instrument. Read and written by the library through `TcsInstrumentDirectory`, which answers a key
+from `find` when it can and otherwise fetches it from the broker and stores it with `upsert`, so an
+instrument the broker knows is fetched once - see
+[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). The `broker` is stored
+as the `value` of a `Broker`, and the `instrument.id` is the broker's own, a FIGI for Tinkoff. A
+relational implementation could use a table such as `broker_instruments` with a generated `id`, the
+broker (`broker`) and the instrument id (`instrument_id`), `ticker`, a nullable `class_code` (the
+board, for a broker that has one), `name`, `instrument_type`, `currency` and `updated_at`, and a
+unique key on `(broker, instrument_id)` for `upsert` to conflict on.
 
 ## `BacktestRunStorage[F[_]]`
 
@@ -354,12 +360,15 @@ A relational implementation could use two tables, and save in one transaction:
   `(account_id, date)`. The last two are JSON: `allocation` the circe encoding of
   `snapshot.allocation` and `metrics` that of `snapshot.metrics`, both exactly as
   [`analytics.md`](analytics.md#stored-json-form) lays them out.
-- `portfolio_snapshot_positions` with `snapshot_id` (the snapshot's `id`), `figi`, `ticker`, `name`,
-  `instrument_type`, `currency`, `exchange`, `source` (`yahoo` | `tinkoff` | `binance`, the
-  `Source` values), `quantity`, `price`, `value`, `weight`, `day_return` and a unique key on
-  `(snapshot_id, figi)`. Every column but `figi` and `quantity` is nullable: an unmapped FIGI has
+- `portfolio_snapshot_positions` with `snapshot_id` (the snapshot's `id`), `instrument_broker` (the
+  `value` of the position's `Broker`) and `instrument_id`, which together are the position's
+  `InstrumentKey`, `ticker`, `name`, `instrument_type`, `currency`, `exchange`, `source` (`yahoo` |
+  `tinkoff` | `binance`, the `Source` values), `quantity`, `price`, `value`, `weight`, `day_return`
+  and a unique key on `(snapshot_id, instrument_broker, instrument_id)`. Every column but the two
+  that name the instrument and `quantity` is nullable: an instrument the directory does not know has
   no ticker, name, type, currency, exchange or source, and a position with no close or exchange
-  rate has no price, value, weight or day return.
+  rate has no price, value, weight or day return. `quantity` is a decimal wide enough for coins,
+  since a position can be a fraction of a unit.
 
 Saving replaces the day's `portfolio_snapshots` row and its positions in one transaction, so a
 reader never sees a snapshot with the positions of another run.
@@ -422,8 +431,8 @@ implementation runs its statements in one transaction.
 | Trait | Suggested table | Library writes | Library reads |
 |---|---|---|---|
 | `AccountStorage` | `accounts` | none | `allAccounts` |
-| `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` (and `account_operations`) | `record` | `lastOperation`, `operationsByDtRange` |
-| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` | none yet |
+| `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` (and `account_operations`) | `record` | `lastOperation`, `operationsByDtRange`, for the sync only |
+| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` | `operations` |
 | `PriceHistoryStorage` | `price_history` | `upsertBars` | `lastBarDate`, `bars`, `latestBars` |
 | `InstrumentStorage` | `instrument_metadata` | `upsert` | `find` |
 | `WatchlistStorage` | `watchlist_items` | `add`, `remove` | `allEnabled`, `byAccount` |

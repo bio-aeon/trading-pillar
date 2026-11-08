@@ -1,9 +1,10 @@
 package st.btu.trading.pillar.analytics.portfolio
 
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.strategy.Side
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
 import java.time.LocalDate
 
@@ -21,7 +22,7 @@ class RebalancerSpec extends Specification {
     weight: Option[BigDecimal] = None
   ): PositionValue =
     PositionValue(
-      Figi(figi),
+      instrumentKey(figi),
       ticker.map(Ticker(_)),
       name = None,
       instrumentType = instrumentType,

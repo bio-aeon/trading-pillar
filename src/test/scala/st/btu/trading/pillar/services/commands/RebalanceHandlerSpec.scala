@@ -9,9 +9,10 @@ import st.btu.trading.pillar.analytics.portfolio.{
   PositionSnapshot,
   PositionValue
 }
-import st.btu.trading.pillar.models.domain.{AccountId, Currency, Figi}
+import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.tg.ChatId
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, Fakes}
+import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
 
 import java.time.LocalDate
 
@@ -24,7 +25,7 @@ class RebalanceHandlerSpec extends Specification with CatsEffect {
 
   private def position(instrumentType: Option[String], weight: Option[BigDecimal]): PositionValue =
     PositionValue(
-      Figi("F1"),
+      instrumentKey("F1"),
       ticker = None,
       name = None,
       instrumentType = instrumentType,

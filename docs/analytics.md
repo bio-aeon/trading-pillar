@@ -136,15 +136,17 @@ accounting, not portfolio-valuation statistics, and have no analytics-library eq
 ## Portfolio valuation
 
 Package `st.btu.trading.pillar.analytics.portfolio`. Turns an account's executed
-`TcsPortfolioOperation`s plus the stored daily closes (`PriceHistoryStorage`) into a daily NAV
-series. A FIGI on an operation is mapped to its ticker through
+`AccountOperation`s, its operations in terms shared by every broker (see
+[`storage-contracts.md`](storage-contracts.md#accountoperationstoragef_)), plus the stored daily
+closes (`PriceHistoryStorage`) into a daily NAV series. The instrument on an operation is mapped to
+its ticker through
 [`InstrumentDirectory`](market-data.md#instrument-directory-instrumentdirectory), and a ticker's
 closes are read from the source the ticker is configured to use.
 
 ```scala
 final case class ValuationPoint(date: LocalDate, value: BigDecimal, invested: BigDecimal, cashFlow: BigDecimal)
 final case class ValuationSeries(accountId: AccountId, currency: Currency, points: Vector[ValuationPoint],
-                                 unpricedInstruments: Set[String], unmappedFigis: Set[String])
+                                 unpricedInstruments: Set[String], unmappedInstruments: Set[InstrumentKey])
 final case class ValuationConfig(baseCurrency: Currency = Currency("RUB"), fxTickers: Map[Currency, Ticker] = Map.empty,
                                  priceLookback: Int = 10)
 
@@ -152,7 +154,7 @@ trait PortfolioValuationService[F[_]] {
   def dailySeries(accountId: AccountId, from: LocalDate, to: LocalDate): F[ValuationSeries]
 }
 object PortfolioValuationServiceImpl {
-  def create[F[_]: Monad](operations: TcsPortfolioOperationStorage[F], directory: InstrumentDirectory[F],
+  def create[F[_]: Monad](operations: AccountOperationStorage[F], directory: InstrumentDirectory[F],
                           instruments: InstrumentStorage[F], sources: MarketDataSources[F],
                           priceHistory: PriceHistoryStorage[F], config: ValuationConfig): PortfolioValuationService[F]
 }
@@ -165,20 +167,23 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
 
 ### Rules
 
-1. **Executed only**: an operation counts only when `status.value == "OPERATION_STATE_EXECUTED"`.
+1. **Executed only**: an operation counts only when its `state` is `executed`; a pending or
+   canceled operation is ignored.
 2. **Full history loaded**: operations are read from `from` minus 20 years through `to` (not just
    `[from, to]`), so positions, cash and the cumulative `invested` figure are already complete at
    `from` even when the account's real history starts long before the requested window.
-3. **Positions per FIGI**, accumulated from `quantity`:
-   | Direction | `operationType.value` |
-   |---|---|
-   | add | `OPERATION_TYPE_BUY`, `_BUY_CARD`, `_BUY_MARGIN`, `_DELIVERY_BUY`, `_INPUT_SECURITIES` |
-   | subtract | `OPERATION_TYPE_SELL`, `_SELL_CARD`, `_SELL_MARGIN`, `_DELIVERY_SELL`, `_OUTPUT_SECURITIES`, `_BOND_REPAYMENT_FULL` |
+3. **Positions per instrument**: the sum of the executed operations' signed `quantity`, per
+   `InstrumentKey` (the broker and the id that broker gives the instrument). `quantity` is already
+   in executed units, positive for a `buy` and a `security_in`, negative for a `sell` and a
+   `security_out` and zero for every other kind, so a partly filled buy adds only the units that
+   were filled, and a fractional share or coin counts as the fraction it is.
 4. **Cash** is the running sum of `amount` over *every* executed operation (commissions, taxes,
    dividends, buys/sells, deposits/withdrawals - all of them), kept as one running total per
    operation `currency`, not just the base currency.
-5. **External flows**: `OPERATION_TYPE_INPUT`/`OPERATION_TYPE_OUTPUT` amounts, attributed to their
-   own date; `invested` is their running sum, `cashFlow` is that date's own sum, both per currency.
+5. **External flows**: the `amount` of `deposit` and `withdrawal` operations, whatever the type the
+   broker names them by (Tinkoff's SWIFT, acquiring and multi-currency transfers are deposits and
+   withdrawals too), attributed to their own date; `invested` is their running sum, `cashFlow` is
+   that date's own sum, both per currency.
 6. **Value**: `cash + Σ quantity × last known close on or before the date`. Bars for every ticker
    with a nonzero position are fetched once per `dailySeries` call, over
    `[from - priceLookback, to]` - `priceLookback` (default 10 days) is how far before `from` a
@@ -199,12 +204,12 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    bucket that nets to exactly `0` is never flagged (nothing was actually excluded). The
    rate-ticker convention and the "latest close on or before a date" lookup itself live in
    `analytics.FxRates`, shared with `tax.TaxServiceImpl` - see [`tax.md`](tax.md#fx-conversion).
-8. **Unpriced vs. unmapped**: a FIGI on a buy/sell operation that `InstrumentDirectory.byFigi`
-   does not know goes in `unmappedFigis` (checked once per `dailySeries` call, independent of any
-   one date) and its position never contributes to `value`. A *mapped* ticker with no close known
-   on or before some date is excluded from `value` on that date only and goes in
-   `unpricedInstruments` - same set as an FX-conversion failure, since both mean "this ticker/
-   currency's contribution to `value` could not be priced".
+8. **Unpriced vs. unmapped**: an instrument that executed operations changed the position of, and
+   that `InstrumentDirectory.byKey` does not know, goes in `unmappedInstruments` (checked once per
+   `dailySeries` call, independent of any one date) and its position never contributes to `value`.
+   A *mapped* ticker with no close known on or before some date is excluded from `value` on that
+   date only and goes in `unpricedInstruments` - same set as an FX-conversion failure, since both
+   mean "this ticker/currency's contribution to `value` could not be priced".
 9. **Price currency and metadata**: a mapped position's price currency is the `currency` of the
    `InstrumentInfo` stored for its ticker (`InstrumentStorage.find`) when that metadata was read
    from the ticker's configured source (`InstrumentInfo.origin.source` equals
@@ -231,8 +236,8 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
 
 ### Storage, process and commands
 
-`InstrumentDirectory.byFigi(figi: Figi): F[Option[BrokerInstrument]]` resolves a
-`TcsPortfolioOperation.figi` to its ticker (and, as a fallback, its currency, name and type); see
+`InstrumentDirectory.byKey(key: InstrumentKey): F[Option[BrokerInstrument]]` resolves an
+`AccountOperation.instrument` to its ticker (and, as a fallback, its currency, name and type); see
 [`market-data.md`](market-data.md#instrument-directory-instrumentdirectory).
 
 ```scala
@@ -320,25 +325,26 @@ is folded into one running position/cash state, the same state one step of `dail
 day-by-day fold would produce for that date.
 
 ```scala
-final case class PositionValue(figi: Figi, ticker: Option[Ticker], name: Option[String],
+final case class PositionValue(instrument: InstrumentKey, ticker: Option[Ticker], name: Option[String],
                                instrumentType: Option[String], currency: Option[Currency], exchange: Option[String],
-                               source: Option[Source], quantity: Int, price: Option[BigDecimal],
+                               source: Option[Source], quantity: BigDecimal, price: Option[BigDecimal],
                                value: Option[BigDecimal], weight: Option[BigDecimal], dayReturn: Option[BigDecimal])
 final case class PositionSnapshot(date: LocalDate, currency: Currency, positions: Vector[PositionValue],
                                   cash: BigDecimal, total: BigDecimal, dayChange: BigDecimal, unpriced: Int)
 ```
 
-Rules, sharing a `valueOnePosition` per-figi helper that `valuePositions` (the aggregate `dailySeries`
-uses) also delegates to, so both entry points price a position identically:
+Rules, sharing a `valueOnePosition` per-instrument helper that `valuePositions` (the aggregate
+`dailySeries` uses) also delegates to, so both entry points price a position identically:
 
-1. **Positions**: every FIGI with a nonzero net quantity as of `date` (the same accumulation
-   `dailySeries` uses) gets one `PositionValue`; a fully closed position (net quantity `0`) is
-   omitted entirely, same as `dailySeries` silently skips it.
-2. **Unmapped** (the directory does not know the FIGI): `ticker`, `name`, `instrumentType`,
+1. **Positions**: every instrument with a nonzero net quantity as of `date` (the same accumulation
+   `dailySeries` uses) gets one `PositionValue`, ordered by instrument: the `value` of its broker,
+   then its id. A fully closed position (net quantity `0`) is omitted entirely, same as
+   `dailySeries` silently skips it. `quantity` is a decimal, so a fraction of a unit is a position.
+2. **Unmapped** (the directory does not know the instrument): `ticker`, `name`, `instrumentType`,
    `currency`, `exchange` and `source` are all `None`, and so are `price`/`value`/`weight`/
    `dayReturn`.
-   `dailySeries` reports this case once per call via `unmappedFigis`; `positionsAsOf` instead folds
-   it into the same per-position `unpriced` count as the next case, since both mean "this
+   `dailySeries` reports this case once per call via `unmappedInstruments`; `positionsAsOf` instead
+   folds it into the same per-position `unpriced` count as the next case, since both mean "this
    position's contribution to `total` is unknown".
 3. **Mapped**: `ticker` comes from the directory; `source` is the source the ticker is configured
    to use, whose bars priced the position (rule 6 of the valuation above);
@@ -363,7 +369,7 @@ uses) also delegates to, so both entry points price a position identically:
    minus 1, as a fraction (`0.02` is +2%), in the position's own `currency`, so no exchange rate
    enters it. Both closes are on or before `date` and come from the bars already loaded for
    `price`, `priceLookback` days back: a position with fewer than two closes in that span has no
-   `dayReturn`, nor has one whose earlier close is not positive, or an unmapped FIGI.
+   `dayReturn`, nor has one whose earlier close is not positive, or an unmapped instrument.
    `PositionSnapshot.dayChange` is the sum, over every position that has both a `value` and a
    `dayReturn`, of `quantity * (last close - previous close)`, converted to the base currency at
    the rate `value` used, the latest on or before `date`, so a currency move is not counted as a
@@ -395,7 +401,7 @@ folded into `byCurrency`.
 `/positions` and `/allocation` (see [`telegram-commands.md`](telegram-commands.md#positions)) call
 `positionsAsOf(accountId, today)` live, unlike `/performance`/`/portfolio` which read the stored
 valuation series (`PortfolioValuationStorage`). They do not read the daily snapshots described next
-either: every call computes from `TcsPortfolioOperationStorage`/`InstrumentDirectory`/
+either: every call computes from `AccountOperationStorage`/`InstrumentDirectory`/
 `InstrumentStorage`/`PriceHistoryStorage` afresh.
 
 ### Portfolio snapshots
@@ -414,7 +420,9 @@ trait PortfolioSnapshotStorage[F[_]] {
 A `PortfolioSnapshot` is one account's portfolio as of `holdings.date`: the holdings, each position
 with its `dayReturn` and the snapshot with its `dayChange`; their `allocation`; and the
 `PortfolioMetrics` of every `Period` that ends on that date, with no entry for a period whose window
-holds no valuation point. `computedAt` is the UTC instant it was built.
+holds no valuation point. `computedAt` is the UTC instant it was built. A position in the holdings
+is keyed by its `InstrumentKey`, so two brokers' instruments never collide, and its `quantity` is a
+decimal.
 
 `AnalyticsProcessImpl` builds and saves one per account on every run, after it has recomputed and
 upserted that account's valuations and before it checks allocation drift:
