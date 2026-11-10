@@ -12,17 +12,31 @@ class TaxReportSpec extends Specification {
   private val accountId = AccountId(1)
   private val rub = Currency("RUB")
   private val usd = Currency("USD")
+  private val eur = Currency("EUR")
+  private val twd = Currency("TWD")
 
   private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
+  // A realized gain in roubles unless told otherwise.
   private def rg(
     instrument: String,
     sellDate: LocalDate,
     gain: BigDecimal,
     holdingDays: Long,
-    quantity: BigDecimal = 1
+    quantity: BigDecimal = 1,
+    currency: Currency = rub
   ): RealizedGain =
-    RealizedGain(instrumentKey(instrument), None, sellDate, quantity, gain, 0, gain, holdingDays)
+    RealizedGain(
+      instrumentKey(instrument),
+      None,
+      sellDate,
+      quantity,
+      currency,
+      gain,
+      0,
+      gain,
+      holdingDays
+    )
 
   private def op(
     kind: OperationKind,
@@ -125,24 +139,40 @@ class TaxReportSpec extends Specification {
 
       "converts a foreign-currency gain using the given fx rate, and counts an unconvertible one once, not twice" >> {
         val year = 2025
-        val usGain = rg("FUS", LocalDate.of(year, 3, 1), 100, holdingDays = 10)
+        val usGain = rg("FUS", LocalDate.of(year, 3, 1), 100, holdingDays = 10, currency = usd)
         // Long-term AND unconvertible: must still add exactly 1 to `unconverted`, not 2 (once for the
         // realizedGains sum, again for the exemption check) - see TaxReport.annual's doc comment.
-        val unconvertibleLongTermGain = rg("FEU", LocalDate.of(year, 4, 1), 50, holdingDays = 2000)
+        val unconvertibleLongTermGain =
+          rg("FEU", LocalDate.of(year, 4, 1), 50, holdingDays = 2000, currency = eur)
         val ledger = LotLedger(Map.empty, List(usGain, unconvertibleLongTermGain), Map.empty)
-        val ops = List(
-          op(OperationKind.Buy, -900, LocalDate.of(2024, 1, 1), Some("FUS"), currency = "USD"),
-          op(OperationKind.Buy, -900, LocalDate.of(2024, 1, 1), Some("FEU"), currency = "EUR")
-        )
         val fxRate: (Currency, LocalDate) => Option[BigDecimal] =
           (ccy, _) => if (ccy == usd) Some(BigDecimal(90)) else None
 
-        val report = TaxReport.annual(year, ledger, ops, fxRate)
+        val report = TaxReport.annual(year, ledger, Nil, fxRate)
 
         report.realizedGains must_== BigDecimal(9000) // 100 * 90; the EUR gain is dropped
         // The only long-term gain could not be converted.
         report.exemptGains must_== Some(BigDecimal(0))
         report.unconverted must_== 1
+      }
+
+      "converts a gain in the currency of its sale, whatever currency later operations on the instrument are in" >> {
+        val year = 2025
+        val gain = rg("F1", LocalDate.of(year, 3, 1), 1000, holdingDays = 10, currency = twd)
+        val laterFee =
+          op(OperationKind.Fee, -3, LocalDate.of(year, 3, 2), Some("F1"), currency = "USD")
+        val fxRate: (Currency, LocalDate) => Option[BigDecimal] =
+          (ccy, _) => Map(twd -> BigDecimal(3), usd -> BigDecimal(90)).get(ccy)
+
+        val report = TaxReport.annual(
+          year,
+          LotLedger(Map.empty, List(gain), Map.empty),
+          List(laterFee),
+          fxRate
+        )
+
+        report.realizedGains must_== BigDecimal(3000) // 1000 * 3, the TWD rate
+        report.unconverted must_== 0
       }
 
       "income and tax of the year" >> {

@@ -24,7 +24,7 @@ import tofu.lift.Lift
 /** An [[InstrumentDirectory]] over Tinkoff Invest, whose instrument ids are FIGIs. A key already in
   * the storage is answered from it; any other is fetched from the broker and, when the broker knows
   * it, stored, so an instrument the broker knows is fetched once. A stored record is never
-  * refreshed.
+  * refreshed. A key of another broker is answered with no instrument.
   */
 final class TcsInstrumentDirectory[F[_]] private (
   instruments: InstrumentsServiceFs2Grpc[F, Unit],
@@ -35,6 +35,7 @@ final class TcsInstrumentDirectory[F[_]] private (
   def byKey(key: InstrumentKey): F[Option[BrokerInstrument]] =
     key.broker match {
       case Broker.Tinkoff => lookUp(key)
+      case Broker.Ibkr => F.pure(None)
     }
 
   private def lookUp(key: InstrumentKey): F[Option[BrokerInstrument]] =

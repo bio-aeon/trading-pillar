@@ -43,6 +43,11 @@ object OperationKind extends StringEnum[OperationKind] {
   /** Tax withheld by the broker, or the refund or correction of tax withheld earlier. */
   case object Tax extends OperationKind("tax")
 
+  /** One leg of a currency conversion: cash in one currency with no position. A conversion is two
+    * exchange operations, one per currency, whose amounts have opposite signs.
+    */
+  case object Exchange extends OperationKind("exchange")
+
   /** Anything else, including what a broker names but the bot does not classify; it carries no
     * change of position.
     */

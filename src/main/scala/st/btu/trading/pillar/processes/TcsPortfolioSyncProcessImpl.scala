@@ -2,13 +2,12 @@ package st.btu.trading.pillar.processes
 
 import cats.Functor
 import cats.effect.*
-import cats.syntax.apply.*
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import fs2.Stream
 import st.btu.trading.pillar.alerts.SystemAlerts
-import st.btu.trading.pillar.data.{ProcessContext, TraceIds}
+import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.facades.TcsFacadeImpl
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.tcs
@@ -22,7 +21,6 @@ import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
-import tofu.syntax.context.*
 
 import java.time.ZonedDateTime
 import scala.concurrent.duration.*
@@ -46,28 +44,16 @@ final class TcsPortfolioSyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
     Stream.emits(accounts).map(processAccountPortfolioSync).parJoinUnbounded
 
   private def processAccountPortfolioSync(account: AccountSync[F]): Stream[F, Unit] =
-    Stream
-      .eval((Ref[F].of(false), Ref[F].of(Option.empty[ZonedDateTime])).tupled)
-      .flatMap { case (translationsRebuilt, lastDtRef) =>
-        val rebuildF = translationsRebuilt.get.ifM(
-          Temporal[F].unit,
-          account.service.rebuildTranslations >> translationsRebuilt.set(true)
-        )
-        val syncF = lastDtRef.get.flatMap(
-          account.service.syncOperations(WindowLength, WindowOverlap, _).flatMap { reached =>
-            lastDtRef.set(Some(reached))
-          }
-        )
-        val tracedSync = TraceIds
-          .next[F]
-          .flatMap(uuid =>
-            (rebuildF >> syncF).local(_.copy(traceId = uuid, accountId = account.accountId))
-          )
-
-        ProcessLoop.restarting(s"$ProcessName:${account.accountId.value}", interval, systemAlerts)(
-          tracedSync
-        )
-      }
+    Stream.eval(Ref[F].of(Option.empty[ZonedDateTime])).flatMap { lastDtRef =>
+      val syncF = lastDtRef.get
+        .flatMap(account.service.syncOperations(WindowLength, WindowOverlap, _).flatMap { reached =>
+          lastDtRef.set(Some(reached))
+        })
+      AccountSyncLoop.restarting(ProcessName, account.accountId, interval, systemAlerts)(
+        account.service.rebuildTranslations,
+        syncF
+      )
+    }
 }
 
 object TcsPortfolioSyncProcessImpl {

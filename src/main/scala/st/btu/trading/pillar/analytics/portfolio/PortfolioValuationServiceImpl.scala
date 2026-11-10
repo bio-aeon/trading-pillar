@@ -361,7 +361,8 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       case OperationKind.Deposit | OperationKind.Withdrawal => true
       case OperationKind.Buy | OperationKind.Sell | OperationKind.SecurityIn |
           OperationKind.SecurityOut | OperationKind.Dividend | OperationKind.Coupon |
-          OperationKind.Interest | OperationKind.Fee | OperationKind.Tax | OperationKind.Other =>
+          OperationKind.Interest | OperationKind.Fee | OperationKind.Tax | OperationKind.Exchange |
+          OperationKind.Other =>
         false
     }
 }

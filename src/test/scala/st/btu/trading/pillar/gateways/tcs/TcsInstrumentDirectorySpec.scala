@@ -50,6 +50,18 @@ class TcsInstrumentDirectorySpec extends Specification with CatsEffect {
   "TcsInstrumentDirectory" >> {
     "byKey" >> {
 
+      "answers nothing for a key of another broker, without calling Tinkoff" >> {
+        val otherBroker = InstrumentKey(Broker.Ibkr, BrokerInstrumentId(figi))
+        for {
+          built <- directoryOver(Map(figi -> IO.pure(response)))
+          found <- built.directory.byKey(otherBroker)
+          calls <- built.instruments.getInstrumentByCalls
+        } yield {
+          found must beNone
+          calls must beEmpty
+        }
+      }
+
       "answers from the storage without calling the broker" >> {
         val known = MarketDataFakes.brokerInstrument(figi, Ticker("SBER"))
         for {

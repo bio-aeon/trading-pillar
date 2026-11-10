@@ -178,12 +178,15 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    `security_out` and zero for every other kind, so a partly filled buy adds only the units that
    were filled, and a fractional share or coin counts as the fraction it is.
 4. **Cash** is the running sum of `amount` over *every* executed operation (commissions, taxes,
-   dividends, buys/sells, deposits/withdrawals - all of them), kept as one running total per
-   operation `currency`, not just the base currency.
+   dividends, buys/sells, deposits/withdrawals, the legs of currency exchanges - all of them), kept
+   as one running total per operation `currency`, not just the base currency. A currency exchange
+   is two `exchange` operations of opposite signs, one per currency, so it moves cash from one
+   total to the other and leaves the position of every instrument as it is.
 5. **External flows**: the `amount` of `deposit` and `withdrawal` operations, whatever the type the
    broker names them by (Tinkoff's SWIFT, acquiring and multi-currency transfers are deposits and
    withdrawals too), attributed to their own date; `invested` is their running sum, `cashFlow` is
-   that date's own sum, both per currency.
+   that date's own sum, both per currency. An `exchange` is not an external flow: it is cash that
+   stays in the account.
 6. **Value**: `cash + Σ quantity × last known close on or before the date`. Bars for every ticker
    with a nonzero position are fetched once per `dailySeries` call, over
    `[from - priceLookback, to]` - `priceLookback` (default 10 days) is how far before `from` a

@@ -11,13 +11,15 @@ import java.time.{Instant, LocalDate, ZoneOffset}
 class TaxLotsSpec extends Specification {
 
   private val accountId = AccountId(1)
+  private val usd = Currency("USD")
 
   private val f1 = instrumentKey("F1")
   private val f2 = instrumentKey("F2")
 
   private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
-  // An operation on the instrument F1 unless another is named, in dollars; `quantity` is signed.
+  // An operation on the instrument F1 unless another is named, in dollars unless another currency
+  // is named; `quantity` is signed.
   private def op(
     kind: OperationKind,
     amount: BigDecimal,
@@ -25,7 +27,8 @@ class TaxLotsSpec extends Specification {
     instrument: String = "F1",
     quantity: BigDecimal = 0,
     price: Option[BigDecimal] = None,
-    state: OperationState = OperationState.Executed
+    state: OperationState = OperationState.Executed,
+    currency: String = "USD"
   ): AccountOperation =
     AnalyticsFakes.accountOperation(
       accountId,
@@ -34,7 +37,7 @@ class TaxLotsSpec extends Specification {
       at(date),
       Some(instrument),
       quantity,
-      currency = "USD",
+      currency = currency,
       state = state,
       price = price
     )
@@ -43,19 +46,25 @@ class TaxLotsSpec extends Specification {
     cost: BigDecimal,
     date: LocalDate,
     quantity: BigDecimal,
-    instrument: String = "F1"
-  ) = op(OperationKind.Buy, -cost, date, instrument, quantity)
+    instrument: String = "F1",
+    currency: String = "USD"
+  ) = op(OperationKind.Buy, -cost, date, instrument, quantity, currency = currency)
 
   private def sell(
     proceeds: BigDecimal,
     date: LocalDate,
     quantity: BigDecimal,
-    instrument: String = "F1"
-  ) = op(OperationKind.Sell, proceeds, date, instrument, -quantity)
+    instrument: String = "F1",
+    currency: String = "USD"
+  ) = op(OperationKind.Sell, proceeds, date, instrument, -quantity, currency = currency)
 
   // A fee of `charged`, which leaves the account as a negative amount.
-  private def fee(charged: BigDecimal, date: LocalDate, instrument: String = "F1") =
-    op(OperationKind.Fee, -charged, date, instrument)
+  private def fee(
+    charged: BigDecimal,
+    date: LocalDate,
+    instrument: String = "F1",
+    currency: String = "USD"
+  ) = op(OperationKind.Fee, -charged, date, instrument, currency = currency)
 
   private val noTickers: InstrumentKey => Option[Ticker] = _ => None
 
@@ -71,7 +80,7 @@ class TaxLotsSpec extends Specification {
 
         ledger.open.get(f1) must beNone
         ledger.unmatched.get(f1) must beNone
-        ledger.realized must_== List(RealizedGain(f1, None, d1, 10, 1600, 1000, 600, 31))
+        ledger.realized must_== List(RealizedGain(f1, None, d1, 10, usd, 1600, 1000, 600, 31))
       }
 
       "consumes a lot partially across two sells, keeping the remainder open" >> {
@@ -85,8 +94,8 @@ class TaxLotsSpec extends Specification {
 
         ledger.open.get(f1) must beNone
         ledger.realized must_== List(
-          RealizedGain(f1, None, d1, 4, 480, 400, 80, 28),
-          RealizedGain(f1, None, d2, 6, 750, 600, 150, 40)
+          RealizedGain(f1, None, d1, 4, usd, 480, 400, 80, 28),
+          RealizedGain(f1, None, d2, 6, usd, 750, 600, 150, 40)
         )
       }
 
@@ -111,7 +120,7 @@ class TaxLotsSpec extends Specification {
 
         // Cost: 5 * 100 + 2 * 200 = 900, and the 5 units of 20 days and 2 of 10 give
         // (5 * 20 + 2 * 10) / 7 = 17.14 days.
-        ledger.realized must_== List(RealizedGain(f1, None, d2, 7, 1400, 900, 500, 17))
+        ledger.realized must_== List(RealizedGain(f1, None, d2, 7, usd, 1400, 900, 500, 17))
         ledger.open(f1) must_== List(Lot(f1, 3, 200, d1))
       }
 
@@ -142,10 +151,61 @@ class TaxLotsSpec extends Specification {
         // sell1 fee share = 80*5/20 = 20 -> proceeds 730, cost 500, gain 230.
         // sell2 fee share = 80*15/20 = 60 -> proceeds 2040, cost 1500, gain 540.
         ledger.realized must_== List(
-          RealizedGain(f1, None, d1, 5, 730, 500, 230, 10),
-          RealizedGain(f1, None, d1, 15, 2040, 1500, 540, 10)
+          RealizedGain(f1, None, d1, 5, usd, 730, 500, 230, 10),
+          RealizedGain(f1, None, d1, 15, usd, 2040, 1500, 540, 10)
         )
         ledger.open.get(f1) must beNone
+      }
+
+      "fees in another currency than the trades" >> {
+
+        "keeps a fee out of a buy's cost when it is in another currency, while a fee in the buy's currency is shared as before" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          // 10 units for 10000 Taiwan dollars, on a day that charged 50 Taiwan dollars and 2 dollars.
+          val ops = List(
+            buy(10000, d0, 10, currency = "TWD"),
+            fee(50, d0, currency = "TWD"),
+            fee(2, d0, currency = "USD")
+          )
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          ledger.open(f1) must_== List(Lot(f1, 10, 1005, d0))
+        }
+
+        "keeps a fee out of a sell's proceeds when it is in another currency, while a fee in the sell's currency is netted" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          val d1 = d0.plusDays(10)
+          val ops = List(
+            buy(10000, d0, 10, currency = "TWD"),
+            sell(12000, d1, 10, currency = "TWD"),
+            fee(100, d1, currency = "TWD"),
+            fee(3, d1, currency = "USD")
+          )
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          ledger.realized must_== List(
+            RealizedGain(f1, None, d1, 10, Currency("TWD"), 11900, 10000, 1900, 10)
+          )
+        }
+
+        "shares each currency's fees among that currency's trades only" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          // 10 units bought for 10000 Taiwan dollars and 5 for 100 dollars on one day, with a fee in
+          // each currency.
+          val ops = List(
+            buy(10000, d0, 10, currency = "TWD"),
+            buy(100, d0, 5, currency = "USD"),
+            fee(50, d0, currency = "TWD"),
+            fee(10, d0, currency = "USD")
+          )
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          // (10000 + 50) / 10 and (100 + 10) / 5.
+          ledger.open(f1) must_== List(Lot(f1, 10, 1005, d0), Lot(f1, 5, 22, d0))
+        }
       }
 
       "ignores the fees of another instrument and of another day" >> {
@@ -176,14 +236,65 @@ class TaxLotsSpec extends Specification {
         ledger.open(f1) must_== List(Lot(f1, 7, 0, d0))
       }
 
-      "leaves the lots open on a transfer of securities out" >> {
-        val d0 = LocalDate.of(2024, 1, 1)
-        val transferOut = op(OperationKind.SecurityOut, 0, d0.plusDays(5), quantity = -4)
+      "a transfer of securities out" >> {
 
-        val ledger = TaxLots.fifo(List(buy(1000, d0, 10), transferOut), noTickers)
+        "takes the units out of the open lots at their cost, realizing no gain" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          val transferOut = op(OperationKind.SecurityOut, 0, d0.plusDays(5), quantity = -4)
 
-        ledger.open(f1) must_== List(Lot(f1, 10, 100, d0))
-        ledger.realized must beEmpty
+          val ledger = TaxLots.fifo(List(buy(1000, d0, 10), transferOut), noTickers)
+
+          ledger.open(f1) must_== List(Lot(f1, 6, 100, d0))
+          ledger.realized must beEmpty
+          ledger.unmatched must beEmpty
+        }
+
+        "takes the units from the oldest lots first" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          val d1 = d0.plusDays(10)
+          val d2 = d0.plusDays(20)
+          // 5 units at 100, then 5 at 200; 7 transferred takes all of the first lot and 2 of the
+          // second.
+          val ops = List(
+            buy(500, d0, 5),
+            buy(1000, d1, 5),
+            op(OperationKind.SecurityOut, 0, d2, quantity = -7)
+          )
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          ledger.open(f1) must_== List(Lot(f1, 3, 200, d1))
+        }
+
+        "leaves a later sale to be matched against the lots that remain" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          val d1 = d0.plusDays(5)
+          val d2 = d0.plusDays(40)
+          // 10 bought at 100 a unit, 4 transferred away, and the other 6 sold at 150 a unit.
+          val ops = List(
+            buy(1000, d0, 10),
+            op(OperationKind.SecurityOut, 0, d1, quantity = -4),
+            sell(900, d2, 6)
+          )
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          ledger.open.get(f1) must beNone
+          ledger.unmatched must beEmpty
+          ledger.realized must_== List(RealizedGain(f1, None, d2, 6, usd, 900, 600, 300, 40))
+        }
+
+        "records the units beyond the open lots as unmatched" >> {
+          val d0 = LocalDate.of(2024, 1, 1)
+          val ops =
+            List(buy(500, d0, 5), op(OperationKind.SecurityOut, 0, d0.plusDays(5), quantity = -8))
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          ledger.open.get(f1) must beNone
+          ledger.unmatched(f1) must_== BigDecimal(3)
+          ledger.realized must beEmpty
+        }
       }
 
       "consumes whatever lots exist and records the shortfall when selling more than held" >> {
@@ -201,8 +312,8 @@ class TaxLotsSpec extends Specification {
         ledger.open.get(f1) must beNone
         ledger.unmatched(f1) must_== BigDecimal(7)
         ledger.realized must_== List(
-          RealizedGain(f1, None, d1, 5, 960, 500, 460, 15),
-          RealizedGain(f1, None, d2, 0, 400, 0, 400, 0)
+          RealizedGain(f1, None, d1, 5, usd, 960, 500, 460, 15),
+          RealizedGain(f1, None, d2, 0, usd, 400, 0, 400, 0)
         )
       }
 
@@ -220,7 +331,7 @@ class TaxLotsSpec extends Specification {
         )
 
         ledger.unmatched must beEmpty
-        ledger.realized must_== List(RealizedGain(f1, None, d1, 10, 1200, 1000, 200, 10))
+        ledger.realized must_== List(RealizedGain(f1, None, d1, 10, usd, 1200, 1000, 200, 10))
       }
 
       "attaches the resolved ticker and sorts realized gains by sell date and instrument" >> {
@@ -269,9 +380,37 @@ class TaxLotsSpec extends Specification {
 
           // 0.2 of a unit costs 0.2 * 800 = 160, and sold for 200 it gains 40.
           ledger.realized must_==
-            List(RealizedGain(f1, None, d1, BigDecimal("0.2"), 200, 160, 40, 20))
+            List(RealizedGain(f1, None, d1, BigDecimal("0.2"), usd, 200, 160, 40, 20))
           ledger.open(f1) must_== List(Lot(f1, BigDecimal("0.3"), 800, d0))
         }
+      }
+
+      "leaves the lots as they are on a currency exchange" >> {
+        val d0 = LocalDate.of(2024, 1, 1)
+        val exchangeLeg = op(OperationKind.Exchange, -1100, d0.plusDays(3))
+
+        val ledger = TaxLots.fifo(List(buy(1000, d0, 10), exchangeLeg), noTickers)
+
+        ledger.open(f1) must_== List(Lot(f1, 10, 100, d0))
+        ledger.realized must beEmpty
+      }
+
+      "stamps each realized gain with the currency of its sale" >> {
+        val d0 = LocalDate.of(2024, 1, 1)
+        val d1 = d0.plusDays(10)
+        val euros = AnalyticsFakes.accountOperation(
+          accountId,
+          OperationKind.Sell,
+          1200,
+          at(d1),
+          Some("F1"),
+          quantity = -10,
+          currency = "EUR"
+        )
+
+        val ledger = TaxLots.fifo(List(buy(1000, d0, 10), euros), noTickers)
+
+        ledger.realized.map(_.currency) must_== List(Currency("EUR"))
       }
 
       "opens no lot for a buy that executed no units" >> {

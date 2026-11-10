@@ -14,10 +14,13 @@ credentials and user strategies to the applications that consume it.
 
 Strategies, backtests, alerts and the analytics math don't depend on a broker; the portfolio side
 reads the broker-neutral `AccountOperation`s, and only the operations sync and the instrument
-directory are Tinkoff's. The sync runs for each Tinkoff account a consumer gives it and records
-every operation as Tinkoff sent it together with its translation into an `AccountOperation`. The
-valuation, the tax services and `/export` read those translations, and an instrument is looked up
-by its `InstrumentKey`, the broker and the id that broker gives it, through a directory per broker.
+directory are a broker's own. The Tinkoff sync runs for each Tinkoff account a consumer gives it and
+records every operation as Tinkoff sent it together with its translation into an
+`AccountOperation`. The Interactive Brokers sync does the same for each IB account: it reads the
+statements of an Activity Flex Query through the Flex Web Service, window by window, and records
+every statement row as IB sent it (`IbkrStatementRow`) with its translation. The valuation, the
+tax services and `/export` read those translations, and an instrument is looked up by its
+`InstrumentKey`, the broker and the id that broker gives it, through a directory per broker.
 `Source` is a closed set of data sources, so supporting another broker's data means changing the
 library.
 
@@ -54,15 +57,15 @@ Package root `st.btu.trading.pillar`:
 
 | Package | Contents |
 |---|---|
-| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `binance` |
-| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router, the `InstrumentDirectory` port and its `RoutingInstrumentDirectory` router; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `news`, `screener` |
+| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `ibkr` (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, `IbkrStatement`), `binance` |
+| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router, the `InstrumentDirectory` port and its `RoutingInstrumentDirectory` router; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `ibkr` (the Flex Web Service client, the statement parser, the instrument directory), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
 | `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
 | `paper`, `tax`, `charts` | paper broker; FIFO tax lots and the annual estimate; equity-curve PNG |
-| `services` | sync and command services; `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
-| `processes` | long-running fs2 loops: Telegram updates, portfolio sync, price-history sync, analytics |
+| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation`); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
+| `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers), price-history sync, analytics |
 | `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |
 | `storages` | persistence ports that consumers implement |
 | `data`, `security` | process context, UTC clock, trace ids; HMAC and AES helpers |
@@ -89,8 +92,8 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 - **Processes** are fs2 streams. Self-restarting loops use `ProcessLoop.restarting`, which logs a
   crash, raises a `process-crashed:<name>` system alert and restarts after the backoff. Take a
   fresh `TraceIds.next` per iteration and read "now" and "today" through `UtcClock`.
-- **Errors** are sealed ADTs extending `Exception`, raised in `F` (`MarketDataError`) or returned
-  as `Either` from pure code (`BacktestError`).
+- **Errors** are sealed ADTs extending `Exception`, raised in `F` (`MarketDataError`, `FlexError`)
+  or returned as `Either` from pure code (`BacktestError`, `IbkrStatementError`).
 - **Time and money.** Instants are UTC; bar dates are local to the exchange's time zone. Prices are
   `BigDecimal` at `Prices.Scale`. Divide with `Indicators.divide`, and round figures computed
   through `Double` to `analytics.ReportScale`.
@@ -102,9 +105,9 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   sanitizes and caps the text; alert notifications pass through the same sanitizer.
 - **Persisted values are contracts.** Consumers store the circe encodings of backtest results, of
   `Proximity` and `QuietHours`, and of `Allocation` and `PortfolioMetrics`, the string values of
-  enumeratum enums such as `Source`, `Broker`, `OperationKind`, `OperationState`, `AlertKind`,
-  `BindingMode` and `Period`, and the names of `Side` and `PriceCrossed.Direction`. Renaming any of
-  them breaks stored data.
+  enumeratum enums such as `Source`, `Broker`, `OperationKind`, `OperationState`, `IbkrSection`,
+  `AlertKind`, `BindingMode` and `Period`, and the names of `Side` and `PriceCrossed.Direction`.
+  Renaming any of them breaks stored data.
 - **Public API.** Every public type and member gets Scaladoc with a one-sentence summary; internals
   are `private` or `private[pillar]`. Narrowing or removing a public member breaks consumers, so
   propose it rather than doing it as part of another change.
@@ -162,7 +165,7 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 ## Documentation
 
 `docs/` is the behavioural reference: `market-data.md`, `strategies.md`, `backtesting.md`,
-`analytics.md`, `alerts.md`, `paper-trading.md`, `tax.md`, `telegram-commands.md`,
+`analytics.md`, `alerts.md`, `paper-trading.md`, `tax.md`, `ibkr.md`, `telegram-commands.md`,
 `storage-contracts.md` and `mcp.md`. Update the matching page in the same change as the behaviour,
 signature or command it describes. The quick-start snippets in `README.md` must compile: paste a
 changed snippet into a temporary file under `src/test/scala`, run `sbt Test/compile`, then delete

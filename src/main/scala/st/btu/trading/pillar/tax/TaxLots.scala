@@ -1,11 +1,6 @@
 package st.btu.trading.pillar.tax
 
-import st.btu.trading.pillar.models.domain.{
-  AccountOperation,
-  InstrumentKey,
-  OperationKind,
-  OperationState
-}
+import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.Ticker
 
 import java.time.LocalDate
@@ -14,7 +9,9 @@ import scala.math.BigDecimal.RoundingMode
 
 /** Pure FIFO cost-basis engine over an account's executed operations. One `Lot` is opened per buy
   * or security-transfer-in operation that added units; a sell consumes the oldest open lots first,
-  * partially when the sell falls inside a lot, and always produces exactly one `RealizedGain`.
+  * partially when the sell falls inside a lot, and always produces exactly one `RealizedGain`. A
+  * security transfer out consumes the oldest open lots the same way but realizes nothing: the units
+  * left the account at their cost, and a transfer is not a disposal.
   */
 object TaxLots {
 
@@ -70,21 +67,23 @@ object TaxLots {
     // a tiebreaker for same-instant operations.
     val sorted = ops.sortBy(op => (op.occurredAt, op.ref.value))
 
-    // Each day's total fee for the instrument, pro-rated separately into that same day's buys
-    // (added to cost) and sells (subtracted from proceeds). A single day's fee is used in full for
-    // each side independently; this is a documented simplification (docs/tax.md), not a claim
-    // that a day never mixes a buy's and a sell's own separate commissions.
-    val feesByDate: Map[LocalDate, BigDecimal] =
-      sorted.filter(_.kind == OperationKind.Fee).groupMapReduce(_.occurredOn)(_.amount.abs)(_ + _)
-    val buyQtyByDate = quantityByDate(sorted, OperationKind.Buy)
-    val sellQtyByDate = quantityByDate(sorted, OperationKind.Sell)
-    def feeFor(date: LocalDate): BigDecimal = feesByDate.getOrElse(date, Zero)
+    // Each day's total fee for the instrument in each currency, pro-rated separately into that same
+    // day's buys (added to cost) and sells (subtracted from proceeds) in that currency. A single
+    // day's fee is used in full for each side independently; this is a documented simplification
+    // (docs/tax.md), not a claim that a day never mixes a buy's and a sell's own separate
+    // commissions.
+    val feesByPool: Map[FeePool, BigDecimal] =
+      sorted.filter(_.kind == OperationKind.Fee).groupMapReduce(poolOf)(_.amount.abs)(_ + _)
+    val buyQtyByPool = quantityByPool(sorted, OperationKind.Buy)
+    val sellQtyByPool = quantityByPool(sorted, OperationKind.Sell)
+    def feeFor(pool: FeePool): BigDecimal = feesByPool.getOrElse(pool, Zero)
 
     val result = sorted.foldLeft(InstrumentResult(Nil, Nil, Zero)) { (acc, op) =>
       val date = op.occurredOn
       op.kind match {
         case OperationKind.Buy =>
-          val feeShare = proRated(feeFor(date), op.quantity, buyQtyByDate.getOrElse(date, Zero))
+          val pool = poolOf(op)
+          val feeShare = proRated(feeFor(pool), op.quantity, buyQtyByPool.getOrElse(pool, Zero))
           val unitCost =
             if (op.quantity.signum == 0) Zero else (op.amount.abs + feeShare) / op.quantity
           withLot(acc, Lot(instrument, op.quantity, unitCost, date))
@@ -92,7 +91,8 @@ object TaxLots {
           withLot(acc, Lot(instrument, op.quantity, op.price.getOrElse(Zero), date))
         case OperationKind.Sell =>
           val sold = op.quantity.abs
-          val feeShare = proRated(feeFor(date), sold, sellQtyByDate.getOrElse(date, Zero))
+          val pool = poolOf(op)
+          val feeShare = proRated(feeFor(pool), sold, sellQtyByPool.getOrElse(pool, Zero))
           val proceeds = op.amount.abs - feeShare
           val (consumed, remainingOpen) = consume(acc.open, sold)
           val matchedQty = consumed.iterator.map(_.quantity).sum
@@ -104,6 +104,7 @@ object TaxLots {
             ticker,
             date,
             matchedQty,
+            op.currency,
             proceeds,
             costBasis,
             gain,
@@ -114,9 +115,14 @@ object TaxLots {
             realized = realizedGain :: acc.realized,
             unmatched = acc.unmatched + (sold - matchedQty)
           )
-        case OperationKind.SecurityOut | OperationKind.Deposit | OperationKind.Withdrawal |
-            OperationKind.Dividend | OperationKind.Coupon | OperationKind.Interest |
-            OperationKind.Fee | OperationKind.Tax | OperationKind.Other =>
+        case OperationKind.SecurityOut =>
+          val transferred = op.quantity.abs
+          val (consumed, remainingOpen) = consume(acc.open, transferred)
+          val matchedQty = consumed.iterator.map(_.quantity).sum
+          acc.copy(open = remainingOpen, unmatched = acc.unmatched + (transferred - matchedQty))
+        case OperationKind.Deposit | OperationKind.Withdrawal | OperationKind.Dividend |
+            OperationKind.Coupon | OperationKind.Interest | OperationKind.Fee | OperationKind.Tax |
+            OperationKind.Exchange | OperationKind.Other =>
           acc
       }
     }
@@ -127,11 +133,18 @@ object TaxLots {
   private def withLot(acc: InstrumentResult, lot: Lot): InstrumentResult =
     if (lot.quantity.signum > 0) acc.copy(open = acc.open :+ lot) else acc
 
-  private def quantityByDate(
+  // The fees and the trades that share a fee: those of one day in one currency. A fee is added to a
+  // cost, or taken from proceeds, only in its own currency, since the ledger has no exchange rates;
+  // a fee in a currency that the instrument has no trade in that day belongs to no trade.
+  private final case class FeePool(date: LocalDate, currency: Currency)
+
+  private def poolOf(op: AccountOperation): FeePool = FeePool(op.occurredOn, op.currency)
+
+  private def quantityByPool(
     ops: List[AccountOperation],
     kind: OperationKind
-  ): Map[LocalDate, BigDecimal] =
-    ops.filter(_.kind == kind).groupMapReduce(_.occurredOn)(_.quantity.abs)(_ + _)
+  ): Map[FeePool, BigDecimal] =
+    ops.filter(_.kind == kind).groupMapReduce(poolOf)(_.quantity.abs)(_ + _)
 
   private def proRated(total: BigDecimal, share: BigDecimal, ofTotal: BigDecimal): BigDecimal =
     if (ofTotal <= Zero) Zero else total * share / ofTotal

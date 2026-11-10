@@ -5,6 +5,7 @@ Package `st.btu.trading.pillar.models.market` (domain), `gateways.MarketDataSour
 `gateways.MarketDataSources` (routes a ticker to the implementation its source setting selects,
 and to the Yahoo symbol or Tinkoff board that setting names),
 `gateways.InstrumentDirectory` (resolves the id a broker gives an instrument to the instrument),
+`gateways.ibkr` (Interactive Brokers' instrument directory - see [`ibkr.md`](ibkr.md)),
 `services`/`processes` (sync loop), `storages` (persistence contracts - see
 [`storage-contracts.md`](storage-contracts.md)).
 
@@ -355,6 +356,7 @@ implements the lookup over the Tinkoff Invest API:
   `Transient`, anything else to `Other`.
 - Stored records are never refreshed. A ticker the broker renames under the same FIGI keeps its old
   ticker until its stored record is removed.
+- A key of another broker gives `None`, with no call and nothing stored.
 
 Construction mirrors `TcsMarketDataSource`; `resource` opens its own gRPC channel:
 
@@ -368,6 +370,22 @@ object TcsInstrumentDirectory {
   def resource[I[_]: Sync, F[_]: Async](token: tcs.Token, storage: BrokerInstrumentStorage[F])(
     implicit liftFI: Lift[F, I]
   ): Resource[I, TcsInstrumentDirectory[F]]
+}
+```
+
+`gateways.ibkr.IbkrInstrumentDirectory` is Interactive Brokers' directory. Its instrument ids are
+contract ids (`conid`). The Flex Web Service, which IB's statements are read through, has no
+instrument lookup, so the directory answers from `BrokerInstrumentStorage` alone: a `Broker.Ibkr`
+key the storage holds is answered from it, and any other key, a key of another broker included, is
+answered with `None`. The statement sync fills the storage, with a record for each instrument a
+statement describes (the IB symbol as the ticker, the listing exchange as the board, the
+description as the name, the asset category as the type and the currency) - see
+[`ibkr.md`](ibkr.md#instruments). The directory raises no error of its own: only a failure of the
+storage reaches the caller.
+
+```scala
+object IbkrInstrumentDirectory {
+  def create[F[_]: Applicative](storage: BrokerInstrumentStorage[F]): IbkrInstrumentDirectory[F]
 }
 ```
 

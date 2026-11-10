@@ -14,8 +14,8 @@ conversion it uses is a documented approximation, not the official rate for any 
 ```scala
 final case class Lot(instrument: InstrumentKey, quantity: BigDecimal, unitCost: BigDecimal, acquiredOn: LocalDate)
 final case class RealizedGain(instrument: InstrumentKey, ticker: Option[Ticker], sellDate: LocalDate,
-                              quantity: BigDecimal, proceeds: BigDecimal, costBasis: BigDecimal, gain: BigDecimal,
-                              holdingDays: Long)
+                              quantity: BigDecimal, currency: Currency, proceeds: BigDecimal,
+                              costBasis: BigDecimal, gain: BigDecimal, holdingDays: Long)
 final case class LotLedger(open: Map[InstrumentKey, List[Lot]], realized: List[RealizedGain],
                            unmatched: Map[InstrumentKey, BigDecimal])
 
@@ -25,7 +25,8 @@ object TaxLots {
 ```
 
 Pure, no `F[_]`. Only operations whose `state` is `executed` and that name an instrument are
-considered; everything else in `operations` is ignored. An `InstrumentKey` is the broker and the id
+considered; everything else in `operations` is ignored, such as the legs of a currency exchange
+(`exchange`), which name none. An `InstrumentKey` is the broker and the id
 that broker gives the instrument, so lots of instruments at different brokers never mix. `tickerOf`
 is a plain function so `TaxLots` itself never touches an `InstrumentDirectory` - the caller
 (`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. Quantities are
@@ -49,13 +50,20 @@ even when they land on the same date.
 
 ### Fee pro-ration
 
-A day's total of the instrument's `fee` operations, by `|amount|` (there can be more than one fee
-operation on a day; they're summed), is pro-rated **twice, independently**:
+A day's total of the instrument's `fee` operations **in each currency**, by `|amount|` (there can be
+more than one fee operation on a day; they're summed), is pro-rated **twice, independently**:
 
-- across that day's buys of that instrument, by each one's own share of the day's total *buy*
-  quantity - added to each buy's `unitCost` numerator before dividing by its own quantity;
-- across that day's sells of that instrument, by each one's own share of the day's total *sell*
-  quantity - subtracted from each sell's `proceeds`.
+- across that day's buys of that instrument **in the same currency**, by each one's own share of
+  the day's total *buy* quantity in that currency - added to each buy's `unitCost` numerator before
+  dividing by its own quantity;
+- across that day's sells of that instrument in the same currency, by each one's own share of the
+  day's total *sell* quantity in that currency - subtracted from each sell's `proceeds`.
+
+A fee is shared only among the trades in its own currency, since `TaxLots` has no exchange rates to
+add a fee to a cost in another currency. A fee in a currency that the instrument had no buy, or no
+sell, in that day goes into no trade's cost: a commission charged in dollars on a trade in Taiwan
+dollars, which Interactive Brokers does, stays out of the lot's cost in Taiwan dollars, and so the
+estimate leaves it out.
 
 This is a deliberate simplification: a day that has both buys and sells of the same instrument has
 its one fee total used in full on *each* side rather than split once across both. In practice a
@@ -67,14 +75,17 @@ charge on the account, is in no trade's cost.
 
 ### Consuming lots on a sell
 
-| Operation kind |
-|---|
-| `sell` |
+| Operation kind | Effect |
+|---|---|
+| `sell` | consumes lots, and produces a `RealizedGain` |
+| `security_out` | consumes lots, and realizes nothing - see "Transfers out" below |
 
-Consumes the instrument's open lots oldest-first ("First In, First Out"), splitting the one lot that
-only partially covers the remainder. Exactly one `RealizedGain` is produced per sell operation,
-always:
+Both consume the instrument's open lots oldest-first ("First In, First Out"), splitting the one lot
+that only partially covers the remainder. Exactly one `RealizedGain` is produced per sell
+operation, always:
 
+- `currency` is the currency of the sell operation, which `proceeds`, `costBasis` and `gain` are
+  in;
 - `proceeds = |amount| - that day's pro-rated fee share` (see above), regardless of how much of the
   sell was actually matched against open lots;
 - `quantity`/`costBasis` reflect only the lots actually consumed - see "selling more than held"
@@ -90,14 +101,19 @@ always:
   underlying *dates* (the two differ slightly for an uneven split), and `TaxReport.annual`'s
   long-term exemption check is only as precise as this one blended number.
 
-**Transfers out**: a `security_out` does not touch the ledger. It opens no lot, consumes none and
-produces no `RealizedGain`, so the lots of units transferred away stay open and a later sale can be
-matched against them. The valuation does take such units out of the position.
+**Transfers out**: a `security_out` consumes the oldest open lots of its instrument, as a sale
+does, but realizes no gain: the units left the account at their cost, and a transfer is not a
+disposal. It produces no `RealizedGain`, and a later sale is matched against the lots that remain.
+The units beyond the open lots are added to `LotLedger.unmatched`, as for a sale. A transfer between
+two accounts of one owner would ideally carry the lots, with their cost and dates, to the receiving
+account; the library has no link across accounts to do that, so the receiving account's
+`security_in` opens a lot at the transfer's price, or at no cost when it has none.
 
-**Selling more than held**: if a sell's quantity exceeds every open lot for that instrument,
-whatever lots exist are fully consumed (down to zero open lots) and the shortfall is added to
-`LotLedger.unmatched(instrument)` (a running total across every oversold sell for that instrument -
-absent, not zero, for an instrument that was never oversold). Nothing is raised or logged
+**Selling more than held**: if a sell's quantity, or the quantity of a transfer out, exceeds every
+open lot for that instrument, whatever lots exist are fully consumed (down to zero open lots) and
+the shortfall is added to `LotLedger.unmatched(instrument)` (a running total across every oversold
+sell or transfer for that instrument - absent, not zero, for an instrument that was never
+oversold). Nothing is raised or logged
 (`TaxLots.fifo` is pure); the `RealizedGain` for that sell still carries the full `proceeds` but
 only the matched `quantity`/`costBasis` - so an entirely unmatched sell (no lots at all, e.g. an
 instrument bought before the loaded operations window) reports `gain == proceeds`, the most
@@ -137,15 +153,16 @@ lot is long-term. The default, 3 years, follows the Russian rule for tax residen
 defaults.
 
 Pure. `operations` must be the same (or a superset of the) operations `ledger` was built from -
-`TaxReport.annual` uses it for two things `ledger` alone cannot provide:
+`TaxReport.annual` uses it for what `ledger` alone cannot provide: the **dividend and coupon
+income, and the withheld tax**. These operation kinds never open or close a lot, so they never
+appear in `ledger` at all; they are scanned directly from `operations`, the executed ones of the
+year.
 
-1. **Each instrument's trading currency.** `RealizedGain` carries no currency of its own, so it is
-   looked up from any operation referencing that instrument (`operations.flatMap(op =>
-   op.instrument.map(_ -> op.currency)).toMap`), trusting - as `PortfolioValuationServiceImpl`
-   already does - that one instrument trades in one currency.
-2. **Dividend and coupon income, and withheld tax.** These operation kinds never open or close a
-   lot, so they never appear in `ledger` at all; they are scanned directly from `operations`, the
-   executed ones of the year.
+**Each gain's currency.** A realized gain is converted in the currency of its own sale,
+`RealizedGain.currency`, and not in the currency of the other operations that name its instrument.
+A fee, a tax or a dividend on the instrument can be in another currency than its trades (a
+commission charged in dollars on a trade in Taiwan dollars, say), and none of them changes the
+currency a gain is in.
 
 ### FX conversion
 

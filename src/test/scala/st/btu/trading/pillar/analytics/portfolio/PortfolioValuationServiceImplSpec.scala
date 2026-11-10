@@ -281,6 +281,23 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
             series.unmappedInstruments must beEmpty
           }
         }
+
+        "keeps the legs of a currency exchange in the cash of each currency, without counting them as invested" >> {
+          val ops = List(
+            deposit(d0, 1000),
+            // 900 roubles exchanged for 10 dollars, which close the day at 100 roubles: at a close
+            // other than the exchange's own rate, the legs no longer cancel out in roubles.
+            accountOperation(accountId, OperationKind.Exchange, -900, at(d0)),
+            accountOperation(accountId, OperationKind.Exchange, 10, at(d0), currency = "USD")
+          )
+          for {
+            service <- buildService(ops, bars = List(bar(usdRub, d0, 100)))
+            series <- service.dailySeries(accountId, d0, d0)
+          } yield
+          // 100 roubles and 10 dollars at 100; invested and the day's flow are the deposit alone.
+          series.points.map(p => (p.value, p.invested, p.cashFlow)) must_==
+            Vector((BigDecimal(1100), BigDecimal(1000), BigDecimal(1000)))
+        }
       }
 
       "instrument mapping" >> {

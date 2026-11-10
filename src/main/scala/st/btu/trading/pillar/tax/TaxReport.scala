@@ -6,10 +6,10 @@ import st.btu.trading.pillar.models.domain.*
 import java.time.LocalDate
 
 /** Builds one year's [[AnnualTaxReport]] from a FIFO ledger plus the operations it was built from.
-  * `operations` supplies what the ledger alone cannot: each instrument's trading currency (resolved
-  * from any operation that references it), and dividend/coupon/withheld-tax amounts, which never
-  * open or close a lot. This is an estimate for personal reference, not tax advice: it does not
-  * know about loss carry-forward, IIS deductions, or any rule beyond the ones implemented here.
+  * `operations` supplies what the ledger alone cannot: the dividend, coupon and withheld-tax
+  * amounts, which never open or close a lot. This is an estimate for personal reference, not tax
+  * advice: it does not know about loss carry-forward, IIS deductions, or any rule beyond the ones
+  * implemented here.
   */
 object TaxReport {
 
@@ -45,16 +45,11 @@ object TaxReport {
     def convert(amount: BigDecimal, currency: Currency, date: LocalDate): Option[BigDecimal] =
       if (currency == base) Some(amount) else fxRate(currency, date).map(amount * _)
 
-    val instrumentCurrency: Map[InstrumentKey, Currency] =
-      operations.iterator.flatMap(op => op.instrument.map(_ -> op.currency)).toMap
-
     val yearGains = ledger.realized.filter(_.sellDate.getYear == year)
 
     val (realizedGains, exemptTotal, gainsUnconverted) =
       yearGains.foldLeft((Zero, Zero, 0)) { case ((realized, exempt, unconverted), rg) =>
-        instrumentCurrency
-          .get(rg.instrument)
-          .flatMap(ccy => convert(rg.gain, ccy, rg.sellDate)) match {
+        convert(rg.gain, rg.currency, rg.sellDate) match {
           case Some(converted) =>
             // An FX rate is always positive, so the sign of `converted` always matches the sign
             // of `rg.gain` - checking either is equivalent.

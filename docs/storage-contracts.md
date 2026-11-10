@@ -27,7 +27,7 @@ Read-only from trading-pillar's side: `AnalyticsProcess` iterates `allAccounts`,
 provides the accounts by whatever means it chooses. An `Account` names the `Broker` it is held at,
 which decides where its operations come from. A relational implementation could use a table such
 as `accounts` with an integer `id` (it maps to `AccountId(value: Int)`), a unique `name`, a
-`broker` (`tinkoff`, the `Broker` values) and `created_at`.
+`broker` (`tinkoff` | `ibkr`, the `Broker` values) and `created_at`.
 
 ## `TcsPortfolioOperationStorage[F[_]]`
 
@@ -64,6 +64,59 @@ The portfolio readers, the valuation and tax services and `/export`, read the tr
 use a table such as `tcs_portfolio_operations` with a generated `id`, one column per remaining
 `TcsPortfolioOperation` field, and a unique key on `(account_id, ext_id, operation_type)`.
 
+## `IbkrStatementStorage[F[_]]`
+
+```scala
+trait IbkrStatementStorage[F[_]] {
+  def record(records: List[IbkrRowRecord]): F[Unit]
+  def latestReportDate(accountId: AccountId): F[Option[LocalDate]]
+  def rows(accountId: AccountId): F[Vector[IbkrStatementRow]]
+  def rowsByTransactionIds(accountId: AccountId, section: IbkrSection,
+                           ids: Set[IbkrTransactionId]): F[Vector[IbkrStatementRow]]
+}
+```
+
+The rows of an Interactive Brokers account's statements, as IB reported them. Written by the
+library, via `IbkrSyncProcess`, through `record`. An `IbkrRowRecord` pairs a row with its
+translations into `AccountOperation`s (see [`AccountOperationStorage`](#accountoperationstoragef_)
+below), and `record` stores both:
+
+- **The row** is identified by `(accountId, section, transactionId)`. One not stored yet is
+  inserted. One stored already has its `reportDate` and `attributes` replaced, so a row IB reports
+  again, corrected or cancelled, overwrites the earlier one. The sync reads the statements of the
+  last days again on every run, so a record usually arrives for a row stored already.
+- **The translations** of a row, one or several, are replaced as a whole. They are the account's
+  operations whose `ref` is the row's `ref`, or that followed by a slash and a suffix. The row's
+  `ref` (`IbkrStatementRow.ref`) is its section's value and its transaction id, such as
+  `trade/123456`, and the other operations of the row add a suffix: `trade/123456/commission`,
+  `trade/123456/taxes`, `trade/123456/EUR` for a leg of a currency conversion,
+  `transfer/789/cash`. `record` stores the record's translations, each keyed by
+  `(accountId, ref)`, and removes the row's stored translations that are not among them, so that a
+  translation the row no longer produces does not stay: IB reports a row again corrected, and the
+  translation of a row can change. `IbkrStatementRow.owns` tells whether a `ref` belongs to a row.
+- **All in one transaction**: a failure leaves none of it done, neither the row, nor its
+  translations, nor the removal of the stale ones. A relational implementation can group the
+  records of a call into batches and run each batch in one transaction. The library records at most
+  500 rows per call.
+
+`attributes` holds every attribute of the row's XML element, each name with its value exactly as IB
+sent it; a placeholder such as `-` or `N/A` is kept. The sync reads the rows back to translate them
+again: `rows` each time the process starts, to record every stored row again with its translation,
+and `rowsByTransactionIds` when a row that cancels a trade arrives for a trade stored earlier.
+`latestReportDate` tells it where to resume; the order of `rows` and of `rowsByTransactionIds` does
+not matter. The portfolio readers read the translations through
+[`AccountOperationStorage`](#accountoperationstoragef_) instead. A relational implementation could
+use a table such as `ibkr_statement_rows` with a generated `id`, `account_id`, `section` (`trade` |
+`cash_transaction` | `transfer` | `corporate_action`, the `IbkrSection` values), `transaction_id`,
+`report_date`, `attributes` (a JSON object of strings) and `updated_at`, a unique key on
+`(account_id, section, transaction_id)` for `record` to conflict on, and an index on
+`(account_id, report_date)` for `latestReportDate`. For each record, such an implementation upserts
+the translations on `(account_id, ref)`, and then deletes, from the account's operations, those
+whose `ref` equals the row's `ref` or starts with the row's `ref` and a slash, and that are not
+among the new ones. Match the prefix literally and not with a pattern: a section's value can contain
+an underscore, which `LIKE` reads as a wildcard. PostgreSQL's `starts_with(ref, '<row ref>/')` does
+it. See [`ibkr.md`](ibkr.md) for what the rows hold and how they are translated.
+
 ## `AccountOperationStorage[F[_]]`
 
 ```scala
@@ -74,16 +127,19 @@ trait AccountOperationStorage[F[_]] {
 
 An account's operations in terms shared by every broker. Read-only: each broker's own storage
 records its operations together with their translations, so for Tinkoff the translations are
-written by `TcsPortfolioOperationStorage.record`. The valuation, the tax services and `/export` read
-this port, and nothing else, for an account's operations: only executed operations count towards
-positions, cash and tax, and `/export operations` lists the operations of every state.
+written by `TcsPortfolioOperationStorage.record` and for Interactive Brokers by
+`IbkrStatementStorage.record`. The valuation, the tax services and `/export` read this port, and
+nothing else, for an account's operations: only executed operations count towards positions, cash
+and tax, and `/export operations` lists the operations of every state.
 
 `operations` returns the operations that occurred from `since` (inclusive) until `until`
 (exclusive), oldest first, and in `ref` order among those at the same instant.
 
 An `AccountOperation` names the broker's record it was translated from through its `ref`, which
 is unique within the account and built from the raw record's own key (for Tinkoff, the operation's
-id and type, joined with a slash). One raw record can give several operations, never the reverse.
+id and type, joined with a slash; for Interactive Brokers, the row's section and transaction id,
+such as `trade/123456`, with a suffix such as `/commission` for the operations beyond the first).
+One raw record can give several operations, never the reverse.
 `kind`, `state`, `instrument.broker` and `brokerType` are persisted by their string values (the
 `value` of `OperationKind`, `OperationState` and `Broker`; `brokerType` is the broker's own name
 for the operation). A relational implementation could use a table such as `account_operations`
@@ -230,8 +286,11 @@ Broker reference data keyed by an `InstrumentKey`, the broker and the id that br
 instrument. Read and written by the library through `TcsInstrumentDirectory`, which answers a key
 from `find` when it can and otherwise fetches it from the broker and stores it with `upsert`, so an
 instrument the broker knows is fetched once - see
-[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). The `broker` is stored
-as the `value` of a `Broker`, and the `instrument.id` is the broker's own, a FIGI for Tinkoff. A
+[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). Interactive Brokers
+has no lookup call: the statement sync writes the instruments each statement describes with
+`upsert`, and `IbkrInstrumentDirectory` answers from `find` alone. The `broker` is stored as the
+`value` of a `Broker`, and the `instrument.id` is the broker's own, a FIGI for Tinkoff and a
+contract id for Interactive Brokers. A
 relational implementation could use a table such as `broker_instruments` with a generated `id`, the
 broker (`broker`) and the instrument id (`instrument_id`), `ticker`, a nullable `class_code` (the
 board, for a broker that has one), `name`, `instrument_type`, `currency` and `updated_at`, and a
@@ -432,7 +491,8 @@ implementation runs its statements in one transaction.
 |---|---|---|---|
 | `AccountStorage` | `accounts` | none | `allAccounts` |
 | `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` (and `account_operations`) | `record` | `lastOperation`, `operationsByDtRange`, for the sync only |
-| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` | `operations` |
+| `IbkrStatementStorage` | `ibkr_statement_rows` (and `account_operations`) | `record` | `latestReportDate`, `rows`, `rowsByTransactionIds`, for the sync only |
+| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` and `IbkrStatementStorage.record` | `operations` |
 | `PriceHistoryStorage` | `price_history` | `upsertBars` | `lastBarDate`, `bars`, `latestBars` |
 | `InstrumentStorage` | `instrument_metadata` | `upsert` | `find` |
 | `WatchlistStorage` | `watchlist_items` | `add`, `remove` | `allEnabled`, `byAccount` |
