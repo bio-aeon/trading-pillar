@@ -1,9 +1,10 @@
 # Interactive Brokers
 
-Packages `st.btu.trading.pillar.models.ibkr` (identifiers, statement rows, errors),
+Packages `st.btu.trading.pillar.models.ibkr` (identifiers, statement rows, open positions, errors),
 `gateways.ibkr` (the Flex Web Service client, the statement parser, the instrument directory),
-`services` (`IbkrRowTranslation`, `IbkrSyncService`, `IbkrSyncServiceImpl`, `IbkrSyncConfig`),
-`processes` (`IbkrSyncProcess`, `IbkrSyncProcessImpl`) and `storages.IbkrStatementStorage`.
+`services` (`IbkrRowTranslation`, `IbkrSyncService`, `IbkrSyncServiceImpl`, `IbkrSyncConfig`,
+`IbkrReconciler`), `processes` (`IbkrSyncProcess`, `IbkrSyncProcessImpl`) and
+`storages.IbkrStatementStorage`.
 
 An Interactive Brokers (IB) account is read from the statements of an **Activity Flex Query** that
 its owner saves in IB's Client Portal. The library fetches each statement through IB's Flex Web
@@ -13,7 +14,10 @@ other broker. Prices come from the market data sources; IB's statements carry no
 
 For each window of dates the Flex Web Service returns the statement as XML, `IbkrStatementParser`
 reads it into rows, `IbkrRowTranslation` translates each row into operations, and
-`IbkrStatementStorage.record` stores every row together with its operations.
+`IbkrStatementStorage.record` stores every row together with its operations. The statement also
+reports the positions IB holds for the account at its end, and after a sync `IbkrReconciler`
+compares them with the positions the recorded operations leave (see
+[Reconciliation](#reconciliation)).
 
 IB updates statements once a day, after its close of business (for securities at 8:20 PM US
 Eastern time), so an IB account's figures lag by a day. Intraday reports (Trade Confirmation
@@ -32,7 +36,7 @@ these sections:
 | Cash Transactions | Detail |
 | Transfers | - |
 | Corporate Actions | Detail |
-| Open Positions | Summary (not read yet) |
+| Open Positions | Summary |
 | Financial Instrument Information | - |
 
 Select every field of each section. The library keeps all the attributes of a row as IB sent them,
@@ -40,6 +44,11 @@ so that a translation can be done again later without fetching the statement aga
 the ones listed under ["Fields the library reads"](#fields-the-library-reads). A row that lacks an
 attribute that the translation needs makes the sync fail with a message naming the row and the
 attribute, so that a field left out of the query is found at once.
+
+Open Positions is not stored: the reconciliation compares it with the positions the translated
+rows leave. Choose the summary level, which has a row for each contract. A query without the
+section reports no positions, so the reconciliation raises every position the account holds as a
+difference.
 
 In the query's delivery and general configuration:
 
@@ -75,10 +84,12 @@ One token reads every account of one IB login. Each account needs the id of its 
 | Transfers | `transactionID`, `reportDate`, `currency`, and `assetCategory`, `quantity` and `conid` of a stock transfer | `dateTime` (or `date`), `type`, `direction`, `transferPrice`, `cashTransfer`, `conid` |
 | Corporate Actions | `transactionID`, `reportDate`, `currency`, and `conid` of a leg that has a `quantity` | `levelOfDetail`, `dateTime`, `type`, `quantity`, `proceeds`, `conid` |
 | Financial Instrument Information | `conid`, `symbol` | `assetCategory`, `listingExchange`, `description`, `isin`, `currency` |
+| Open Positions | `conid`, `position` | `levelOfDetail`, `assetCategory`, `symbol` |
 
 A row is dated by its `dateTime`, else by its `date` or `tradeDate`, else by its `reportDate`, the
 booking date, so select `dateTime` to date a trade by when it was made. The `levelOfDetail` of a row
-is read when it is there; a trade or a detail row that names none is kept.
+is read when it is there; a trade or a detail row that names none is kept. An open position that
+lacks what it needs does not fail the sync: it is left out, which the parser table below says.
 
 ## The Flex Web Service client
 
@@ -158,9 +169,9 @@ accounts that read with it.
 ## The statement parser
 
 `IbkrStatementParser.parse(xml)` reads the response of a query, `<FlexQueryResponse>` with a
-`<FlexStatement>` per account, into `IbkrStatement`s: the IB account id, the dates, the rows and the
-instruments. It uses the JDK's StAX with document type declarations and external entities
-switched off. It keeps:
+`<FlexStatement>` per account, into `IbkrStatement`s: the IB account id, the dates, the rows, the
+instruments and the open positions. It uses the JDK's StAX with document type declarations and
+external entities switched off. It keeps:
 
 | Element | Kept when |
 |---|---|
@@ -169,11 +180,16 @@ switched off. It keeps:
 | `Transfer` | it has a `transactionID`, without which the parse fails |
 | `CorporateAction` | its `levelOfDetail` is `DETAIL` or it names none, and it has a `transactionID` |
 | `SecurityInfo` | it has a `conid` and a `symbol` |
+| `OpenPosition` | its `levelOfDetail` is `SUMMARY` or it names none, and it has a `conid` and a `position`. A row of a lot, which breaks a position into its purchases, is left out |
 
 IB reports the fills of a trade again as `Order`, `SymbolSummary` and `AssetSummary` elements, and a
 summary row of a cash transaction or a corporate action repeats a detail row under the account `-`
 with no id; none of those is kept. Every kept row also needs a `reportDate`. Other elements and
-attributes are ignored. Open Positions is not read.
+attributes are ignored.
+
+An `IbkrOpenPosition` holds the contract id, the symbol and the asset category when the row has
+them, and the quantity, which is negative for a short position. It is not a stored row, so it has
+no transaction id and no report date.
 
 An attribute value of `""`, `-`, `--` or `N/A` stands for no value. Dates are `yyyyMMdd`, a time is
 `yyyyMMdd;HHmmss` or a date alone, which stands for the start of that day, and a number may contain
@@ -197,9 +213,11 @@ final case class IbkrSyncConfig(historyStart: Option[LocalDate] = None, rereadDa
                                 statementZone: ZoneId = ZoneId.of("America/New_York"))
 
 trait IbkrSyncService[F[_]] {
-  def sync: F[Unit]
+  def sync: F[Option[IbkrOpenPositions]]
   def rebuildTranslations: F[Unit]
 }
+
+final case class IbkrOpenPositions(day: LocalDate, zone: ZoneId, positions: List[IbkrOpenPosition])
 ```
 
 ### Windows
@@ -237,6 +255,14 @@ least twelve minutes at the default pace.
 4. Record the rows with their translations, at most 500 rows per `IbkrStatementStorage.record`
    call.
 5. Record the instruments the statement describes.
+6. Keep the open positions of the statement, as of the last day the statement says it covers, its
+   `toDate`.
+
+`sync` returns the open positions of the last window it read, as an `IbkrOpenPositions`: the last
+day its statement covers, the statement zone it is a day of, and the positions. The day is the
+statement's own and not the one the window asked for, so a statement that IB ends early is compared
+as of the day it ends. It returns `None` when it read no window. A window read in halves ends with
+its second half, so those are the positions returned.
 
 ### Cancellations
 
@@ -258,22 +284,26 @@ brings them up to date after a change to the translation.
 ### The process
 
 `IbkrSyncProcessImpl` runs one loop per `IbkrAccount` it is given, named `ibkr-sync:<account id>`:
-first the rebuild, until it succeeds once, then a sync every `interval`. The loops run in a
-`ProcessContext` that names the account. A failure, an expired token or an invalid query included,
-is logged and raised as the system alert `process-crashed:ibkr-sync:<account id>` by
+first the rebuild, until it succeeds once, then a sync every `interval`, each followed by the
+[reconciliation](#reconciliation) when the sync read a window. The loops run in a `ProcessContext`
+that names the account. A failure, an expired token, an invalid query or an unreadable storage
+included, is logged and raised as the system alert `process-crashed:ibkr-sync:<account id>` by
 `ProcessLoop.restarting`, and the loop starts again after `interval`; the other accounts go on.
-`resource` builds one `FlexWebServiceImpl` for the token and a sync service for each account.
+`resource` builds one `FlexWebServiceImpl` for the token, a sync service for each account and one
+`IbkrReconciler` for all of them.
 
 ```scala
 object IbkrSyncProcessImpl {
   def resource[I[_]: Sync, F[_]: Async: GenUUID](
     accounts: List[IbkrAccount], token: FlexToken, config: IbkrSyncConfig, interval: FiniteDuration,
-    statementStorage: IbkrStatementStorage[F], instrumentStorage: BrokerInstrumentStorage[F],
-    systemAlerts: SystemAlerts[F], backend: SttpBackend[F, Any],
-    flexConfig: FlexWebServiceConfig = FlexWebServiceConfig()
+    statementStorage: IbkrStatementStorage[F], operations: AccountOperationStorage[F],
+    instrumentStorage: BrokerInstrumentStorage[F], systemAlerts: SystemAlerts[F],
+    backend: SttpBackend[F, Any], flexConfig: FlexWebServiceConfig = FlexWebServiceConfig()
   )(implicit logs: Logs[I, F], WL: WithLocal[F, ProcessContext]): Resource[I, IbkrSyncProcessImpl[F]]
 }
 ```
+
+`operations` is the port the reconciliation reads the account's recorded operations from.
 
 ## Translation
 
@@ -332,6 +362,81 @@ instrument in the statement. A currency conversion describes no instrument, and 
 for which no symbol, asset category or currency is known is left out. The records are written on
 every window, so a ticker IB renames under the same contract id is updated.
 
+### Yahoo symbols
+
+Prices of an IB instrument come from Yahoo Finance, which can know it by another symbol than IB's.
+For each IB instrument an account holds, the held instruments service sets the ticker to Yahoo under
+the symbol that a rule derives from IB's symbol and the instrument's listing exchange, unless the
+ticker has a source setting already or the router has no Yahoo adapter (see
+[`market-data.md`](market-data.md#held-instruments-on-the-watchlist)). The rule is a pure function
+of the two:
+
+| Listing exchange at IB | Yahoo suffix |
+|---|---|
+| `NYSE`, `NASDAQ`, `ARCA`, `AMEX`, `BATS`, `IEX` | none |
+| `LSE` | `.L` |
+| `IBIS`, `IBIS2` (Xetra) | `.DE` |
+| `SBF` (Euronext Paris) | `.PA` |
+| `AEB` (Euronext Amsterdam) | `.AS` |
+| `EBS` (SIX Swiss Exchange) | `.SW` |
+| `TSE` (Toronto) | `.TO` |
+
+- A space or a dot before a share class becomes a hyphen, ahead of the suffix: `BRK B` on `NYSE` is
+  `BRK-B`, and `BT.A` on `LSE` is `BT-A.L`.
+- A dot that ends the symbol sets no share class apart, and is dropped, since the suffix brings its
+  own: IB writes the London symbol of BP as `BP.`, and Yahoo knows it as `BP.L`.
+- Any other exchange has no rule, and neither has an instrument that names no listing exchange.
+
+## Reconciliation
+
+After a sync that read at least one window, `IbkrSyncProcessImpl` hands the open positions the sync
+returned to `IbkrReconciler.reconcile`, which checks the positions the account's recorded
+operations leave against them. A difference means a gap in the translation: a corporate action
+translated wrongly, a row IB reported late, or a row that never came.
+
+```scala
+final class IbkrReconciler[F[_]] {
+  def reconcile(accountId: AccountId, reported: IbkrOpenPositions): F[Unit]
+}
+
+object IbkrReconciler {
+  def create[I[_]: Sync, F[_]: Sync](
+    operations: AccountOperationStorage[F], instruments: BrokerInstrumentStorage[F],
+    systemAlerts: SystemAlerts[F]
+  )(implicit logs: Logs[I, F]): I[IbkrReconciler[F]]
+}
+```
+
+- **What is compared**: the account's holdings as of the end of the last day the statement covers,
+  in the statement zone, against its open positions of asset category `STK`, per contract id. The
+  holdings are [`Holdings`](analytics.md#holdings) of the account's executed operations that occurred
+  before that instant, read from `AccountOperationStorage` as far back as the valuation reads. A
+  contract on one side only counts as zero on the other. Quantities are compared by value, so
+  `10` and `10.000000000000000000`, the scale a storage may return, are equal. Positions of other
+  asset categories are not compared, since the sync records no position for them. Several rows for
+  one contract add up.
+- **Alerts**:
+  - Differences raise the system alert `ibkr-reconciliation:<account id>`. Its body names each
+    instrument by its symbol and contract id with both quantities, as in
+    `VOD (contract 12345): recorded 100, IB reports 90`, ordered by contract. The symbol is IB's,
+    or for a contract IB does not report the one of the stored `BrokerInstrument`, and the contract
+    id alone when there is none. The alert is about the account as the library knows it, by its
+    `AccountId`: the IB account id is never named, in the alert or in the log.
+  - The alert is raised again only when the differences change, as the alert shows them.
+  - Once the differences are gone, the system alert `ibkr-reconciled:<account id>` follows, once.
+    Differences that come back after that are raised again.
+  - Like every system alert, they go through the dispatcher's guards (see
+    [`alerts.md`](alerts.md#system-alerts)), so an alert within the cooldown of the previous one is
+    recorded as suppressed.
+- **What is remembered**: the differences raised for each account are kept in memory. After a
+  restart the differences that are still there are raised once more, and an alert that failed to go
+  out is tried again at the next sync.
+- **A difference can be transient**: a row IB books after a sync read its window is stored by a later
+  sync, which reads the last `rereadDays` again, and the next reconciliation then finds the
+  positions equal and raises `ibkr-reconciled`.
+- **A failure** of the reconciliation, such as an unreadable storage, fails the account's loop like
+  a failure of its sync.
+
 ## Storage
 
 `storages.IbkrStatementStorage[F]` keeps the rows with their translations; see
@@ -343,7 +448,8 @@ every window, so a ticker IB renames under the same contract id is updated.
   `America/New_York`; a wrong zone shifts the `occurredAt` of the operations, and so which day they
   count for.
 - **Scope**: stocks and ETFs, which IB files as `STK`, and currency conversions. A trade of another
-  asset category (options, futures, bonds) is kept as `other` with its cash, and has no position.
+  asset category (options, futures, bonds) is kept as `other` with its cash, and has no position,
+  and the reconciliation leaves out the positions IB reports in them.
 - **Which transfers carry cash**, and in which attribute, is not confirmed. A securities transfer
   is translated by its `direction`, or by the sign of its quantity when the row names none, but the
   cash of a transfer (`cashTransfer`) is `other`, since nothing in a row says what it is for. Such a

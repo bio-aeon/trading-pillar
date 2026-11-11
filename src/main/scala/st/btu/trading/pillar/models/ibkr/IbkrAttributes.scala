@@ -27,6 +27,7 @@ private[pillar] object IbkrAttributes {
     val ListingExchange = "listingExchange"
     val Notes = "notes"
     val OrigTransactionId = "origTransactionID"
+    val Position = "position"
     val Proceeds = "proceeds"
     val Quantity = "quantity"
     val ReportDate = "reportDate"

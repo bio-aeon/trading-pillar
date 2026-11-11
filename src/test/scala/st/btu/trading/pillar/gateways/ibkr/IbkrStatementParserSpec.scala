@@ -348,10 +348,79 @@ class IbkrStatementParserSpec extends Specification {
         }
       }
 
+      "open positions" >> {
+        "keep the contract, symbol, asset category and quantity of a summary row" >> {
+          val body =
+            """<OpenPositions>
+              |  <OpenPosition accountId="U1111111" assetCategory="STK" symbol="VOD" conid="12345"
+              |    position="1250" levelOfDetail="SUMMARY" reportDate="20260131"/>
+              |</OpenPositions>""".stripMargin
+
+          statementOf(body).map(_.openPositions) must beRight[List[IbkrOpenPosition]](
+            List(
+              IbkrOpenPosition(
+                BrokerInstrumentId("12345"),
+                Some(Ticker("VOD")),
+                Some("STK"),
+                BigDecimal(1250)
+              )
+            )
+          )
+        }
+
+        "keep a row that names no level of detail" >> {
+          val body =
+            """<OpenPositions>
+              |  <OpenPosition assetCategory="STK" symbol="VOD" conid="12345" position="-30"/>
+              |</OpenPositions>""".stripMargin
+
+          statementOf(body).map(_.openPositions.map(_.quantity)) must
+            beRight[List[BigDecimal]](List(BigDecimal(-30)))
+        }
+
+        "leave out a row at the level of a lot" >> {
+          val body =
+            """<OpenPositions>
+              |  <OpenPosition assetCategory="STK" symbol="VOD" conid="12345" position="1250"
+              |    levelOfDetail="SUMMARY"/>
+              |  <OpenPosition assetCategory="STK" symbol="VOD" conid="12345" position="1000"
+              |    levelOfDetail="LOT"/>
+              |</OpenPositions>""".stripMargin
+
+          statementOf(body).map(_.openPositions.map(_.quantity)) must
+            beRight[List[BigDecimal]](List(BigDecimal(1250)))
+        }
+
+        "leave out a row with no contract id or no quantity" >> {
+          val body =
+            """<OpenPositions>
+              |  <OpenPosition assetCategory="STK" symbol="AAA" position="10" levelOfDetail="SUMMARY"/>
+              |  <OpenPosition assetCategory="STK" symbol="BBB" conid="2" levelOfDetail="SUMMARY"/>
+              |  <OpenPosition assetCategory="STK" symbol="CCC" conid="3" position="-" levelOfDetail="SUMMARY"/>
+              |  <OpenPosition assetCategory="STK" symbol="DDD" conid="4" position="7" levelOfDetail="SUMMARY"/>
+              |</OpenPositions>""".stripMargin
+
+          statementOf(body).map(_.openPositions.map(_.symbol)) must
+            beRight[List[Option[Ticker]]](List(Some(Ticker("DDD"))))
+        }
+
+        "have no symbol or asset category when IB sends a placeholder for it" >> {
+          val body =
+            """<OpenPositions>
+              |  <OpenPosition assetCategory="N/A" symbol="-" conid="12345" position="10"
+              |    levelOfDetail="SUMMARY"/>
+              |</OpenPositions>""".stripMargin
+
+          statementOf(body).map(_.openPositions) must beRight[List[IbkrOpenPosition]](
+            List(IbkrOpenPosition(BrokerInstrumentId("12345"), None, None, BigDecimal(10)))
+          )
+        }
+      }
+
       "unknown content" >> {
         "is ignored, whether an element or an attribute" >> {
           val body =
-            """<OpenPositions><OpenPosition symbol="AAPL" position="10"/></OpenPositions>
+            """<CashReport><CashReportCurrency currency="USD" endingCash="5"/></CashReport>
               |<Trades>
               |  <Trade transactionID="1001" reportDate="20260105" levelOfDetail="EXECUTION" futureField="x"/>
               |</Trades>""".stripMargin

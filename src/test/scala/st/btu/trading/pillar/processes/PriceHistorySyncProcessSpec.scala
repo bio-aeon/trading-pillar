@@ -8,7 +8,12 @@ import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.market.{MarketDataError, Source, Ticker, WatchlistItem}
 import st.btu.trading.pillar.models.market.Ticker.value
-import st.btu.trading.pillar.services.{PriceHistorySyncConfig, PriceHistorySyncService, SyncReport}
+import st.btu.trading.pillar.services.{
+  HeldInstrumentsService,
+  PriceHistorySyncConfig,
+  PriceHistorySyncService,
+  SyncReport
+}
 import st.btu.trading.pillar.storages.WatchlistStorage
 import st.btu.trading.pillar.testkit.{AlertFakes, MarketDataFakes}
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
@@ -32,6 +37,22 @@ class PriceHistorySyncProcessSpec extends Specification with CatsEffect {
       ZonedDateTime.now(ZoneOffset.UTC)
     )
 
+  // Longer than any cycle takes here, and shorter than the 10 seconds after which specs2 skips an
+  // example instead of failing it.
+  private val Patience = 5.seconds
+
+  // Runs `cycles` cycles of the process. One that does not finish them fails the example: a
+  // timeout of its own would only make specs2 skip it.
+  private def runCycles(process: PriceHistorySyncProcessImpl[IO], cycles: Long): IO[Unit] =
+    process.run
+      .take(cycles)
+      .compile
+      .drain
+      .timeoutTo(
+        Patience,
+        IO.raiseError(new AssertionError(s"the process did not finish $cycles cycles in $Patience"))
+      )
+
   // Small real sleeps so the spec runs fast while still exercising the interval/backoff logic.
   private val fastConfig = PriceHistorySyncConfig(
     interval = 10.millis,
@@ -47,26 +68,72 @@ class PriceHistorySyncProcessSpec extends Specification with CatsEffect {
     FailureTrackerImpl.create[IO, IO]
   }
 
+  // Adds no held instruments unless told otherwise.
   private def buildProcess(
     watchlist: WatchlistStorage[IO],
     service: PriceHistorySyncService[IO],
     config: PriceHistorySyncConfig,
     systemAlerts: SystemAlerts[IO] = SystemAlerts.noop[IO],
-    failureTracker: IO[FailureTracker[IO]] = freshFailureTracker
+    failureTracker: IO[FailureTracker[IO]] = freshFailureTracker,
+    heldInstruments: IO[HeldInstrumentsService[IO]] = MarketDataFakes.heldInstrumentsService()
   ): IO[PriceHistorySyncProcessImpl[IO]] =
     MarketDataFakes.withLocal(ProcessContext("init", accountId)).flatMap { wl =>
       implicit val withLocal: WithLocal[IO, ProcessContext] = wl
       implicit val genUUID: GenUUID[IO] = GenUUID.syncGenUUID[IO]
       implicit val logs: Logs[IO, IO] =
         Logs.const[IO, IO](Logging.Make.plain[IO].forService[PriceHistorySyncProcess[IO]])
-      failureTracker.flatMap(tracker =>
-        PriceHistorySyncProcessImpl
-          .create[IO, IO](watchlist, service, config, systemAlerts, tracker)
-      )
+      for {
+        held <- heldInstruments
+        tracker <- failureTracker
+        process <- PriceHistorySyncProcessImpl
+          .create[IO, IO](watchlist, held, service, config, systemAlerts, tracker)
+      } yield process
     }
 
   "PriceHistorySyncProcessImpl" >> {
     "run" >> {
+
+      "adds the held instruments to the watchlists before it reads them" >> {
+        val held = Ticker("HELD")
+
+        for {
+          watchlist <- MarketDataFakes.watchlistStorage()
+          heldInstruments <- MarketDataFakes.heldInstrumentsService(watchlist.add(item("HELD")))
+          service <- MarketDataFakes.priceHistorySyncService()
+          process <- buildProcess(
+            watchlist,
+            service,
+            fastConfig,
+            heldInstruments = IO.pure(heldInstruments)
+          )
+          _ <- runCycles(process, 1)
+          synced <- service.syncedTickers
+        } yield synced must_== List(held)
+      }
+
+      "goes on with the watchlists as they are when adding the held instruments fails" >> {
+        for {
+          watchlist <- MarketDataFakes.watchlistStorage(List(item("AAPL")))
+          heldInstruments <- MarketDataFakes.heldInstrumentsService(
+            IO.raiseError(new RuntimeException("accounts unreadable"))
+          )
+          service <- MarketDataFakes.priceHistorySyncService()
+          alerts <- AlertFakes.systemAlerts()
+          process <- buildProcess(
+            watchlist,
+            service,
+            fastConfig,
+            alerts,
+            heldInstruments = IO.pure(heldInstruments)
+          )
+          _ <- runCycles(process, 1)
+          synced <- service.syncedTickers
+          raised <- alerts.raised
+        } yield {
+          synced must_== List(Ticker("AAPL"))
+          raised must beEmpty
+        }
+      }
 
       "continues with the next item when one raises a non-rate-limit error" >> {
         val badTicker = Ticker("BAD")

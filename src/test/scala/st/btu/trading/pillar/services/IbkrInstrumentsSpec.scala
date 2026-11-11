@@ -47,7 +47,8 @@ class IbkrInstrumentsSpec extends Specification {
       LocalDate.of(2026, 1, 1),
       LocalDate.of(2026, 1, 31),
       rows,
-      securities
+      securities,
+      Nil
     )
 
   private def vodafone(currency: String = "GBP"): BrokerInstrument =

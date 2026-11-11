@@ -172,11 +172,12 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
 2. **Full history loaded**: operations are read from `from` minus 20 years through `to` (not just
    `[from, to]`), so positions, cash and the cumulative `invested` figure are already complete at
    `from` even when the account's real history starts long before the requested window.
-3. **Positions per instrument**: the sum of the executed operations' signed `quantity`, per
-   `InstrumentKey` (the broker and the id that broker gives the instrument). `quantity` is already
-   in executed units, positive for a `buy` and a `security_in`, negative for a `sell` and a
-   `security_out` and zero for every other kind, so a partly filled buy adds only the units that
-   were filled, and a fractional share or coin counts as the fraction it is.
+3. **Positions per instrument** are the [`Holdings`](#holdings) of the executed operations: the sum
+   of their signed `quantity`, per `InstrumentKey` (the broker and the id that broker gives the
+   instrument), with a position that nets to zero left out. `quantity` is already in executed
+   units, positive for a `buy` and a `security_in`, negative for a `sell` and a `security_out` and
+   zero for every other kind, so a partly filled buy adds only the units that were filled, and a
+   fractional share or coin counts as the fraction it is.
 4. **Cash** is the running sum of `amount` over *every* executed operation (commissions, taxes,
    dividends, buys/sells, deposits/withdrawals, the legs of currency exchanges - all of them), kept
    as one running total per operation `currency`, not just the base currency. A currency exchange
@@ -236,6 +237,26 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
     `ValuationSeries.currency`, `PositionSnapshot.currency` and `PositionValue.currency`.
     `unpricedInstruments` holds plain strings, since it mixes tickers with the `value` of a
     currency.
+
+### Holdings
+
+`Holdings` is the pure function behind rule 3. It reads no storage and no clock:
+
+```scala
+object Holdings {
+  def of(operations: Iterable[AccountOperation]): Map[InstrumentKey, BigDecimal]
+  def after(held: Map[InstrumentKey, BigDecimal],
+            operations: Iterable[AccountOperation]): Map[InstrumentKey, BigDecimal]
+}
+```
+
+`of` sums the signed `quantity` of the executed operations per `InstrumentKey` and leaves out an
+instrument whose position nets to zero, so every quantity in the result is nonzero, and negative for
+a short position. An operation that is not executed, or that names no instrument, changes nothing,
+and neither does one that only carries cash for an instrument, such as a fee. `after` applies
+operations on top of an earlier result, which is how `dailySeries` and `positionsAsOf` walk an
+account's operations day by day. Which operations to pass, and as of when, is the caller's choice:
+the function counts the operations it is given.
 
 ### Storage, process and commands
 

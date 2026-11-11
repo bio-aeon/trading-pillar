@@ -29,7 +29,7 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
     extends IbkrSyncService[F] {
   import IbkrSyncServiceImpl.*
 
-  def sync: F[Unit] =
+  def sync: F[Option[IbkrOpenPositions]] =
     for {
       today <- clock.realTimeInstant.map(LocalDate.ofInstant(_, config.statementZone))
       latest <- statements.latestReportDate(account.accountId)
@@ -37,8 +37,8 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
       to = today.minusDays(1)
       windows = windowsBetween(from, to, config.windowDays)
       _ <- info"Syncing the statements of Flex query ${account.queryId} for $from to $to"
-      _ <- windows.traverse_(syncWindow)
-    } yield ()
+      reported <- windows.traverse(syncWindow)
+    } yield reported.lastOption
 
   // The configured start of the history, or the earliest day IB keeps when none is set or the one
   // set is before it.
@@ -57,17 +57,17 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
     } yield ()
 
   // Reads `window`. One that IB cannot generate is read as two halves, down to a single day, whose
-  // failure is final.
-  private def syncWindow(window: Window): F[Unit] =
+  // failure is final. Gives the open positions of the statement that ends the window.
+  private def syncWindow(window: Window): F[IbkrOpenPositions] =
     readWindow(window).recoverWith {
       case error @ FlexError.RetriesExhausted(FlexError.StatementNotGenerated, _, _) =>
-        window.halves.fold(F.raiseError[Unit](error)) { case (first, second) =>
+        window.halves.fold(F.raiseError[IbkrOpenPositions](error)) { case (first, second) =>
           warn"IB could not generate the statement for ${window.from} to ${window.to}, reading halves" >>
             syncWindow(first) >> syncWindow(second)
         }
     }
 
-  private def readWindow(window: Window): F[Unit] =
+  private def readWindow(window: Window): F[IbkrOpenPositions] =
     for {
       xml <- flex.statement(account.queryId, window.from, window.to)
       statement <- ownStatement(xml)
@@ -75,7 +75,7 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
       _ <- recordWithCancellations(rows)
       _ <- recordInstruments(statement)
       _ <- info"Recorded ${rows.size} statement rows for ${window.from} to ${window.to}"
-    } yield ()
+    } yield IbkrOpenPositions(statement.toDate, config.statementZone, statement.openPositions)
 
   // The statement of the configured IB account: a response can hold the statements of several, and
   // one for another account than the configured one is not this account's.

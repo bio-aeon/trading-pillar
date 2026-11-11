@@ -22,8 +22,9 @@ import java.time.{LocalDate, ZoneOffset}
 //  - Operations are loaded from `from - OperationHistoryYears` (not just `from`) so that positions, cash
 //    and the cumulative `invested` figure are all complete at `from`, even when the account's
 //    true history starts long before the requested window.
-//  - Positions per instrument: the sum of the executed operations' signed `quantity`, which is
-//    already in executed units, so a partly filled buy adds only what was filled.
+//  - Positions per instrument: Holdings of the executed operations, the sum of their signed
+//    `quantity`, which is already in executed units, so a partly filled buy adds only what was
+//    filled.
 //  - cash = running sum of `amount` over *every* executed operation, kept per operation currency.
 //  - external flows = the `amount` of deposits (+) and withdrawals (-), on their own date;
 //    `invested` is their running sum, `cashFlow` is just that date's own sum.
@@ -79,8 +80,8 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       ctx = PricingContext(held, tickerBars, fxBars, config.baseCurrency)
       state = applyOps(CashState.empty, ops.map(_._2))
       (cashBase, _) = convertBucket(state.cashByCurrency, date, ctx)
-      priced = state.positions.iterator.collect {
-        case (instrument, qty) if qty.signum != 0 => valueOnePosition(instrument, qty, date, ctx)
+      priced = state.positions.iterator.map { case (instrument, qty) =>
+        valueOnePosition(instrument, qty, date, ctx)
       }.toVector
       total = cashBase + priced.iterator.flatMap(_.position.value).sum
       positions = priced.map(_.position).map { p =>
@@ -222,8 +223,8 @@ final class PortfolioValuationServiceImpl[F[_]] private (
     (points, unpriced)
   }
 
-  private def applyOps(state: CashState, ops: Vector[AccountOperation]): CashState =
-    ops.foldLeft(state) { (s, op) =>
+  private def applyOps(state: CashState, ops: Vector[AccountOperation]): CashState = {
+    val withCash = ops.foldLeft(state) { (s, op) =>
       val currency = op.currency
       val cash2 =
         s.cashByCurrency.updated(currency, s.cashByCurrency.getOrElse(currency, Zero) + op.amount)
@@ -232,11 +233,10 @@ final class PortfolioValuationServiceImpl[F[_]] private (
           s.investedByCurrency
             .updated(currency, s.investedByCurrency.getOrElse(currency, Zero) + op.amount)
         else s.investedByCurrency
-      val positions2 = op.instrument.fold(s.positions) { instrument =>
-        s.positions.updated(instrument, s.positions.getOrElse(instrument, Zero) + op.quantity)
-      }
-      CashState(cash2, invested2, positions2)
+      s.copy(cashByCurrency = cash2, investedByCurrency = invested2)
     }
+    withCash.copy(positions = Holdings.after(state.positions, ops))
+  }
 
   // Sums a per-currency bucket into the base currency; a currency other than the base with a
   // nonzero balance and no FX rate is dropped from the sum and reported in the unpriced set. A
@@ -255,25 +255,21 @@ final class PortfolioValuationServiceImpl[F[_]] private (
         }
     }
 
-  // Aggregate form used by dailySeries/buildSeries: sums every nonzero position's base-currency
-  // value, and separately collects the tickers of *mapped* positions that couldn't be priced (an
-  // unmapped instrument is already reported via unmappedInstruments, once per dailySeries call,
-  // not here).
+  // Aggregate form used by dailySeries/buildSeries: sums every position's base-currency value,
+  // and separately collects the tickers of *mapped* positions that couldn't be priced (an unmapped
+  // instrument is already reported via unmappedInstruments, once per dailySeries call, not here).
   private def valuePositions(
     positions: Map[InstrumentKey, BigDecimal],
     date: LocalDate,
     ctx: PricingContext
   ): (BigDecimal, Set[String]) =
     positions.foldLeft((Zero, Set.empty[String])) { case ((sum, unpriced), (instrument, qty)) =>
-      if (qty.signum == 0) (sum, unpriced)
-      else {
-        val priced = valueOnePosition(instrument, qty, date, ctx).position
-        priced.value match {
-          case Some(value) => (sum + value, unpriced)
-          // Mapped but unpriced: report the ticker. Unmapped (ticker is also None): already
-          // reported via unmappedInstruments, leave the unpriced set untouched.
-          case None => (sum, priced.ticker.fold(unpriced)(t => unpriced + t.value))
-        }
+      val priced = valueOnePosition(instrument, qty, date, ctx).position
+      priced.value match {
+        case Some(value) => (sum + value, unpriced)
+        // Mapped but unpriced: report the ticker. Unmapped (ticker is also None): already
+        // reported via unmappedInstruments, leave the unpriced set untouched.
+        case None => (sum, priced.ticker.fold(unpriced)(t => unpriced + t.value))
       }
     }
 
@@ -372,7 +368,7 @@ object PortfolioValuationServiceImpl {
   private val Zero = BigDecimal(0)
 
   // Running, not-yet-base-converted state as of some date: cash and cumulative external flow, per
-  // operation currency, plus the cumulative position per instrument.
+  // operation currency, plus the open position per instrument, as Holdings gives them.
   private final case class CashState(
     cashByCurrency: Map[Currency, BigDecimal],
     investedByCurrency: Map[Currency, BigDecimal],

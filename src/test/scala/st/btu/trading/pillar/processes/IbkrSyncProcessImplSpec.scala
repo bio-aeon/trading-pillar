@@ -12,18 +12,27 @@ import sttp.client3.testing.SttpBackendStub
 import sttp.model.StatusCode
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.gateways.ibkr.FlexWebServiceConfig
-import st.btu.trading.pillar.models.domain.AccountId
+import st.btu.trading.pillar.models.domain.{
+  AccountId,
+  AccountOperation,
+  BrokerInstrumentId,
+  OperationKind
+}
 import st.btu.trading.pillar.models.ibkr.*
+import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.processes.IbkrSyncProcessImpl.AccountSync
-import st.btu.trading.pillar.services.{IbkrSyncConfig, IbkrSyncService}
+import st.btu.trading.pillar.services.{IbkrReconciler, IbkrSyncConfig, IbkrSyncService}
+import st.btu.trading.pillar.storages.AccountOperationStorage
 import st.btu.trading.pillar.testkit.AlertFakes.FakeSystemAlerts
+import st.btu.trading.pillar.testkit.AnalyticsFakes.accountOperation
 import st.btu.trading.pillar.testkit.IbkrFakes.{element, statementXml}
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
-import st.btu.trading.pillar.testkit.{AlertFakes, IbkrFakes, MarketDataFakes}
+import st.btu.trading.pillar.testkit.{AlertFakes, AnalyticsFakes, IbkrFakes, MarketDataFakes}
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
 
+import java.time.{Instant, LocalDate, ZoneId}
 import scala.concurrent.duration.*
 
 class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
@@ -46,19 +55,21 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
   private final case class Harness(
     local: WithLocal[IO, ProcessContext],
     calls: Ref[IO, List[Call]],
-    alerts: FakeSystemAlerts
+    alerts: FakeSystemAlerts,
+    operations: AccountOperationStorage[IO]
   ) {
 
-    // A service that records its calls, then does `onRebuild` or `onSync`.
+    // A service that records its calls, then does `onRebuild` or `onSync`. Its sync reads no
+    // window unless `onSync` says what the last window reports.
     def service(
       owner: AccountId,
       onRebuild: IO[Unit] = IO.unit,
-      onSync: IO[Unit] = IO.unit
+      onSync: IO[Option[IbkrOpenPositions]] = IO.none
     ): AccountSync[IO] =
       AccountSync(
         owner,
         new IbkrSyncService[IO] {
-          def sync: IO[Unit] = record(owner, Request.Sync) >> onSync
+          def sync: IO[Option[IbkrOpenPositions]] = record(owner, Request.Sync) >> onSync
 
           def rebuildTranslations: IO[Unit] = record(owner, Request.Rebuild) >> onRebuild
         }
@@ -80,21 +91,27 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
       implicit val genUUID: GenUUID[IO] = GenUUID.syncGenUUID[IO]
       implicit val logging: Logging[IO] =
         Logging.Make.plain[IO].forService[IbkrSyncProcess[IO]]
+      implicit val logs: Logs[IO, IO] = Logs.const[IO, IO](logging)
       def untilEnough: IO[Unit] = enough.ifM(IO.unit, IO.sleep(PollEvery) >> untilEnough)
-      IO.race(
-        new IbkrSyncProcessImpl[IO](accounts, alerts, FastInterval).run.compile.drain,
-        untilEnough
-      ).void
-        .timeout(Patience)
+      for {
+        instruments <- MarketDataFakes.brokerInstrumentStorage()
+        reconciler <- IbkrReconciler.create[IO, IO](operations, instruments, alerts)
+        process = new IbkrSyncProcessImpl[IO](accounts, reconciler, alerts, FastInterval)
+        _ <- IO.race(process.run.compile.drain, untilEnough).void.timeout(Patience)
+      } yield ()
     }
   }
 
-  private def harness: IO[Harness] =
+  // A harness whose accounts have recorded the operations in `operations`.
+  private def harnessOver(operations: AccountOperationStorage[IO]): IO[Harness] =
     for {
       local <- MarketDataFakes.withFiberLocal(ProcessContext("init", AccountId(0)))
       calls <- Ref.of[IO, List[Call]](List.empty)
       alerts <- AlertFakes.systemAlerts()
-    } yield Harness(local, calls, alerts)
+    } yield Harness(local, calls, alerts, operations)
+
+  private def harness: IO[Harness] =
+    AnalyticsFakes.accountOperationStorage().flatMap(harnessOver)
 
   private val boom = new RuntimeException("boom")
 
@@ -187,6 +204,67 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
       }
     }
 
+    "reconciliation" >> {
+      // IB reports 10 shares of contract 12345 as open at the end of 8 November.
+      val reported = IbkrOpenPositions(
+        LocalDate.of(2026, 11, 8),
+        ZoneId.of("America/New_York"),
+        List(
+          IbkrOpenPosition(
+            BrokerInstrumentId("12345"),
+            Some(Ticker("VOD")),
+            Some("STK"),
+            BigDecimal(10)
+          )
+        )
+      )
+
+      "follows a sync that read a window, and raises what differs, named after the account" >> {
+        for {
+          h <- harness
+          _ <- h.run(
+            List(h.service(first, onSync = IO.pure(Some(reported)))),
+            enough = h.syncsOf(first).map(_ >= 2)
+          )
+          raised <- h.alerts.raised
+        } yield raised.map(_.name) must_== List("ibkr-reconciliation:1")
+      }
+
+      "is left out after a sync that read no window, even for an account that holds something" >> {
+        val held = accountOperation(
+          first,
+          OperationKind.Buy,
+          -100,
+          Instant.parse("2026-11-05T15:00:00Z"),
+          quantity = 10
+        ).copy(instrument = Some(IbkrFakes.instrumentKey("12345")))
+        for {
+          storage <- AnalyticsFakes.accountOperationStorage(List(held))
+          h <- harnessOver(storage)
+          _ <- h.run(List(h.service(first)), enough = h.syncsOf(first).map(_ >= 3))
+          raised <- h.alerts.raised
+        } yield raised must beEmpty
+      }
+
+      "that fails is a failure of the account's loop, like a failure of its sync" >> {
+        val unreadable = new AccountOperationStorage[IO] {
+          def operations(
+            accountId: AccountId,
+            since: Instant,
+            until: Instant
+          ): IO[Vector[AccountOperation]] = IO.raiseError(boom)
+        }
+        for {
+          h <- harnessOver(unreadable)
+          _ <- h.run(
+            List(h.service(first, onSync = IO.pure(Some(reported)))),
+            enough = h.syncsOf(first).map(_ >= 2)
+          )
+          raised <- h.alerts.raised
+        } yield raised.map(_.name).distinct must_== List("process-crashed:ibkr-sync:1")
+      }
+    }
+
     "resource" >> {
       "reads every account through one client, so that their calls are paced together" >> {
         val spacing = 300.millis
@@ -227,6 +305,7 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
                 // From 1 January four years back, which is never after yesterday.
                 IbkrSyncConfig(windowDays = 5000),
                 1.hour,
+                storage,
                 storage,
                 instruments,
                 h.alerts,

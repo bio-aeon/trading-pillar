@@ -22,6 +22,9 @@ trait MarketDataSources[F[_]] {
     *   adapter configured
     */
   def forTicker(ticker: Ticker): F[MarketDataSource[F]]
+
+  /** Whether the router has an adapter for `source`, so that it can serve a ticker set to it. */
+  def serves(source: Source): Boolean
 }
 
 object MarketDataSources {
@@ -65,6 +68,13 @@ final class MarketDataSourcesImpl[F[_]](
 
   def forTicker(ticker: Ticker): F[MarketDataSource[F]] =
     settingFor(ticker).flatMap(adapterFor)
+
+  def serves(source: Source): Boolean =
+    source match {
+      case Source.Yahoo => yahoo.isDefined
+      case Source.Tinkoff => tinkoff.isDefined
+      case Source.Binance => false
+    }
 
   private def adapterFor(setting: SourceSetting): F[MarketDataSource[F]] =
     setting match {

@@ -10,7 +10,7 @@ import st.btu.trading.pillar.gateways.*
 import st.btu.trading.pillar.gateways.yahoo.{YahooApi, YahooChart, YahooDividend, YahooMetadata}
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
-import st.btu.trading.pillar.services.{PriceHistorySyncService, SyncReport}
+import st.btu.trading.pillar.services.{HeldInstrumentsService, PriceHistorySyncService, SyncReport}
 import st.btu.trading.pillar.storages.*
 import tofu.{Delay, WithLocal}
 
@@ -385,6 +385,12 @@ object MarketDataFakes {
         def syncedTickers: IO[List[Ticker]] = callsRef.get
       }
     }
+
+  // Does `outcome` whenever it is asked to add the held instruments.
+  def heldInstrumentsService(outcome: IO[Unit] = IO.unit): IO[HeldInstrumentsService[IO]] =
+    IO.pure(new HeldInstrumentsService[IO] {
+      def addToWatchlists: IO[Unit] = outcome
+    })
 
   // --- DividendStorage ---
 

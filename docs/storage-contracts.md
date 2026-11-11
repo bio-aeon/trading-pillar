@@ -128,9 +128,10 @@ trait AccountOperationStorage[F[_]] {
 An account's operations in terms shared by every broker. Read-only: each broker's own storage
 records its operations together with their translations, so for Tinkoff the translations are
 written by `TcsPortfolioOperationStorage.record` and for Interactive Brokers by
-`IbkrStatementStorage.record`. The valuation, the tax services and `/export` read this port, and
-nothing else, for an account's operations: only executed operations count towards positions, cash
-and tax, and `/export operations` lists the operations of every state.
+`IbkrStatementStorage.record`. The valuation, the tax services, `/export`, the held instruments
+service and the reconciliation of Interactive Brokers positions read this port, and nothing else, for
+an account's operations: only executed operations count towards positions, cash and tax, and
+`/export operations` lists the operations of every state.
 
 `operations` returns the operations that occurred from `since` (inclusive) until `until`
 (exclusive), oldest first, and in `ref` order among those at the same instant.
@@ -222,10 +223,15 @@ trait WatchlistStorage[F[_]] {
 ```
 
 Written by the library through `add` and `remove`, which back the `/watchlist add` and
-`/watchlist rm` Telegram commands. The consumer can also manage items by other means (for example
-operator tooling, including switching one off with `enabled`), since the library re-reads the
-watchlist on every sync. `allEnabled` drives `PriceHistorySyncProcess`; `byAccount` backs `/watchlist`
-and the commands that read the account's tickers. A watchlist item does not say where its ticker's
+`/watchlist rm` Telegram commands, and through `add` again for the instruments an account holds (see
+[`market-data.md`](market-data.md#held-instruments-on-the-watchlist)), which the price-history sync
+puts on the watchlist at the start of every cycle. The consumer can also manage items by other means
+(for example operator tooling, including switching one off with `enabled`), since the library
+re-reads the watchlist on every sync. `allEnabled` drives `PriceHistorySyncProcess`; `byAccount`
+backs `/watchlist` and the commands that read the account's tickers, and tells the held instruments
+service which tickers an account has, so it lists every item of the account, disabled ones
+included. That service calls `add` only for a ticker the account has no item for, since an `add`
+for a ticker that has one may re-enable it. A watchlist item does not say where its ticker's
 data comes from - that is a setting of the ticker, see `TickerSourceStorage` below. A relational
 implementation could use a table such as `watchlist_items` with `account_id`, `symbol`, `enabled`
 (default true), a nullable `note`, `created_at` and a unique key on `(account_id, symbol)`.
@@ -265,8 +271,9 @@ The per-ticker source settings. Read by the library: `MarketDataSourcesImpl` cal
 lookup, and a ticker with no setting uses the router's default (see
 [`market-data.md`](market-data.md#routing-multiple-sources-marketdatasources)); `/source` lists the
 settings through `all`. Written by the library: `/source` and `/watchlist add` call `upsert`, and
-`/source SYM default` calls `delete`. The consumer can also manage settings by other means, since
-the library re-reads them on every lookup. A relational implementation could use a table such as
+`/source SYM default` calls `delete`; the held instruments service calls `upsert` for a held ticker
+that has no setting. The consumer can also manage settings by other means, since the library
+re-reads them on every lookup. A relational implementation could use a table such as
 `ticker_sources` with the ticker (`symbol`) as primary key, `source` (`yahoo` | `tinkoff`, the
 `Source` values), a nullable `class_code` that only a `tinkoff` row may set (a
 `SourceSetting.Tinkoff` with no board stores NULL), a nullable `yahoo_symbol` that only a `yahoo` row
@@ -288,9 +295,10 @@ from `find` when it can and otherwise fetches it from the broker and stores it w
 instrument the broker knows is fetched once - see
 [`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). Interactive Brokers
 has no lookup call: the statement sync writes the instruments each statement describes with
-`upsert`, and `IbkrInstrumentDirectory` answers from `find` alone. The `broker` is stored as the
-`value` of a `Broker`, and the `instrument.id` is the broker's own, a FIGI for Tinkoff and a
-contract id for Interactive Brokers. A
+`upsert`, and `IbkrInstrumentDirectory` answers from `find` alone. The reconciliation of an
+Interactive Brokers account's positions reads `find` too, for the symbol of a contract that IB does
+not report. The `broker` is stored as the `value` of a `Broker`, and the `instrument.id` is the
+broker's own, a FIGI for Tinkoff and a contract id for Interactive Brokers. A
 relational implementation could use a table such as `broker_instruments` with a generated `id`, the
 broker (`broker`) and the instrument id (`instrument_id`), `ticker`, a nullable `class_code` (the
 board, for a broker that has one), `name`, `instrument_type`, `currency` and `updated_at`, and a

@@ -18,11 +18,14 @@ directory are a broker's own. The Tinkoff sync runs for each Tinkoff account a c
 records every operation as Tinkoff sent it together with its translation into an
 `AccountOperation`. The Interactive Brokers sync does the same for each IB account: it reads the
 statements of an Activity Flex Query through the Flex Web Service, window by window, and records
-every statement row as IB sent it (`IbkrStatementRow`) with its translation. The valuation, the
-tax services and `/export` read those translations, and an instrument is looked up by its
-`InstrumentKey`, the broker and the id that broker gives it, through a directory per broker.
-`Source` is a closed set of data sources, so supporting another broker's data means changing the
-library.
+every statement row as IB sent it (`IbkrStatementRow`) with its translation, and then reconciles
+the positions the translations leave with the Open Positions the statement reports, raising a system
+alert while they differ. The valuation, the tax services and `/export` read those translations, and
+an instrument is looked up by its `InstrumentKey`, the broker and the id that broker gives it,
+through a directory per broker. The price-history sync starts every cycle by putting the instruments
+each account holds, at either broker, on its watchlist, with the source setting its broker's pricing
+rule gives. `Source` is a closed set of data sources, so supporting another broker's data means
+changing the library.
 
 The artifact is `st.btu %% trading-pillar % 0.1.0-SNAPSHOT`. Consumers build against a locally
 published snapshot, so run `sbt publishLocal` after a change they need to see.
@@ -62,10 +65,10 @@ Package root `st.btu.trading.pillar`:
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
-| `analytics` | return, performance and risk functions; `portfolio` (valuation, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
+| `analytics` | return, performance and risk functions; `portfolio` (valuation, `Holdings`, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
 | `paper`, `tax`, `charts` | paper broker; FIFO tax lots and the annual estimate; equity-curve PNG |
-| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation`); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
-| `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers), price-history sync, analytics |
+| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation`, `IbkrReconciler` over the pure `IbkrReconciliation`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols`); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
+| `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers, the latter reconciling positions), price-history sync (adding held instruments first), analytics |
 | `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |
 | `storages` | persistence ports that consumers implement |
 | `data`, `security` | process context, UTC clock, trace ids; HMAC and AES helpers |
@@ -83,7 +86,7 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
 - **Ports and adapters.** A storage or channel is a `trait Xxx[F[_]]` with only abstract members,
   documented on the trait. Its test double is a `Ref`-backed fake in `testkit`.
 - **Pure cores stay pure.** `BacktestEngine`, `Indicators`, `Returns`, `Performance`, `Risk`,
-  `TaxLots`, `TaxReport`, `Rebalancer` and `AlertEngine` take no effect type and are
+  `Holdings`, `TaxLots`, `TaxReport`, `Rebalancer` and `AlertEngine` take no effect type and are
   deterministic. Effects live in the services, processes and adapters around them.
 - **Wiring.** Implementations expose `create[I[_], F[_]](...)(implicit logs: Logs[I, F]): I[...]`
   (tofu logging), or a `resource` returning `Resource[I, ...]` when something must be released.

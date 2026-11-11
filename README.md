@@ -16,7 +16,8 @@ trading-pillar gives you:
   commands, extensible with your own `CommandHandler`s.
 - **Market data** - a `MarketDataSource` gateway abstraction with a Yahoo Finance implementation
   (via [yfinance4s](https://github.com/coinductive/yfinance4s)), plus a price-history sync process
-  that backfills and incrementally updates OHLCV bars for a watchlist.
+  that backfills and incrementally updates OHLCV bars for a watchlist, to which it adds the
+  instruments each account holds.
 - **A pluggable strategy API** - a `Strategy` trait with a pure `onBar` decision function, a
   `StrategyRegistry` consumers register their own strategies into at startup, and a handful of
   reference strategies shipped as examples/tests only.
@@ -27,8 +28,9 @@ trading-pillar gives you:
   hysteresis, dedup, daily cap, quiet hours).
 - **Existing broker integrations** - Tinkoff Invest (gRPC: operations), Interactive Brokers
   (the statements of an Activity Flex Query, read through the Flex Web Service: trades, cash
-  transactions, transfers and corporate actions) and a Binance gateway (HMAC-SHA256 signed HTTP;
-  not yet wired to a sync process).
+  transactions, transfers and corporate actions, with the open positions the recorded positions
+  are checked against) and a Binance gateway (HMAC-SHA256 signed HTTP; not yet wired to a sync
+  process).
 
 None of this is a runnable application by itself. A consumer application wires these pieces
 together, implements the storage traits (see [`docs/storage-contracts.md`](docs/storage-contracts.md))
@@ -52,14 +54,14 @@ strategy is registered.
 | `strategy.reference` | `MovingAverageCrossoverStrategy`, `RsiReversionStrategy` - **examples/tests only**, not for production use as-is |
 | `charts` | `EquityCurveImage` - renders a `BacktestResult`'s equity curve as a PNG, sent alongside `/backtest`'s reply |
 | `analytics` | `Returns`, `Valuation`, `Performance` (total/annualized/time-weighted/money-weighted return), `Risk` (volatility, Sharpe, Sortino, max drawdown, VaR, beta), `FxRates` - pure, no `F[_]`; see [`docs/analytics.md`](docs/analytics.md) |
-| `analytics.portfolio` | `PositionValue`/`PositionSnapshot`, `Allocation` (breakdown by instrument type/currency/exchange), `AllocationTarget`, `Rebalancer` (drift and buy/sell suggestions), `PortfolioValuationService`, `Period` and `PortfolioMetrics` (a valuation series' returns and risk over 1m/3m/6m/1y/all), `PortfolioSnapshot` (an account's holdings, allocation and per-period metrics as of a date) - backs `/allocation`, `/drift`, `/rebalance`, `/portfolio`, `/performance` |
+| `analytics.portfolio` | `Holdings` (an account's position in each instrument, folded from its operations), `PositionValue`/`PositionSnapshot`, `Allocation` (breakdown by instrument type/currency/exchange), `AllocationTarget`, `Rebalancer` (drift and buy/sell suggestions), `PortfolioValuationService`, `Period` and `PortfolioMetrics` (a valuation series' returns and risk over 1m/3m/6m/1y/all), `PortfolioSnapshot` (an account's holdings, allocation and per-period metrics as of a date) - backs `/allocation`, `/drift`, `/rebalance`, `/portfolio`, `/performance` |
 | `alerts` | `Alert`, `AlertKind`, `AlertRule` (`PriceCrossed`, `StrategyBinding`), `Proximity`, `QuietHours`, `DeliveryPolicy`, `AlertEngine`, `AlertDispatcher`, `LiveStrategyService`, `AlertProcess`, `TelegramAlertChannel`, `FailureTracker` (consecutive-failure counter), `SystemAlerts` (infrastructure alerts, e.g. a crashed process loop or a sync failure) |
 | `paper` | `PaperBroker`/`PaperBrokerImpl`, `PaperAccount`/`PaperPosition`/`PaperOrder`, `PaperBrokerConfig` - simulated order execution for a paper-mode `StrategyBinding`; see [`docs/paper-trading.md`](docs/paper-trading.md) |
 | `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
-| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements), `IbkrRowTranslation` (statement row to `AccountOperation`s) |
+| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements), `IbkrRowTranslation` (statement row to `AccountOperation`s), `IbkrReconciler` (compares an Interactive Brokers account's recorded positions with the Open Positions IB reports and raises a system alert while they differ), `HeldInstrumentsService` (puts the instruments an account holds on its watchlist, with the source setting its broker's pricing rule gives) |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
 | `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
-| `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess` (one loop per Tinkoff account it is given), `IbkrSyncProcess` (one loop per Interactive Brokers account), `PriceHistorySyncProcess`, `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
+| `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess` (one loop per Tinkoff account it is given), `IbkrSyncProcess` (one loop per Interactive Brokers account, each reconciling its positions after a sync), `PriceHistorySyncProcess` (adds the held instruments to the watchlists, then syncs them), `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
 | `mcp` | MCP server for AI agents: `McpTools` (`ticker_status`, `live_quote`, `bot_query`, `bot_backtest`, `bot_command`), `McpToolBuilder` (the conventions of a tool, for the consumer's own tools too), `McpToolServer`, `McpHttpServer` behind a bearer token (`McpHttpConfig`, `AccessToken`), `EffectBridge`; see [`docs/mcp.md`](docs/mcp.md) |
 | `data` | `ProcessContext`, `TraceIds`, `UtcClock` - the trace/account context threaded through every process via `tofu.WithLocal`, and a UTC-normalized clock helper |
 | `storages` | Storage traits a consumer implements; see [`docs/storage-contracts.md`](docs/storage-contracts.md) |
@@ -114,12 +116,16 @@ val root = ProcessContext(traceId = "", accountId = AccountId(1))
 ```scala
 import scala.concurrent.duration.*
 import st.btu.trading.pillar.alerts.{AlertDispatcherImpl, FailureTrackerImpl, SystemAlertsImpl}
-import st.btu.trading.pillar.gateways.MarketDataSourcesImpl
+import st.btu.trading.pillar.gateways.{InstrumentDirectory, MarketDataSourcesImpl}
 import st.btu.trading.pillar.gateways.yahoo.{YahooApi, YahooMarketDataSource}
 import st.btu.trading.pillar.gateways.yahoo.YahooMarketDataSource.YahooConfig
 import st.btu.trading.pillar.models.market.SourceSetting
 import st.btu.trading.pillar.processes.PriceHistorySyncProcessImpl
-import st.btu.trading.pillar.services.{PriceHistorySyncConfig, PriceHistorySyncServiceImpl}
+import st.btu.trading.pillar.services.{
+  HeldInstrumentsServiceImpl,
+  PriceHistorySyncConfig,
+  PriceHistorySyncServiceImpl
+}
 import st.btu.trading.pillar.storages.*
 
 def wireSync(
@@ -128,7 +134,10 @@ def wireSync(
   dividendStorage: DividendStorage[F],
   watchlistStorage: WatchlistStorage[F],
   tickerSourceStorage: TickerSourceStorage[F],
-  alertHistoryStorage: AlertHistoryStorage[F]
+  alertHistoryStorage: AlertHistoryStorage[F],
+  accountStorage: AccountStorage[F],
+  accountOperationStorage: AccountOperationStorage[F],
+  instrumentDirectory: InstrumentDirectory[F] // e.g. a RoutingInstrumentDirectory
 ): IO[Unit] = {
   val yahooConfig = YahooConfig(
     connectTimeout = 10.seconds,
@@ -172,8 +181,25 @@ def wireSync(
         dividendStorage,
         syncConfig
       )
-      syncProcess <- PriceHistorySyncProcessImpl
-        .create[IO, F](watchlistStorage, syncService, syncConfig, systemAlerts, failureTracker)
+      // Puts the instruments each account holds on its watchlist, and gives a ticker a source
+      // setting only for a source `sources` serves: no Tinkoff adapter is wired above, so a held
+      // Tinkoff instrument gets no setting of its own.
+      heldInstruments <- HeldInstrumentsServiceImpl.create[IO, F](
+        accountStorage,
+        accountOperationStorage,
+        watchlistStorage,
+        tickerSourceStorage,
+        instrumentDirectory,
+        sources
+      )
+      syncProcess <- PriceHistorySyncProcessImpl.create[IO, F](
+        watchlistStorage,
+        heldInstruments,
+        syncService,
+        syncConfig,
+        systemAlerts,
+        failureTracker
+      )
       // normally run alongside your other processes via parJoin
       _ <- syncProcess.run.compile.drain.run(root)
     } yield ()
@@ -184,8 +210,12 @@ def wireSync(
 `watchlistStorage.add(WatchlistItem(accountId, Ticker("AAPL"), enabled = true, None, now))` (e.g.
 from the `/watchlist add` command) is what puts a symbol in scope for the sync loop. Which source
 serves it is a setting of the ticker, kept in `TickerSourceStorage` (e.g. by `/source SBER tinkoff`),
-and Yahoo here when none is stored. A sync failure raises a `sync-failed:<ticker>` system alert
-after 3 consecutive failures, and a matching `sync-recovered:<ticker>` once it succeeds again.
+and Yahoo here when none is stored. Every cycle also starts by adding the instruments the accounts
+hold to their watchlists, each priced from the source its broker's rule gives while the router
+serves it (Yahoo for an Interactive Brokers instrument; Tinkoff, on the instrument's own board, for
+a Tinkoff one once a Tinkoff adapter is wired into the router). A sync failure raises a
+`sync-failed:<ticker>` system alert after 3 consecutive failures, and a matching
+`sync-recovered:<ticker>` once it succeeds again.
 
 ### b) Implement and register your own `Strategy`
 
@@ -366,10 +396,13 @@ trading-pillar change the consumer needs to see.
   into the broker-neutral `AccountOperation`: implemented and covered by the test suite, but not
   yet used in production. The valuation, the tax services and `/export` read the translations.
 - The statement sync for each Interactive Brokers account it is given, with the translation of every
-  row into `AccountOperation`s: implemented and covered by the test suite, but not yet used in
-  production. The Flex Web Service client, the parser and the translation have run only against
-  statements written from IB's documentation, so a real statement may still differ from them - see
+  row into `AccountOperation`s and the reconciliation of the recorded positions with the Open
+  Positions IB reports: implemented and covered by the test suite, but not yet used in production.
+  The Flex Web Service client, the parser and the translation have run only against statements
+  written from IB's documentation, so a real statement may still differ from them - see
   [`docs/ibkr.md`](docs/ibkr.md#limits-and-unconfirmed-points).
+- Held instruments joining the watchlists, for both brokers: implemented and covered by the test
+  suite, but not yet used in production.
 - Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategies and
   backtesting (multi-symbol runs, parameter sweeps, walk-forward validation), alerts and system
   alerts, analytics, dividends, paper trading and the tax-estimate report: implemented and covered

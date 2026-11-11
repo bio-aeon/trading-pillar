@@ -3,6 +3,7 @@ package st.btu.trading.pillar.processes
 import cats.{Functor, MonadThrow}
 import cats.effect.*
 import cats.syntax.flatMap.*
+import cats.syntax.foldable.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import fs2.Stream
@@ -16,8 +17,17 @@ import st.btu.trading.pillar.gateways.ibkr.{
 }
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.ibkr.{FlexToken, IbkrAccount}
-import st.btu.trading.pillar.services.{IbkrSyncConfig, IbkrSyncService, IbkrSyncServiceImpl}
-import st.btu.trading.pillar.storages.{BrokerInstrumentStorage, IbkrStatementStorage}
+import st.btu.trading.pillar.services.{
+  IbkrReconciler,
+  IbkrSyncConfig,
+  IbkrSyncService,
+  IbkrSyncServiceImpl
+}
+import st.btu.trading.pillar.storages.{
+  AccountOperationStorage,
+  BrokerInstrumentStorage,
+  IbkrStatementStorage
+}
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
@@ -28,12 +38,14 @@ import scala.concurrent.duration.FiniteDuration
   * account's failure never stops the others. An account that is not given is not synced.
   *
   * A loop first records every statement row already stored for its account again, with its
-  * translation, and then syncs the account every `interval`. Both run in a `ProcessContext` that
-  * names the account, and a crash raises a system alert named after the account. A crashed loop
-  * starts again after `interval` too.
+  * translation, and then syncs the account every `interval`. After a sync that read a window it
+  * reconciles the account's recorded positions with the Open Positions of that window. All of it
+  * runs in a `ProcessContext` that names the account, and a crash raises a system alert named after
+  * the account. A crashed loop starts again after `interval` too.
   */
 final class IbkrSyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
   accounts: List[IbkrSyncProcessImpl.AccountSync[F]],
+  reconciler: IbkrReconciler[F],
   systemAlerts: SystemAlerts[F],
   interval: FiniteDuration
 )(implicit WL: WithLocal[F, ProcessContext])
@@ -46,7 +58,7 @@ final class IbkrSyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
   private def processAccountSync(account: AccountSync[F]): Stream[F, Unit] =
     AccountSyncLoop.restarting(ProcessName, account.accountId, interval, systemAlerts)(
       account.service.rebuildTranslations,
-      account.service.sync
+      account.service.sync.flatMap(_.traverse_(reconciler.reconcile(account.accountId, _)))
     )
 }
 
@@ -61,7 +73,8 @@ object IbkrSyncProcessImpl {
 
   /** Wires the IB sync process for `accounts`, all reading with `token` through one
     * `FlexWebService`, so that their calls share the token's rate limit. The statement rows and the
-    * instruments they describe are recorded in the given storages.
+    * instruments they describe are recorded in the given storages, and `operations` is where the
+    * reconciliation reads the positions recorded for an account.
     *
     * @param interval
     *   how long the process waits after syncing an account before it syncs it again, and after a
@@ -73,6 +86,7 @@ object IbkrSyncProcessImpl {
     config: IbkrSyncConfig,
     interval: FiniteDuration,
     statementStorage: IbkrStatementStorage[F],
+    operations: AccountOperationStorage[F],
     instrumentStorage: BrokerInstrumentStorage[F],
     systemAlerts: SystemAlerts[F],
     backend: SttpBackend[F, Any],
@@ -86,7 +100,7 @@ object IbkrSyncProcessImpl {
       syncs <- accounts.traverse(
         accountSync[I, F](_, config, flex, statementStorage, instrumentStorage)
       )
-      process <- create[I, F](syncs, systemAlerts, interval)
+      process <- create[I, F](syncs, operations, instrumentStorage, systemAlerts, interval)
     } yield process)
 
   private def accountSync[I[_]: Functor, F[_]: MonadThrow: Clock](
@@ -100,13 +114,23 @@ object IbkrSyncProcessImpl {
       .create[I, F](account, config, flex, statementStorage, instrumentStorage)
       .map(AccountSync(account.accountId, _))
 
-  /** Wires the IB sync process over `accounts`, syncing each every `interval`. */
-  def create[I[_]: Functor, F[_]: Temporal: GenUUID](
+  /** Wires the IB sync process over `accounts`, syncing each every `interval`, and reconciling the
+    * positions each has recorded, which it reads from `operations`, with the Open Positions its
+    * sync reports. An instrument IB does not report is named by its record in `instruments`.
+    */
+  def create[I[_]: Sync, F[_]: Async: GenUUID](
     accounts: List[AccountSync[F]],
+    operations: AccountOperationStorage[F],
+    instruments: BrokerInstrumentStorage[F],
     systemAlerts: SystemAlerts[F],
     interval: FiniteDuration
   )(implicit logs: Logs[I, F], WL: WithLocal[F, ProcessContext]): I[IbkrSyncProcessImpl[F]] =
-    logs
-      .forService[IbkrSyncProcess[F]]
-      .map(implicit log => new IbkrSyncProcessImpl[F](accounts, systemAlerts, interval))
+    for {
+      reconciler <- IbkrReconciler.create[I, F](operations, instruments, systemAlerts)
+      process <- logs
+        .forService[IbkrSyncProcess[F]]
+        .map(implicit log =>
+          new IbkrSyncProcessImpl[F](accounts, reconciler, systemAlerts, interval)
+        )
+    } yield process
 }

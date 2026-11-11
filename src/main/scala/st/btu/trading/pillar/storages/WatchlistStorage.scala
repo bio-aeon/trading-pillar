@@ -9,7 +9,7 @@ trait WatchlistStorage[F[_]] {
   /** Every enabled watchlist item across every account. */
   def allEnabled: F[List[WatchlistItem]]
 
-  /** This account's watchlist items. */
+  /** This account's watchlist items, disabled ones included. */
   def byAccount(accountId: AccountId): F[List[WatchlistItem]]
 
   /** Adds `item` to its account's watchlist. */

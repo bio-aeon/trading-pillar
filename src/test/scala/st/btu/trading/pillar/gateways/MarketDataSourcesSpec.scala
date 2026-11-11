@@ -90,6 +90,30 @@ class MarketDataSourcesSpec extends Specification with CatsEffect {
       }
     }
 
+    "serves" >> {
+
+      "is true for each source whose adapter is wired" >> {
+        for {
+          sources <- MarketDataFakes.marketDataSources(
+            yahoo = Some(MarketDataFakes.symbolViews),
+            tinkoff = Some(MarketDataFakes.boardViews)
+          )
+        } yield (sources.serves(Source.Yahoo), sources.serves(Source.Tinkoff)) must_== (true, true)
+      }
+
+      "is false for a source with no adapter wired" >> {
+        for {
+          onlyYahoo <- MarketDataFakes.marketDataSources(yahoo = Some(MarketDataFakes.symbolViews))
+          onlyTinkoff <- MarketDataFakes.marketDataSources(tinkoff =
+            Some(MarketDataFakes.boardViews)
+          )
+        } yield {
+          onlyYahoo.serves(Source.Tinkoff) must beFalse
+          onlyTinkoff.serves(Source.Yahoo) must beFalse
+        }
+      }
+    }
+
     "forTicker" >> {
 
       "serves a ticker set to Yahoo with the Yahoo adapter" >> {

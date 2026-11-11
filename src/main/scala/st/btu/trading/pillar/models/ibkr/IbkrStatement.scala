@@ -15,13 +15,17 @@ import java.time.LocalDate
   *   the rows worth keeping, in the order the statement lists them
   * @param securities
   *   the instruments of the statement's Financial Instrument Information section
+  * @param openPositions
+  *   the positions the statement's Open Positions section reports as open at the end of its last
+  *   day
   */
 final case class IbkrStatement(
   ibkrAccountId: IbkrAccountId,
   fromDate: LocalDate,
   toDate: LocalDate,
   rows: List[IbkrReportedRow],
-  securities: List[IbkrSecurityInfo]
+  securities: List[IbkrSecurityInfo],
+  openPositions: List[IbkrOpenPosition]
 )
 
 /** A statement row as IB reported it, before it is stored under an account of the bot. */
@@ -58,4 +62,22 @@ final case class IbkrSecurityInfo(
   description: Option[String],
   assetCategory: Option[String],
   currency: Option[Currency]
+)
+
+/** A position of a statement's Open Positions section.
+  *
+  * @param conid
+  *   IB's contract id, the id IB knows the instrument by
+  * @param symbol
+  *   IB's symbol for the instrument, when the statement says
+  * @param assetCategory
+  *   IB's asset class of the instrument, such as `STK`, when the statement says
+  * @param quantity
+  *   the units held, negative for a short position
+  */
+final case class IbkrOpenPosition(
+  conid: BrokerInstrumentId,
+  symbol: Option[Ticker],
+  assetCategory: Option[String],
+  quantity: BigDecimal
 )

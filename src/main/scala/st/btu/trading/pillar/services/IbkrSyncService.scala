@@ -1,5 +1,7 @@
 package st.btu.trading.pillar.services
 
+import st.btu.trading.pillar.models.ibkr.IbkrOpenPositions
+
 /** Brings the stored statement rows of one IB account up to date. */
 trait IbkrSyncService[F[_]] {
 
@@ -13,10 +15,12 @@ trait IbkrSyncService[F[_]] {
     * generate is read again as two halves, down to a single day.
     *
     * @return
-    *   a failed `F` when a statement cannot be read, when it is not the configured account's, or
-    *   when one of its rows cannot be translated
+    *   the positions the statement of the last window read reports as open at the end of the last
+    *   day that statement covers, or `None` when no window was read; a failed `F` when a statement
+    *   cannot be read, when it is not the configured account's, or when one of its rows cannot be
+    *   translated
     */
-  def sync: F[Unit]
+  def sync: F[Option[IbkrOpenPositions]]
 
   /** Records every row stored for the account again, each with its translation, which replaces the
     * stored translations and leaves the stored rows as they are. It brings the translations up to

@@ -399,6 +399,7 @@ handlers - goes through `gateways.MarketDataSources` instead of holding a single
 trait MarketDataSources[F[_]] {
   def settingFor(ticker: Ticker): F[SourceSetting]
   def forTicker(ticker: Ticker): F[MarketDataSource[F]]
+  def serves(source: Source): Boolean
 }
 ```
 
@@ -412,6 +413,11 @@ trait MarketDataSources[F[_]] {
   is served from that board. When the setting's source has no adapter wired (the option is `None`,
   e.g. no Tinkoff token is configured), it raises `MarketDataError.SourceNotConfigured(source)`,
   whose message names the source.
+- `serves(source)` says whether the router has an adapter for the source: Yahoo while `yahoo` is
+  defined, Tinkoff while `tinkoff` is defined, and Binance never, since no adapter serves it. A
+  caller that would write a setting asks it first, because a setting for a source the router cannot
+  serve makes every sync of its ticker fail; the
+  [held instruments service](#held-instruments-on-the-watchlist) does.
 
 `forTicker` is for callers that need the adapter itself - `LiveStrategyServiceImpl.evaluate`,
 `AlertProcessImpl`'s price-rule evaluation, `PriceHistorySyncServiceImpl.syncSymbol`,
@@ -484,7 +490,10 @@ keyed by `(ticker, source, date)` and nothing deletes them.
 `processes.PriceHistorySyncProcessImpl` (mirrors `TcsPortfolioSyncProcessImpl`: `ProcessContext` /
 `tofu.WithLocal`, tofu logging, self-restart on an uncaught loop failure):
 
-- Every `config.interval`, loads `WatchlistStorage.allEnabled` and syncs each item.
+- Every `config.interval`, first adds the instruments the accounts hold to their watchlists (see
+  [Held instruments on the watchlist](#held-instruments-on-the-watchlist)), then loads
+  `WatchlistStorage.allEnabled` and syncs each item. A failure of that first step is logged, and
+  the cycle goes on with the watchlists as they are.
 - Unlike the Tinkoff sync process, watchlist items are synced **sequentially, not in parallel** -
   so one rate-limited symbol backs off without racing the others against the same upstream limit.
 - Per-item error isolation: a `MarketDataError.RateLimited(retryAfter)` logs a warning and sleeps
@@ -495,6 +504,69 @@ keyed by `(ticker, source, date)` and nothing deletes them.
 - System alerts and the consecutive-failure threshold that drives them
   (`sync-failed:<ticker>` / `sync-recovered:<ticker>` / `process-crashed:price-history-sync`) are
   documented in [`alerts.md`](alerts.md#system-alerts).
+
+## Held instruments on the watchlist
+
+A ticker has bars, and so a price, only once it is on a watchlist, so a position nobody put on one
+is unpriced in the valuation. `services.HeldInstrumentsService` puts the instruments every account
+holds, at every broker, on that account's watchlist:
+
+```scala
+trait HeldInstrumentsService[F[_]] {
+  def addToWatchlists: F[Unit]
+}
+
+object HeldInstrumentsServiceImpl {
+  def create[I[_]: Functor, F[_]: MonadThrow: Clock](
+    accounts: AccountStorage[F], operations: AccountOperationStorage[F],
+    watchlist: WatchlistStorage[F], tickerSources: TickerSourceStorage[F],
+    directory: InstrumentDirectory[F], sources: MarketDataSources[F]
+  )(implicit logs: Logs[I, F]): I[HeldInstrumentsService[F]]
+}
+```
+
+`PriceHistorySyncProcessImpl` calls `addToWatchlists` at the start of every cycle, before it reads
+the watchlist, so an instrument bought since the last cycle is synced in the cycle that adds it. For
+every stored account, in turn:
+
+1. **Holdings**: the instruments with a nonzero position, as [`Holdings`](analytics.md#holdings) of
+   the account's executed operations as of now, read from `AccountOperationStorage` as far back as
+   the valuation reads.
+2. **Resolving**: each held instrument, in the order of its `InstrumentKey`, is resolved through the
+   `InstrumentDirectory`. One the directory does not know is skipped. A lookup that fails is logged,
+   naming the instrument and the account, and that instrument is skipped, so one failure does not
+   stop the others.
+3. **Pricing**: a held ticker with no stored `TickerSource`, whether or not it is on the watchlist,
+   gets the setting its broker's pricing rule gives (below). A stored setting is never changed. The
+   setting is written before the ticker is added, so that a ticker is never synced from the default
+   source in between. The rules give a setting only for a source the `sources` router serves, since
+   a setting for a source it has no adapter for would only make every sync of the ticker fail.
+4. **Adding**: a ticker the account's watchlist lacks, in any state (`WatchlistStorage.byAccount`
+   lists disabled entries too), is added enabled, with the note `Added because the account holds it`.
+   An entry that exists is left as it is, a disabled one included: `add` can re-enable an existing
+   entry, so it is called only for a ticker the account lacks. Nothing is ever removed, so the entry
+   of a sold holding stays. Two instruments of one ticker, such as one listed on two boards, add it
+   once, and the first of them in key order sets its source.
+
+The pricing rule is an exhaustive match on the instrument's `Broker`:
+
+| Broker | Setting written |
+|---|---|
+| Tinkoff | `SourceSetting.Tinkoff` on the instrument's own board, `BrokerInstrument.classCode`, while the router serves Tinkoff; no setting otherwise, so the ticker keeps the default source |
+| Interactive Brokers | `SourceSetting.Yahoo` under the symbol the [exchange rule](ibkr.md#yahoo-symbols) gives for the IB symbol and the listing exchange, written as `Yahoo(None)` when that symbol is the ticker itself, so that a deployment whose default source is not Yahoo still prices the instrument there; this while the router serves Yahoo, and no setting otherwise. An exchange without a rule, or an instrument that names none, gets no setting, and the service logs the ticker and its exchange |
+
+A storage that fails fails the call, and the price-history process logs it and goes on. An
+instrument that has no setting after all of this is priced from the router's default source.
+
+Known limits:
+
+- Two brokers' instruments under one ticker, such as an IB `VOD` on the LSE and a Tinkoff `VOD`,
+  share the ticker's one setting: whichever is written first stays.
+- A held ticker that is removed from a watchlist, with `/watchlist rm`, is added again at the next
+  cycle. To keep a held ticker out of the sync, disable its entry instead of removing it.
+- Removing a held ticker's setting with `/source SYM default` is undone at the next cycle, since a
+  held ticker without a setting gets its broker's again. To keep a held ticker on the default
+  source, set that source explicitly.
 
 ## Dividends
 

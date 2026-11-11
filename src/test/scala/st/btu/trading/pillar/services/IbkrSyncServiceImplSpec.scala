@@ -381,6 +381,88 @@ class IbkrSyncServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
+      "the open positions it returns" >> {
+        val oneWindow = config.copy(windowDays = 5000)
+
+        def openPosition(quantity: String): String =
+          element(
+            "OpenPosition",
+            "assetCategory" -> "STK",
+            "symbol" -> "AAPL",
+            "conid" -> "265598",
+            "position" -> quantity,
+            "levelOfDetail" -> "SUMMARY"
+          )
+
+        def apple(quantity: BigDecimal): IbkrOpenPosition =
+          IbkrOpenPosition(
+            BrokerInstrumentId("265598"),
+            Some(Ticker("AAPL")),
+            Some("STK"),
+            quantity
+          )
+
+        // The statement of a window holds a position of the number of shares given for the day the
+        // window begins on.
+        def respondByStart(shares: Map[String, String])(request: FlexRequest): IO[String] =
+          respondWith(openPosition(shares(day(request.from))))(request)
+
+        "are dated by the last day the statement says it covers, when IB ends it before the window" >> {
+          // The window asks up to 8 November, and IB's statement ends on the 6th.
+          def endingEarly(request: FlexRequest): IO[String] =
+            IO.pure(statementXml("U1111111", day(request.from), "20261106", openPosition("10")))
+          for {
+            f <- fixture(oneWindow, respond = endingEarly)
+            reported <- f.service.sync
+          } yield reported must beSome(
+            IbkrOpenPositions(LocalDate.of(2026, 11, 6), newYork, List(apple(10)))
+          )
+        }
+
+        "are those of the statement, as of the last day it covers, in the statement zone" >> {
+          for {
+            f <- fixture(oneWindow, respond = respondWith(openPosition("10")))
+            reported <- f.service.sync
+          } yield reported must beSome(
+            IbkrOpenPositions(LocalDate.of(2026, 11, 8), newYork, List(apple(10)))
+          )
+        }
+
+        "are those of the last of several windows" >> {
+          val shares =
+            Map("20260101" -> "1", "20260411" -> "2", "20260720" -> "3", "20261028" -> "4")
+          for {
+            f <- fixture(respond = respondByStart(shares))
+            reported <- f.service.sync
+          } yield reported must beSome(
+            IbkrOpenPositions(LocalDate.of(2026, 11, 8), newYork, List(apple(4)))
+          )
+        }
+
+        "are those of the second half when the last window is read in halves" >> {
+          // Five days, 4 to 8 November, which IB generates in pieces of two days at most.
+          val fiveDays = config.copy(rereadDays = 0, windowDays = 5)
+          val shares = Map("20261104" -> "1", "20261106" -> "2", "20261107" -> "3")
+          def respond(request: FlexRequest): IO[String] =
+            if (ChronoUnit.DAYS.between(request.from, request.to) + 1 > 2)
+              IO.raiseError(generationFailed)
+            else respondByStart(shares)(request)
+          for {
+            f <- fixture(fiveDays, List(storedTrade("1001", "2026-11-04")), respond = respond)
+            reported <- f.service.sync
+          } yield reported must beSome(
+            IbkrOpenPositions(LocalDate.of(2026, 11, 8), newYork, List(apple(3)))
+          )
+        }
+
+        "are none when no window was read" >> {
+          for {
+            f <- fixture(config.copy(rereadDays = 0), List(storedTrade("1001", "2026-11-09")))
+            reported <- f.service.sync
+          } yield reported must beNone
+        }
+      }
+
       "recording" >> {
         val oneWindow = config.copy(windowDays = 5000)
 

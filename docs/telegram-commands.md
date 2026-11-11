@@ -160,7 +160,10 @@ Added SBER (tinkoff, default board) to the watchlist.
 Removed AAPL from the watchlist.
 ```
 (`AAPL was not on the watchlist.` if it wasn't there; `Usage: ...` if `add`/`rm` is missing its
-symbol.) Removing a ticker leaves its source setting in place.
+symbol.) Removing a ticker leaves its source setting in place. A ticker the account holds is put back
+on the watchlist at the next price-history cycle (see
+[`market-data.md`](market-data.md#held-instruments-on-the-watchlist)), so to keep a held ticker out
+of the sync, disable its entry through the consumer's own tooling instead of removing it.
 
 ### `/source`
 
@@ -240,7 +243,11 @@ USD000UTSTOM now uses tinkoff, board CETS.
 ```
 SBER now uses the default source.
 ```
-(`SBER already uses the default source.` if it had no setting.)
+(`SBER already uses the default source.` if it had no setting.) A ticker an account holds gets its
+broker's setting again at the next price-history cycle (see
+[`market-data.md`](market-data.md#held-instruments-on-the-watchlist)), so `/source SYM default`
+does not keep a held ticker on the default source: set that source explicitly instead, as in
+`/source SYM yahoo`.
 
 The ticker is upper-cased, and `yahoo`, `tinkoff` and `default` are matched regardless of case. Any
 other form - an unknown word, more than one board or symbol, words after `default` - replies

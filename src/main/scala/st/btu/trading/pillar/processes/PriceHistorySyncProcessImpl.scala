@@ -9,7 +9,11 @@ import fs2.Stream
 import st.btu.trading.pillar.alerts.{FailureTracker, SystemAlerts}
 import st.btu.trading.pillar.data.{ProcessContext, TraceIds, UtcClock}
 import st.btu.trading.pillar.models.market.{MarketDataError, Ticker, WatchlistItem}
-import st.btu.trading.pillar.services.{PriceHistorySyncConfig, PriceHistorySyncService}
+import st.btu.trading.pillar.services.{
+  HeldInstrumentsService,
+  PriceHistorySyncConfig,
+  PriceHistorySyncService
+}
 import st.btu.trading.pillar.storages.WatchlistStorage
 import tofu.WithLocal
 import tofu.generate.GenUUID
@@ -23,6 +27,7 @@ import java.time.LocalDate
 // single rate-limited item can back off without racing the others against the same upstream limit.
 final class PriceHistorySyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
   watchlist: WatchlistStorage[F],
+  heldInstruments: HeldInstrumentsService[F],
   syncService: PriceHistorySyncService[F],
   config: PriceHistorySyncConfig,
   systemAlerts: SystemAlerts[F],
@@ -39,10 +44,18 @@ final class PriceHistorySyncProcessImpl[F[_]: Temporal: Logging: GenUUID](
 
   private def runBatch: F[Unit] =
     for {
+      _ <- addHeldInstruments
       items <- watchlist.allEnabled
       today <- UtcClock.todayUtc[F]
       _ <- processItems(items, today).compile.drain
     } yield ()
+
+  // A failure is logged and the cycle goes on with the watchlists as they are.
+  private def addHeldInstruments: F[Unit] =
+    TraceIds
+      .next[F]
+      .flatMap(uuid => heldInstruments.addToWatchlists.local(_.copy(traceId = uuid)))
+      .handleErrorWith(e => errorCause"Adding the held instruments to the watchlists failed" (e))
 
   private def processItems(items: List[WatchlistItem], today: LocalDate): Stream[F, Unit] =
     Stream.emits(items).flatMap(processItem(_, today))
@@ -101,9 +114,13 @@ object PriceHistorySyncProcessImpl {
 
   // F needs Async (not just Temporal) here, purely to allocate the alertingRef Ref during
   // construction; the class itself (and everything it does per tick) only ever needs Temporal.
-  /** Wires the price-history sync process backed by the given watchlist and sync service. */
+  /** Wires the price-history sync process backed by the given watchlist and sync service. Each
+    * cycle starts by adding the instruments the accounts hold to their watchlists, through
+    * `heldInstruments`.
+    */
   def create[I[_]: Sync, F[_]: Async: GenUUID](
     watchlist: WatchlistStorage[F],
+    heldInstruments: HeldInstrumentsService[F],
     syncService: PriceHistorySyncService[F],
     config: PriceHistorySyncConfig,
     systemAlerts: SystemAlerts[F],
@@ -119,6 +136,7 @@ object PriceHistorySyncProcessImpl {
         .map(implicit log =>
           new PriceHistorySyncProcessImpl[F](
             watchlist,
+            heldInstruments,
             syncService,
             config,
             systemAlerts,

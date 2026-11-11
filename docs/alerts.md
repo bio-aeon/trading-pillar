@@ -406,6 +406,13 @@ about *when* to raise anything; that policy lives in the caller.
 | `PriceHistorySyncProcessImpl` | `process-crashed:price-history-sync` | The loop-level `handleErrorWith` catches an otherwise-uncaught exception from a sync batch |
 | `AlertProcessImpl` | `process-crashed:alerts` | The loop-level `handleErrorWith` catches an otherwise-uncaught exception from an evaluation batch |
 | `TcsPortfolioSyncProcessImpl` | `process-crashed:tcs-portfolio-sync:<accountId>` | The loop-level `handleErrorWith` of one account's loop catches an otherwise-uncaught exception, from the sync or from recording the account's stored operations again at startup. Each account has a loop, and an alert name, of its own |
+| `IbkrSyncProcessImpl` | `process-crashed:ibkr-sync:<accountId>` | The same for an Interactive Brokers account's loop, whose exceptions come from the sync, from the reconciliation that follows it, or from recording the account's stored statement rows again at startup |
+| `IbkrReconciler` | `ibkr-reconciliation:<accountId>` | The positions the account's recorded operations leave differ from the Open Positions IB reports, and the differences are not the ones raised last. The body names each instrument with its symbol, contract id and both quantities, and never the IB account |
+| `IbkrReconciler` | `ibkr-reconciled:<accountId>` | The first reconciliation that finds the positions equal after an `ibkr-reconciliation` was raised, once |
+
+`IbkrReconciler` keeps the differences it last raised for each account in memory, as
+`PriceHistorySyncProcessImpl` keeps its `sync-failed` state, so a restart raises the differences that
+are still there once more. See [`ibkr.md`](ibkr.md#reconciliation) for what it compares.
 
 `PriceHistorySyncProcessImpl.create` and `AlertProcessImpl.create` both take `SystemAlerts[F]` (and
 `PriceHistorySyncProcessImpl` also a `FailureTracker[F]`) as required constructor/`create`

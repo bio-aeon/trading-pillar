@@ -19,7 +19,9 @@ import scala.annotation.tailrec
   *   - the cash transactions and the corporate actions at the detail level; a summary row repeats a
   *     detail row and has no transaction id;
   *   - the transfers;
-  *   - the instruments of the Financial Instrument Information section.
+  *   - the instruments of the Financial Instrument Information section;
+  *   - the open positions at the summary level, or naming no level, which are not rows to store but
+  *     what the statement reports as held at its end.
   *
   * Every attribute of a kept row is retained as sent. Elements and attributes the parser does not
   * know are ignored. The XML is read without document type declarations and external entities.
@@ -29,6 +31,7 @@ object IbkrStatementParser {
   private val RootElement = "FlexQueryResponse"
   private val StatementElement = "FlexStatement"
   private val SecurityElement = "SecurityInfo"
+  private val OpenPositionElement = "OpenPosition"
 
   private val AccountAttribute = "accountId"
   private val FromDateAttribute = "fromDate"
@@ -36,6 +39,7 @@ object IbkrStatementParser {
 
   private val ExecutionLevel = "EXECUTION"
   private val DetailLevel = "DETAIL"
+  private val SummaryLevel = "SUMMARY"
 
   private final case class XmlElement(name: String, attributes: Map[String, String])
 
@@ -60,7 +64,8 @@ object IbkrStatementParser {
     "CorporateAction" -> RowRule(IbkrSection.CorporateAction, Some(DetailLevel), WithoutId.Skip)
   )
 
-  private val KeptElements: Set[String] = RowRules.keySet + StatementElement + SecurityElement
+  private val KeptElements: Set[String] =
+    RowRules.keySet + StatementElement + SecurityElement + OpenPositionElement
 
   /** The statements in the response `xml`, in the order the response lists them. Fails when the
     * text is not an Activity Flex Query response, or when a kept row lacks an attribute the sync
@@ -143,7 +148,8 @@ object IbkrStatementParser {
       from,
       to,
       rows.flatten,
-      body.filter(_.name == SecurityElement).flatMap(securityOf)
+      body.filter(_.name == SecurityElement).flatMap(securityOf),
+      body.filter(_.name == OpenPositionElement).flatMap(openPositionOf)
     )
   }
 
@@ -197,5 +203,24 @@ object IbkrStatementParser {
       attribute(Name.AssetCategory),
       attribute(Name.Currency).map(Currency(_))
     )
+  }
+
+  // A position without a contract id or a quantity cannot be compared with the recorded one, and
+  // is left out. So is a row of a lot, which breaks a position into its purchases.
+  private def openPositionOf(element: XmlElement): Option[IbkrOpenPosition] = {
+    def attribute(name: String): Option[String] = IbkrAttributes.value(element.attributes, name)
+
+    val atAnotherLevel = attribute(Name.LevelOfDetail).exists(_ != SummaryLevel)
+    if (atAnotherLevel) None
+    else
+      for {
+        conid <- attribute(Name.Conid)
+        quantity <- attribute(Name.Position).flatMap(IbkrAttributes.decimal)
+      } yield IbkrOpenPosition(
+        BrokerInstrumentId(conid),
+        attribute(Name.Symbol).map(Ticker(_)),
+        attribute(Name.AssetCategory),
+        quantity
+      )
   }
 }
