@@ -27,6 +27,10 @@ class PersistedOperationValuesSpec extends Specification {
           "fee",
           "tax",
           "exchange",
+          "split",
+          "conversion",
+          "spinoff",
+          "stock_dividend",
           "other"
         )
       )

@@ -17,14 +17,20 @@ import java.time.{Instant, LocalDate, ZoneOffset}
   * @param instrument
   *   the instrument the operation concerns, if it concerns one
   * @param quantity
-  *   the signed change of the position in executed units: positive for buy and security_in,
-  *   negative for sell and security_out, zero for every other kind
+  *   the signed change of the position in executed units: positive for buy, security_in, a
+  *   spin-off's new instrument and a stock dividend, negative for sell and security_out, of either
+  *   sign for a split and for a conversion leg, and zero for every other kind, a spin-off's parent
+  *   marker included
   * @param price
-  *   the price per unit in `currency`, where the broker gives one
+  *   the price per unit in `currency`, where the broker gives one; for a conversion leg and a stock
+  *   dividend, the market value per unit
   * @param amount
   *   the signed change of cash in `currency`; a tax refund is positive
   * @param brokerType
   *   the broker's own name for the operation, for display
+  * @param group
+  *   the event the operation belongs to along with others, if it belongs to one: the legs of one
+  *   corporate action share a group
   */
 final case class AccountOperation(
   accountId: AccountId,
@@ -37,7 +43,8 @@ final case class AccountOperation(
   price: Option[BigDecimal],
   amount: BigDecimal,
   currency: Currency,
-  brokerType: BrokerOperationType
+  brokerType: BrokerOperationType,
+  group: Option[OperationGroup] = None
 ) {
 
   /** The UTC calendar date of `occurredAt`, the day every reader attributes the operation to. */

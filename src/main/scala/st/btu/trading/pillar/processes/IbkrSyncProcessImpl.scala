@@ -1,6 +1,5 @@
 package st.btu.trading.pillar.processes
 
-import cats.{Functor, MonadThrow}
 import cats.effect.*
 import cats.syntax.flatMap.*
 import cats.syntax.foldable.*
@@ -74,7 +73,8 @@ object IbkrSyncProcessImpl {
   /** Wires the IB sync process for `accounts`, all reading with `token` through one
     * `FlexWebService`, so that their calls share the token's rate limit. The statement rows and the
     * instruments they describe are recorded in the given storages, and `operations` is where the
-    * reconciliation reads the positions recorded for an account.
+    * reconciliation reads the positions recorded for an account. Both the reconciliation and the
+    * syncs raise their alerts through `systemAlerts`.
     *
     * @param interval
     *   how long the process waits after syncing an account before it syncs it again, and after a
@@ -98,20 +98,21 @@ object IbkrSyncProcessImpl {
     Resource.eval(for {
       flex <- FlexWebServiceImpl.create[I, F](token, flexConfig, backend)
       syncs <- accounts.traverse(
-        accountSync[I, F](_, config, flex, statementStorage, instrumentStorage)
+        accountSync[I, F](_, config, flex, statementStorage, instrumentStorage, systemAlerts)
       )
       process <- create[I, F](syncs, operations, instrumentStorage, systemAlerts, interval)
     } yield process)
 
-  private def accountSync[I[_]: Functor, F[_]: MonadThrow: Clock](
+  private def accountSync[I[_]: Sync, F[_]: Sync](
     account: IbkrAccount,
     config: IbkrSyncConfig,
     flex: FlexWebService[F],
     statementStorage: IbkrStatementStorage[F],
-    instrumentStorage: BrokerInstrumentStorage[F]
+    instrumentStorage: BrokerInstrumentStorage[F],
+    systemAlerts: SystemAlerts[F]
   )(implicit logs: Logs[I, F]): I[AccountSync[F]] =
     IbkrSyncServiceImpl
-      .create[I, F](account, config, flex, statementStorage, instrumentStorage)
+      .create[I, F](account, config, flex, statementStorage, instrumentStorage, systemAlerts)
       .map(AccountSync(account.accountId, _))
 
   /** Wires the IB sync process over `accounts`, syncing each every `interval`, and reconciling the

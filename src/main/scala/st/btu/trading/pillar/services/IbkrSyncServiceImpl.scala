@@ -1,6 +1,6 @@
 package st.btu.trading.pillar.services
 
-import cats.effect.Clock
+import cats.effect.{Clock, Ref, Sync}
 import cats.syntax.applicativeError.*
 import cats.syntax.either.*
 import cats.syntax.flatMap.*
@@ -8,10 +8,12 @@ import cats.syntax.foldable.*
 import cats.syntax.functor.*
 import cats.syntax.option.*
 import cats.syntax.traverse.*
-import cats.{Functor, MonadThrow}
+import cats.MonadThrow
+import st.btu.trading.pillar.alerts.SystemAlerts
 import st.btu.trading.pillar.data.UtcClock
 import st.btu.trading.pillar.gateways.ibkr.{FlexError, FlexWebService, IbkrStatementParser}
 import st.btu.trading.pillar.models.ibkr.*
+import st.btu.trading.pillar.services.IbkrCorporateActions.Notice
 import st.btu.trading.pillar.storages.{BrokerInstrumentStorage, IbkrStatementStorage}
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
@@ -24,7 +26,9 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
   config: IbkrSyncConfig,
   flex: FlexWebService[F],
   statements: IbkrStatementStorage[F],
-  instruments: BrokerInstrumentStorage[F]
+  instruments: BrokerInstrumentStorage[F],
+  systemAlerts: SystemAlerts[F],
+  raised: Ref[F, Set[Notice]]
 )(implicit F: MonadThrow[F], clock: Clock[F])
     extends IbkrSyncService[F] {
   import IbkrSyncServiceImpl.*
@@ -52,8 +56,9 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
       stored <- statements.rows(account.accountId)
       _ <- info"Recording again the ${stored.size} stored statement rows with their translations"
       rows = inOrder(stored)
-      records <- translated(rows, IbkrRowTranslation.canceledTransactions(rows))
-      _ <- recordAll(records)
+      translation <- translated(rows, IbkrRowTranslation.canceledTransactions(rows), Nil)
+      _ <- recordAll(translation.records)
+      _ <- announce(translation.notices)
     } yield ()
 
   // Reads `window`. One that IB cannot generate is read as two halves, down to a single day, whose
@@ -72,7 +77,7 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
       xml <- flex.statement(account.queryId, window.from, window.to)
       statement <- ownStatement(xml)
       rows = distinctRows(statement.rows.map(_.attributedTo(account.accountId)))
-      _ <- recordWithCancellations(rows)
+      _ <- recordWithEarlierRows(rows)
       _ <- recordInstruments(statement)
       _ <- info"Recorded ${rows.size} statement rows for ${window.from} to ${window.to}"
     } yield IbkrOpenPositions(statement.toDate, config.statementZone, statement.openPositions)
@@ -89,10 +94,12 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
         )
     } yield own
 
-  // Records `rows` with their translations. A trade that a cancelling row among them names is
-  // cancelled in its own translation, so one the statement does not repeat is loaded from the
-  // storage and recorded again.
-  private def recordWithCancellations(rows: List[IbkrStatementRow]): F[Unit] = {
+  // Records `rows` with their translations. What a row says about rows stored earlier is taken up
+  // by recording those again with it: a trade that a cancelling row among them names is cancelled
+  // in its own translation, so one the statement does not repeat is loaded from the storage; and
+  // corporate action legs are interpreted together, so a window that has any records the stored
+  // ones again with its own.
+  private def recordWithEarlierRows(rows: List[IbkrStatementRow]): F[Unit] = {
     val canceled = IbkrRowTranslation.canceledTransactions(rows)
     val repeated = rows.filter(_.section == IbkrSection.Trade).map(_.transactionId).toSet
     val absent = canceled -- repeated
@@ -100,19 +107,62 @@ final class IbkrSyncServiceImpl[F[_]: Logging] private (
       originals <-
         if (absent.isEmpty) F.pure(Vector.empty[IbkrStatementRow])
         else statements.rowsByTransactionIds(account.accountId, IbkrSection.Trade, absent)
-      records <- translated(rows ++ originals, canceled)
-      _ <- recordAll(records)
+      actions <- earlierActions(rows)
+      translation <- translated(rows ++ originals ++ actions.legs, canceled, actions.parents)
+      _ <- recordAll(translation.records)
+      _ <- announce(translation.notices)
     } yield ()
+  }
+
+  // What a window with corporate action legs needs besides its own rows: the legs stored earlier,
+  // which an action of this window can add to, and the stored rows that may be the parents of its
+  // spin-offs. The window's version of a leg stands in place of the stored one.
+  private def earlierActions(rows: List[IbkrStatementRow]): F[EarlierActions] = {
+    val own = rows.filter(_.section == IbkrSection.CorporateAction)
+    if (own.isEmpty) F.pure(EarlierActions.Empty)
+    else
+      for {
+        stored <- statements.rowsOfSection(account.accountId, IbkrSection.CorporateAction)
+        ownIds = own.map(_.transactionId).toSet
+        earlier = stored.filterNot(row => ownIds(row.transactionId)).toList
+        isins = IbkrCorporateActions.isinsNamed(own ++ earlier)
+        parents <-
+          if (isins.isEmpty) F.pure(Vector.empty[IbkrStatementRow])
+          else statements.rowsByIsin(account.accountId, isins)
+      } yield EarlierActions(earlier, parents.toList)
   }
 
   private def translated(
     rows: List[IbkrStatementRow],
-    canceled: Set[IbkrTransactionId]
-  ): F[List[IbkrRowRecord]] =
-    rows.traverse(IbkrRowTranslation.recordOf(_, config.statementZone, canceled).liftTo[F])
+    canceled: Set[IbkrTransactionId],
+    parents: List[IbkrStatementRow]
+  ): F[IbkrRecords.Result] =
+    IbkrRecords.of(rows, canceled, parents, config.statementZone).liftTo[F]
 
   private def recordAll(records: List[IbkrRowRecord]): F[Unit] =
     records.grouped(RecordBatchSize).toList.traverse_(statements.record)
+
+  // Raising comes before remembering what was raised, so that an alert that fails to go out is
+  // tried again at the next sync.
+  private def announce(notices: List[Notice]): F[Unit] =
+    for {
+      known <- raised.get
+      fresh = notices.filterNot(known)
+      _ <- F.whenA(fresh.nonEmpty)(
+        systemAlerts.raise(
+          s"$CorporateActionsAlert:${account.accountId.value}",
+          s"IB corporate actions need a look: account ${account.accountId.value}",
+          fresh
+            .map(IbkrCorporateActions.describe)
+            .mkString(
+              s"Corporate actions of account ${account.accountId.value} that the bot did not read " +
+                "for certain:\n",
+              "\n",
+              ""
+            )
+        ) >> raised.update(_ ++ fresh)
+      )
+    } yield ()
 
   private def recordInstruments(statement: IbkrStatement): F[Unit] =
     UtcClock
@@ -124,6 +174,18 @@ object IbkrSyncServiceImpl {
 
   // How many rows a storage call records.
   private val RecordBatchSize = 500
+
+  private val CorporateActionsAlert = "ibkr-corporate-actions"
+
+  // The rows a window with corporate action legs reads besides its own.
+  private final case class EarlierActions(
+    legs: List[IbkrStatementRow],
+    parents: List[IbkrStatementRow]
+  )
+
+  private object EarlierActions {
+    val Empty: EarlierActions = EarlierActions(Nil, Nil)
+  }
 
   /** The report dates of one statement to read, both ends included. */
   private[services] final case class Window(from: LocalDate, to: LocalDate) {
@@ -161,19 +223,37 @@ object IbkrSyncServiceImpl {
       (row.reportDate.toEpochDay, row.section.value, row.transactionId.value)
     )
 
-  /** Wires an [[IbkrSyncService]] that syncs `account` from `flex` into `statements`, and records
-    * the instruments the statements describe in `instruments`.
+  /** Wires an [[IbkrSyncService]] that syncs `account` from `flex` into `statements`, records the
+    * instruments the statements describe in `instruments`, and raises a system alert through
+    * `systemAlerts` for the corporate actions it could not read for certain.
+    *
+    * The alert is `ibkr-corporate-actions:<account id>`. It names the action's id, type and date,
+    * IB's description of it and what the sync did with it, and never the IB account. The notices
+    * raised are kept in memory, so after a restart the ones that still stand are raised once more.
     */
-  def create[I[_]: Functor, F[_]: MonadThrow: Clock](
+  def create[I[_]: Sync, F[_]: Sync](
     account: IbkrAccount,
     config: IbkrSyncConfig,
     flex: FlexWebService[F],
     statements: IbkrStatementStorage[F],
-    instruments: BrokerInstrumentStorage[F]
-  )(implicit logs: Logs[I, F]): I[IbkrSyncService[F]] =
-    logs
-      .forService[IbkrSyncService[F]]
-      .map(implicit log =>
-        new IbkrSyncServiceImpl[F](account, config, flex, statements, instruments)
-      )
+    instruments: BrokerInstrumentStorage[F],
+    systemAlerts: SystemAlerts[F]
+  )(implicit logs: Logs[I, F], clock: Clock[F]): I[IbkrSyncService[F]] =
+    for {
+      raised <- Ref.in[I, F, Set[Notice]](Set.empty)
+      service <- logs
+        .forService[IbkrSyncService[F]]
+        .map(log =>
+          // The clock is passed on explicitly, since the one Sync brings would be chosen over it.
+          new IbkrSyncServiceImpl[F](
+            account,
+            config,
+            flex,
+            statements,
+            instruments,
+            systemAlerts,
+            raised
+          )(using log, Sync[F], clock)
+        )
+    } yield service
 }

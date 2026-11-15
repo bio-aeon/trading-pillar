@@ -10,10 +10,12 @@ private[pillar] object IbkrAttributes {
 
   // The attributes of the elements of a statement that the library reads, as IB names them.
   object Name {
+    val ActionId = "actionID"
     val AssetCategory = "assetCategory"
     val Amount = "amount"
     val BuySell = "buySell"
     val CashTransfer = "cashTransfer"
+    val Code = "code"
     val Conid = "conid"
     val Currency = "currency"
     val Date = "date"
@@ -39,6 +41,7 @@ private[pillar] object IbkrAttributes {
     val TransactionType = "transactionType"
     val TransferPrice = "transferPrice"
     val Type = "type"
+    val Value = "value"
   }
 
   // The asset categories of IB that the library tells apart.

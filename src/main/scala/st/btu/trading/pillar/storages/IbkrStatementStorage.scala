@@ -1,12 +1,7 @@
 package st.btu.trading.pillar.storages
 
 import st.btu.trading.pillar.models.domain.AccountId
-import st.btu.trading.pillar.models.ibkr.{
-  IbkrRowRecord,
-  IbkrSection,
-  IbkrStatementRow,
-  IbkrTransactionId
-}
+import st.btu.trading.pillar.models.ibkr.*
 
 import java.time.LocalDate
 
@@ -44,4 +39,13 @@ trait IbkrStatementStorage[F[_]] {
     section: IbkrSection,
     ids: Set[IbkrTransactionId]
   ): F[Vector[IbkrStatementRow]]
+
+  /** Every row of `section` stored for `accountId`, in no particular order. */
+  def rowsOfSection(accountId: AccountId, section: IbkrSection): F[Vector[IbkrStatementRow]]
+
+  /** The rows of any section stored for `accountId` whose `isin` attribute is exactly one of
+    * `isins`, in no particular order. A row with no `isin` attribute is not among them, and no
+    * `isins` give no rows.
+    */
+  def rowsByIsin(accountId: AccountId, isins: Set[Isin]): F[Vector[IbkrStatementRow]]
 }

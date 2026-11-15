@@ -409,6 +409,7 @@ about *when* to raise anything; that policy lives in the caller.
 | `IbkrSyncProcessImpl` | `process-crashed:ibkr-sync:<accountId>` | The same for an Interactive Brokers account's loop, whose exceptions come from the sync, from the reconciliation that follows it, or from recording the account's stored statement rows again at startup |
 | `IbkrReconciler` | `ibkr-reconciliation:<accountId>` | The positions the account's recorded operations leave differ from the Open Positions IB reports, and the differences are not the ones raised last. The body names each instrument with its symbol, contract id and both quantities, and never the IB account |
 | `IbkrReconciler` | `ibkr-reconciled:<accountId>` | The first reconciliation that finds the positions equal after an `ibkr-reconciliation` was raised, once |
+| `IbkrSyncServiceImpl` | `ibkr-corporate-actions:<accountId>` | After the sync of a window with corporate actions, or the rebuild of an account's translations, recorded a corporate action that the library could not read for certain, and the alert has not told of it yet: one that is not interpreted, read by the shape of its legs, a stock dividend without a value, or a spin-off whose parent was not found. The body names each action's id, type and date, IB's description and what the bot did with it, and never the IB account |
 
 `IbkrReconciler` keeps the differences it last raised for each account in memory, as
 `PriceHistorySyncProcessImpl` keeps its `sync-failed` state, so a restart raises the differences that

@@ -3,7 +3,8 @@ package st.btu.trading.pillar.testkit
 import cats.effect.IO
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.models.market.Ticker
-import st.btu.trading.pillar.tax.{AnnualTaxReport, Lot, TaxConfig, TaxService}
+import st.btu.trading.pillar.storages.CorporateActionAllocationStorage
+import st.btu.trading.pillar.tax.*
 
 object TaxFakes {
 
@@ -28,5 +29,15 @@ object TaxFakes {
 
       def openLots(accountId: AccountId, ticker: Ticker): IO[List[Lot]] =
         IO.pure(openLotsByTicker.getOrElse((accountId, ticker), Nil))
+    })
+
+  trait FakeCorporateActionAllocationStorage extends CorporateActionAllocationStorage[IO]
+
+  def corporateActionAllocationStorage(
+    allocations: Map[AccountId, List[CorporateActionAllocation]] = Map.empty
+  ): IO[FakeCorporateActionAllocationStorage] =
+    IO.pure(new FakeCorporateActionAllocationStorage {
+      def byAccount(accountId: AccountId): IO[List[CorporateActionAllocation]] =
+        IO.pure(allocations.getOrElse(accountId, Nil))
     })
 }

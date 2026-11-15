@@ -73,6 +73,8 @@ trait IbkrStatementStorage[F[_]] {
   def rows(accountId: AccountId): F[Vector[IbkrStatementRow]]
   def rowsByTransactionIds(accountId: AccountId, section: IbkrSection,
                            ids: Set[IbkrTransactionId]): F[Vector[IbkrStatementRow]]
+  def rowsOfSection(accountId: AccountId, section: IbkrSection): F[Vector[IbkrStatementRow]]
+  def rowsByIsin(accountId: AccountId, isins: Set[Isin]): F[Vector[IbkrStatementRow]]
 }
 ```
 
@@ -102,18 +104,23 @@ below), and `record` stores both:
 `attributes` holds every attribute of the row's XML element, each name with its value exactly as IB
 sent it; a placeholder such as `-` or `N/A` is kept. The sync reads the rows back to translate them
 again: `rows` each time the process starts, to record every stored row again with its translation,
-and `rowsByTransactionIds` when a row that cancels a trade arrives for a trade stored earlier.
-`latestReportDate` tells it where to resume; the order of `rows` and of `rowsByTransactionIds` does
-not matter. The portfolio readers read the translations through
-[`AccountOperationStorage`](#accountoperationstoragef_) instead. A relational implementation could
-use a table such as `ibkr_statement_rows` with a generated `id`, `account_id`, `section` (`trade` |
-`cash_transaction` | `transfer` | `corporate_action`, the `IbkrSection` values), `transaction_id`,
-`report_date`, `attributes` (a JSON object of strings) and `updated_at`, a unique key on
-`(account_id, section, transaction_id)` for `record` to conflict on, and an index on
-`(account_id, report_date)` for `latestReportDate`. For each record, such an implementation upserts
-the translations on `(account_id, ref)`, and then deletes, from the account's operations, those
-whose `ref` equals the row's `ref` or starts with the row's `ref` and a slash, and that are not
-among the new ones. Match the prefix literally and not with a pattern: a section's value can contain
+and `rowsByTransactionIds` when a row that cancels a trade arrives for a trade stored earlier. A
+window with corporate action rows reads `rowsOfSection` for the corporate action legs stored
+earlier, and `rowsByIsin` for the stored rows of any section whose `isin` attribute is exactly one
+of the ISINs those legs' descriptions name, which is where the parents of spin-offs are found: a
+row with no `isin` attribute is not among them, and the sync never asks with no ISINs.
+`latestReportDate` tells it where to resume; the order of `rows`, of `rowsByTransactionIds`, of
+`rowsOfSection` and of `rowsByIsin` does not matter. The portfolio readers read the translations
+through [`AccountOperationStorage`](#accountoperationstoragef_) instead. A relational
+implementation could use a table such as `ibkr_statement_rows` with a generated `id`, `account_id`,
+`section` (`trade` | `cash_transaction` | `transfer` | `corporate_action`, the `IbkrSection`
+values), `transaction_id`, `report_date`, `attributes` (a JSON object of strings) and `updated_at`,
+a unique key on `(account_id, section, transaction_id)` for `record` to conflict on, and an index
+on `(account_id, report_date)` for `latestReportDate`; `rowsByIsin` compares the `isin` key of the
+JSON object, such as `attributes->>'isin'` in PostgreSQL, which an index on that expression can
+serve. For each record, such an implementation upserts the translations on `(account_id, ref)`, and
+then deletes, from the account's operations, those whose `ref` equals the row's `ref` or starts with
+the row's `ref` and a slash, and that are not among the new ones. Match the prefix literally and not with a pattern: a section's value can contain
 an underscore, which `LIKE` reads as a wildcard. PostgreSQL's `starts_with(ref, '<row ref>/')` does
 it. See [`ibkr.md`](ibkr.md) for what the rows hold and how they are translated.
 
@@ -146,10 +153,12 @@ One raw record can give several operations, never the reverse.
 for the operation). A relational implementation could use a table such as `account_operations`
 with a generated `id`, `account_id`, `ref`, `kind`, `state`, `occurred_at`, a nullable
 `instrument_broker` and `instrument_id` that are both null or both set, `quantity`, a nullable
-`price`, `amount`, `currency`, `broker_type` and `updated_at`, a unique key on
-`(account_id, ref)` and an index on `(account_id, occurred_at)`. Quantities and amounts are best
-held as wide fixed-point decimals, since coins have many decimal places: a `quantity` is read back
-with the scale of its column, which the readers print without the trailing zeros.
+`price`, `amount`, `currency`, `broker_type`, a nullable `group_ref` (the value of the
+operation's `OperationGroup`, the broker's id for an event several operations belong to, such as the
+legs of a corporate action) and `updated_at`, a unique key on `(account_id, ref)` and an index on
+`(account_id, occurred_at)`. Quantities and amounts are best held as wide fixed-point decimals,
+since coins have many decimal places: a `quantity` is read back with the scale of its column, which
+the readers print without the trailing zeros.
 
 ## `PriceHistoryStorage[F[_]]`
 
@@ -460,6 +469,30 @@ percentage: `60` means 60%), `drift_threshold_pct` (percentage points of tolerat
 example defaulting to 5), `enabled` (default true), `created_at` and a unique key on
 `(account_id, dimension, target_key)`.
 
+## `CorporateActionAllocationStorage[F[_]]`
+
+```scala
+trait CorporateActionAllocationStorage[F[_]] {
+  def byAccount(accountId: AccountId): F[List[CorporateActionAllocation]]
+}
+```
+
+No write method: the consumer provides the allocations, for example through operator tooling, and
+trading-pillar (`TaxServiceImpl`, through `annualReport` and `openLots`) only reads them. An
+allocation says what fraction of the cost of a spin-off's parent moves to one of the new
+instruments, from the figures the issuer publishes; a broker reports no value for a spin-off, so
+without one the new instrument takes none of the cost. See [`tax.md`](tax.md#spin-offs). A
+`CorporateActionAllocation` names the spin-off by its group, the `OperationGroup` its operations
+share, and the new instrument by its `InstrumentKey`.
+
+A relational implementation could use a table such as `corporate_action_allocations` with a generated
+`id`, `account_id`, `group_ref` (the value of the spin-off's `OperationGroup`), `instrument_broker`
+and `instrument_id` (the new instrument, which together are its `InstrumentKey`), `cost_fraction` (a
+fraction, so `0.2` is a fifth of the cost; a fixed-point decimal), `created_at`, and a unique key on
+`(account_id, group_ref, instrument_broker, instrument_id)`. The tax lots keep a fraction within 0
+and 1 and scale the fractions of one group down when they add up to more than 1, so a store that
+refuses such values loses nothing.
+
 ## `PaperStorage[F[_]]`
 
 ```scala
@@ -499,7 +532,7 @@ implementation runs its statements in one transaction.
 |---|---|---|---|
 | `AccountStorage` | `accounts` | none | `allAccounts` |
 | `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` (and `account_operations`) | `record` | `lastOperation`, `operationsByDtRange`, for the sync only |
-| `IbkrStatementStorage` | `ibkr_statement_rows` (and `account_operations`) | `record` | `latestReportDate`, `rows`, `rowsByTransactionIds`, for the sync only |
+| `IbkrStatementStorage` | `ibkr_statement_rows` (and `account_operations`) | `record` | `latestReportDate`, `rows`, `rowsByTransactionIds`, `rowsOfSection`, `rowsByIsin`, for the sync only |
 | `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` and `IbkrStatementStorage.record` | `operations` |
 | `PriceHistoryStorage` | `price_history` | `upsertBars` | `lastBarDate`, `bars`, `latestBars` |
 | `InstrumentStorage` | `instrument_metadata` | `upsert` | `find` |
@@ -514,6 +547,7 @@ implementation runs its statements in one transaction.
 | `PortfolioValuationStorage` | `portfolio_valuations` | `upsert` | `series`, `latest` |
 | `PortfolioSnapshotStorage` | `portfolio_snapshots` / `portfolio_snapshot_positions` | `save` | none |
 | `AllocationTargetStorage` | `allocation_targets` | none | `byAccount` |
+| `CorporateActionAllocationStorage` | `corporate_action_allocations` | none | `byAccount` |
 | `PaperStorage` | `paper_accounts` / `paper_orders` / `paper_positions` | `insertOrder`, `recordFill` | `account`, `positions`, `recentOrders` |
 
 A trait with no library write ("none" in the third column) is populated entirely by the consumer,

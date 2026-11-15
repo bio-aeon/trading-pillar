@@ -1,7 +1,8 @@
 # Tax lots and reports
 
 Package `st.btu.trading.pillar.tax`. Turns an account's executed `AccountOperation`s, its
-operations in terms shared by every broker, into FIFO cost-basis lots and a per-year tax estimate.
+operations in terms shared by every broker, into FIFO cost-basis lots, carried through splits,
+mergers, spin-offs and stock dividends, and a per-year tax estimate.
 
 **This is an estimate for personal reference, not tax advice.** It knows about exactly the rules
 listed below - progressive rate, an optional long-term exemption, broker-withheld tax - and nothing
@@ -20,7 +21,8 @@ final case class LotLedger(open: Map[InstrumentKey, List[Lot]], realized: List[R
                            unmatched: Map[InstrumentKey, BigDecimal])
 
 object TaxLots {
-  def fifo(operations: List[AccountOperation], tickerOf: InstrumentKey => Option[Ticker]): LotLedger
+  def fifo(operations: List[AccountOperation], tickerOf: InstrumentKey => Option[Ticker],
+           allocations: List[CorporateActionAllocation] = Nil): LotLedger
 }
 ```
 
@@ -29,8 +31,15 @@ considered; everything else in `operations` is ignored, such as the legs of a cu
 (`exchange`), which name none. An `InstrumentKey` is the broker and the id
 that broker gives the instrument, so lots of instruments at different brokers never mix. `tickerOf`
 is a plain function so `TaxLots` itself never touches an `InstrumentDirectory` - the caller
-(`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. Quantities are
-decimals, since an instrument can trade in fractions of a unit.
+(`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. `allocations` is
+plain data for the same reason: see ["Spin-offs"](#spin-offs). Quantities are decimals, since an
+instrument can trade in fractions of a unit.
+
+The ledger is one chronological fold over the operations of every instrument of the account, since
+a conversion or a spin-off moves lots from one instrument to another. Its state is the open lots of
+each instrument, the realized gains and the unmatched quantities. An operation is applied by its
+kind, and the operations of one group of a conversion or a spin-off are applied together (see
+["Corporate actions"](#corporate-actions)). The fee pools below stay per instrument.
 
 ### Opening a lot
 
@@ -38,6 +47,7 @@ decimals, since an instrument can trade in fractions of a unit.
 |---|---|
 | `buy` | `\|amount\| / quantity`, **plus** that day's pro-rated fee share for this instrument (see below) |
 | `security_in` | the operation's own `price`, or zero when the broker gives none - a transfer-in has no `amount` to derive a cost from |
+| `stock_dividend` | the operation's own `price`, the market value per unit, or zero when the broker gives none - see ["Stock dividends"](#stock-dividends) |
 
 A lot's `quantity` is the operation's `quantity`, which is the **executed** units. A buy that was
 only partly filled opens a lot of the units that were filled, costed over those units: its `amount`
@@ -47,6 +57,11 @@ is the payment for them. A buy that executed no units opens no lot.
 same convention `PortfolioValuationServiceImpl` uses throughout). Every buy opens its **own** lot -
 same-day buys of the same instrument are never merged into one lot, so each keeps its own `unitCost`
 even when they land on the same date.
+
+An instrument's lots are kept oldest first by `acquiredOn`, which a purchase keeps by itself. A lot
+that a corporate action carries over keeps the date of the lot it comes from, and so goes before
+the lots of its instrument that were opened later, as when a merger brings shares into an
+instrument that is already held.
 
 ### Fee pro-ration
 
@@ -82,7 +97,8 @@ charge on the account, is in no trade's cost.
 
 Both consume the instrument's open lots oldest-first ("First In, First Out"), splitting the one lot
 that only partially covers the remainder. Exactly one `RealizedGain` is produced per sell
-operation, always:
+operation, always (and one per leg of a conversion that gave up units and was paid cash, see
+["Conversions"](#conversions)):
 
 - `currency` is the currency of the sell operation, which `proceeds`, `costBasis` and `gain` are
   in;
@@ -119,10 +135,115 @@ only the matched `quantity`/`costBasis` - so an entirely unmatched sell (no lots
 instrument bought before the loaded operations window) reports `gain == proceeds`, the most
 conservative number available without a cost basis to subtract.
 
+### Corporate actions
+
+A corporate action reaches the ledger as operations of four kinds, `split`, `conversion`, `spinoff`
+and `stock_dividend`, which a broker's adapter gives the legs of an action; a disposal for cash is a
+plain `sell`. They carry the lots through the action with their cost and acquisition dates, apart
+from what a rule below says, and none of them takes a fee share.
+
+The operations of one **group** of the kinds `conversion` and `spinoff`
+(`AccountOperation.group`, the broker's id for the event) are applied together, when the fold
+reaches the first of them, and dated by it. An operation of those kinds with no group is a group of
+its own. The other kinds are applied one by one.
+
+#### Splits
+
+A `split` is one instrument's quantity changing with no cash, positive for a forward split and
+negative for a reverse one. The instrument's open lots scale their units by
+`(held + quantity) / held`, `held` being the units in its open lots, and keep their total cost and
+acquisition dates, so each unit cost scales the other way. A forward split of 2 for 1 turns a lot of
+10 units at 100 into 20 at 50. The last lot takes the units the others leave once rounded, so the
+lots add up to the units held exactly, and a sale of all of them leaves no remainder.
+
+- With no open lots, a positive quantity opens a lot at no cost on the day of the split, and a
+  negative one is unmatched.
+- Units that would leave nothing or less close the lots without a gain, and the shortfall is
+  unmatched.
+
+#### Stock dividends
+
+A `stock_dividend` opens a lot of its `quantity` at its `price`, the market value per unit, or at no
+cost when it has none, on the day of the dividend. The value is income too, and `TaxReport` counts it
+(see [`dividendIncome`](#field-definitions)). No cash changes. A stock dividend of a negative
+quantity, which no adapter gives, takes the units out of the lots like a transfer out.
+
+#### Conversions
+
+The legs of a `conversion` group that gave up units (negative `quantity`) move their lots to the legs
+that received units (positive `quantity`). Each leg that gave up units, its *out-leg*:
+
+- consumes its units from its instrument's open lots, oldest first; units beyond the lots are
+  unmatched;
+- takes a share of the legs that received units, the *in-legs*, and of the group's cash, by their
+  values (`price` times units) when every out-leg has a value above zero, else by their units, so
+  that each has a share to carry its cost. One out-leg takes all.
+
+`C` is the group's cash, the sum of the `amount` of its legs, and `V` the value of the in-legs, a leg
+without a price counting zero.
+
+- When `C` is positive, as in a merger paid in cash and stock, the fraction `f = C / (C + V)` of the
+  consumed lots is disposed of. That is one `RealizedGain` for the out-leg's instrument on the
+  day of the action, with its share of `C` as proceeds, `f` times the consumed cost as cost basis, `f`
+  times the consumed units as `quantity`, and the holding days averaged as for a sale, in the currency
+  of the cash. The rest of the cost, `1 - f`, goes to the in-legs.
+- When `C` is not positive, `f` is zero, and the cash paid, `-C`, as in a rights subscription, adds
+  to the cost of the in-legs.
+- Each in-leg gets one lot for each piece of lot that was consumed: its units times the piece's
+  share of the out-leg's units, the acquisition date of the piece, and its share of the piece's
+  cost, `(1 - f)` times it plus the cash paid in proportion. The in-legs share the cost by their
+  value, or by their units when a leg has no price or `V` is zero. The in-leg units that stand for
+  unmatched units of the out-leg form one lot on the day of the action, which costs their share of the
+  cash paid.
+- Every share of units and of cash is apportioned, the last taking what the others leave once
+  rounded, so the lots of an in-leg add up to its units exactly.
+
+A 1-for-25 reverse split onto a new instrument over two lots, 250 units at 2 and 250 at 6, gives the
+new instrument two lots of 10 units, at 50 and at 150, with the dates of the old ones. A merger of 100
+shares costing 1000 into 50 shares of 40 each and 500 in cash has `f` of 500 / (500 + 2000), a fifth:
+a gain of 500 less 200 on 20 units, and a lot of 50 units costing 800.
+
+A group with no leg that gave up units opens a lot for each in-leg on the day of the action, which
+costs its share of the cash paid.
+
+#### Spin-offs
+
+The in-legs of a `spinoff` group, those with a positive `quantity`, are the new instruments, and a
+leg of zero quantity names the parent. The parent keeps its units.
+
+- Each open lot of the parent gives each new instrument one lot: the new instrument's units times
+  the lot's share of the parent's units held, the acquisition date of the parent's lot, and the
+  fraction `a` of the parent lot's cost. The parent lot keeps what the fractions of all the new
+  instruments leave of its cost, `1 - (a1 + a2 + ...)`. The last parent lot's share takes the units
+  the others leave once rounded, so a new instrument's lots add up to its units exactly.
+- A broker reports no value for a spin-off, so `a` is the **allocation** stored for the group and the
+  new instrument, a `CorporateActionAllocation`, and zero without one: by default the new instrument
+  takes none of the cost. An allocation is meant to be edited from the figures the issuer
+  publishes. An allocation is kept within 0 and 1, and a group whose fractions add up to more than 1
+  has them scaled down to add up to 1.
+- Without a parent leg, or with a parent that has no open lots, each new instrument gets one lot at
+  no cost on the day of the spin-off.
+- A leg that gives up units, which no adapter gives, takes them out of the lots like a transfer out.
+
+```scala
+final case class CorporateActionAllocation(group: OperationGroup, instrument: InstrumentKey, costFraction: BigDecimal)
+```
+
+`TaxServiceImpl` reads the allocations of the account from
+[`CorporateActionAllocationStorage`](storage-contracts.md#corporateactionallocationstoragef_) and
+passes them to `TaxLots.fifo`, for `annualReport` and for `openLots` alike.
+
+**What `LotLedger.realized` holds**: one entry per `sell` and one per conversion out-leg that was
+paid cash. A split, a stock dividend, a spin-off and a conversion with no cash realize nothing, and
+the gain on the shares of a stock dividend shows up when they are sold.
+
+**Known limit**: lots carry no currency, so a conversion into an instrument quoted in another currency
+keeps the cost in the old one.
+
 ### Determinism
 
-Operations of one instrument are taken in the order of their `occurredAt`, and those at the same
-instant in the order of their `ref`, whatever order they were given in. `LotLedger.realized` is
+Operations are taken in the order of their `occurredAt`, and those at the same instant in the order
+of their `ref`, whatever order they were given in. `LotLedger.realized` is
 sorted by `(sellDate, instrument)` regardless of the input operations' own order or
 `TaxLots.fifo`'s internal `groupBy` traversal order (a plain `Map`'s iteration order is not
 guaranteed) - two sells of the same instrument on the same date keep their original chronological
@@ -156,7 +277,7 @@ Pure. `operations` must be the same (or a superset of the) operations `ledger` w
 `TaxReport.annual` uses it for what `ledger` alone cannot provide: the **dividend and coupon
 income, and the withheld tax**. These operation kinds never open or close a lot, so they never
 appear in `ledger` at all; they are scanned directly from `operations`, the executed ones of the
-year.
+year. So is the market value of a `stock_dividend`, which also opened a lot.
 
 **Each gain's currency.** A realized gain is converted in the currency of its own sale,
 `RealizedGain.currency`, and not in the currency of the other operations that name its instrument.
@@ -196,6 +317,9 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
 4. **`dividendIncome`** / **`couponIncome`**: the `amount` of the year's `dividend` / `coupon`
    operations, converted and summed as-is (positive, following the same "amount is a signed
    payment" convention `PortfolioValuationServiceImpl` uses - income is a positive `amount`).
+   `dividendIncome` also counts each `stock_dividend` of the year that has a `price`, at `price`
+   times `quantity`, converted in the operation's currency on its date; one with no price counts
+   nothing, and is not an unconverted amount.
 5. **`taxesWithheld`**: **minus** the sum of the `amount` of the year's `tax` operations, converted.
    Withholding is a negative `amount`, an outflow, so the figure reads as "how much was withheld",
    and a refund or a correction in the account's favour, a positive `amount`, **lowers** it: it is
@@ -215,7 +339,7 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
    source; re-estimating it here would double-count against a figure the report already shows).
 7. **`unconverted`**: total count of individual amounts (realized gains - counted once per gain even
    though a long-term one is also checked for `exemptGains`, see above - dividends, coupons, tax
-   operations) dropped from every sum for lack of an `fxRate`.
+   operations, stock dividends) dropped from every sum for lack of an `fxRate`.
 
 ## `TaxService[F]` / `TaxServiceImpl`
 
@@ -226,9 +350,10 @@ trait TaxService[F[_]] {
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]]   // oldest first; Nil if none
 }
 object TaxServiceImpl {
-  def create[F[_]: Monad: Clock](operations: AccountOperationStorage[F], directory: InstrumentDirectory[F],
-                                 sources: MarketDataSources[F], priceHistory: PriceHistoryStorage[F],
-                                 config: TaxConfig): TaxService[F]
+  def create[F[_]: Monad: Clock](operations: AccountOperationStorage[F],
+                                 allocations: CorporateActionAllocationStorage[F],
+                                 directory: InstrumentDirectory[F], sources: MarketDataSources[F],
+                                 priceHistory: PriceHistoryStorage[F], config: TaxConfig): TaxService[F]
 }
 ```
 
@@ -238,7 +363,8 @@ trailing 20-year window ending "now" (`Clock[F]`), regardless of the report year
 requested, so a lot opened long before a requested year is still on hand to be matched against a
 sale inside it. `config` is exposed on the trait itself (not threaded through every method) so a
 caller like `LotsHandler` can judge its own lots with `TaxReport.isLongTerm` without a dedicated
-method.
+method. Both also read the account's [spin-off allocations](#spin-offs) from `allocations`, and build
+the ledger with them.
 
 Every instrument in the loaded operations is mapped to a ticker through
 `InstrumentDirectory.byKey`, once per distinct instrument per call; an instrument the directory

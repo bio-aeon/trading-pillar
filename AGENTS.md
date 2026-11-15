@@ -20,12 +20,15 @@ records every operation as Tinkoff sent it together with its translation into an
 statements of an Activity Flex Query through the Flex Web Service, window by window, and records
 every statement row as IB sent it (`IbkrStatementRow`) with its translation, and then reconciles
 the positions the translations leave with the Open Positions the statement reports, raising a system
-alert while they differ. The valuation, the tax services and `/export` read those translations, and
-an instrument is looked up by its `InstrumentKey`, the broker and the id that broker gives it,
-through a directory per broker. The price-history sync starts every cycle by putting the instruments
-each account holds, at either broker, on its watchlist, with the source setting its broker's pricing
-rule gives. `Source` is a closed set of data sources, so supporting another broker's data means
-changing the library.
+alert while they differ. The legs of a corporate action are interpreted together, as split,
+conversion, spin-off, stock dividend or sale operations that share a group, and the tax lots carry
+their cost and dates through them; what the sync could not read for certain it raises as a system
+alert. The valuation, the tax services and `/export` read those translations, and an instrument is
+looked up by its `InstrumentKey`, the broker and the id that broker gives it, through a directory
+per broker. The price-history sync starts every cycle by putting the instruments each account holds,
+at either broker, on its watchlist, with the source setting its broker's pricing rule gives.
+`Source` is a closed set of data sources, so supporting another broker's data means changing the
+library.
 
 The artifact is `st.btu %% trading-pillar % 0.1.0-SNAPSHOT`. Consumers build against a locally
 published snapshot, so run `sbt publishLocal` after a change they need to see.
@@ -66,8 +69,8 @@ Package root `st.btu.trading.pillar`:
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
 | `analytics` | return, performance and risk functions; `portfolio` (valuation, `Holdings`, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
-| `paper`, `tax`, `charts` | paper broker; FIFO tax lots and the annual estimate; equity-curve PNG |
-| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation`, `IbkrReconciler` over the pure `IbkrReconciliation`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols`); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
+| `paper`, `tax`, `charts` | paper broker; FIFO tax lots, carried through corporate actions, and the annual estimate; equity-curve PNG |
+| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation` and `IbkrCorporateActions`, `IbkrReconciler` over the pure `IbkrReconciliation`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols`); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers, the latter reconciling positions), price-history sync (adding held instruments first), analytics |
 | `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |
 | `storages` | persistence ports that consumers implement |

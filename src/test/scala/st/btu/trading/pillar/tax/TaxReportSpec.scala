@@ -44,7 +44,9 @@ class TaxReportSpec extends Specification {
     date: LocalDate,
     instrument: Option[String] = None,
     currency: String = "RUB",
-    state: OperationState = OperationState.Executed
+    state: OperationState = OperationState.Executed,
+    quantity: BigDecimal = 0,
+    price: Option[BigDecimal] = None
   ): AccountOperation =
     AnalyticsFakes.accountOperation(
       accountId,
@@ -52,8 +54,10 @@ class TaxReportSpec extends Specification {
       amount,
       at(date),
       instrument,
+      quantity,
       currency = currency,
-      state = state
+      state = state,
+      price = price
     )
 
   private val noRate: (Currency, LocalDate) => Option[BigDecimal] = (_, _) => None
@@ -196,6 +200,44 @@ class TaxReportSpec extends Specification {
           report.taxesWithheld must_== BigDecimal(13)
           report.realizedGains must_== BigDecimal(0)
           report.estimatedTax must_== BigDecimal(0)
+        }
+
+        "counts the market value of the shares of a stock dividend as dividend income, converted" >> {
+          val dividend = op(OperationKind.Dividend, 100, LocalDate.of(year, 5, 1))
+          // 5 shares valued at 30 dollars each, at 90 roubles to the dollar.
+          val stockDividend = op(
+            OperationKind.StockDividend,
+            0,
+            LocalDate.of(year, 6, 1),
+            Some("F1"),
+            currency = "USD",
+            quantity = 5,
+            price = Some(30)
+          )
+          val fxRate: (Currency, LocalDate) => Option[BigDecimal] =
+            (ccy, _) => if (ccy == usd) Some(BigDecimal(90)) else None
+
+          val report =
+            TaxReport.annual(year, LotLedger.empty, List(dividend, stockDividend), fxRate)
+
+          report.dividendIncome must_== BigDecimal(13600) // 100 + 5 * 30 * 90
+          report.unconverted must_== 0
+        }
+
+        "counts no income for a stock dividend that has no market value" >> {
+          val stockDividend = op(
+            OperationKind.StockDividend,
+            0,
+            LocalDate.of(year, 6, 1),
+            Some("F1"),
+            currency = "EUR",
+            quantity = 5
+          )
+
+          val report = TaxReport.annual(year, LotLedger.empty, List(stockDividend), noRate)
+
+          report.dividendIncome must_== BigDecimal(0)
+          report.unconverted must_== 0
         }
 
         "lowers the tax withheld by a refund" >> {

@@ -1,15 +1,17 @@
 package st.btu.trading.pillar.services
 
 import cats.effect.testing.specs2.CatsEffect
-import cats.effect.{Clock, IO}
+import cats.effect.{Clock, IO, Ref}
 import org.specs2.mutable.Specification
+import st.btu.trading.pillar.alerts.SystemAlerts
 import st.btu.trading.pillar.gateways.ibkr.FlexError
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.ibkr.*
 import st.btu.trading.pillar.models.market.{ClassCode, Ticker}
+import st.btu.trading.pillar.testkit.AlertFakes.{FakeSystemAlerts, RaisedSystemAlert}
 import st.btu.trading.pillar.testkit.IbkrFakes.*
 import st.btu.trading.pillar.testkit.MarketDataFakes.{FakeBrokerInstrumentStorage, delayForIO}
-import st.btu.trading.pillar.testkit.{IbkrFakes, MarketDataFakes, McpFakes}
+import st.btu.trading.pillar.testkit.{AlertFakes, IbkrFakes, MarketDataFakes, McpFakes}
 import tofu.logging.{Logging, Logs}
 
 import java.time.format.DateTimeFormatter
@@ -55,7 +57,9 @@ class IbkrSyncServiceImplSpec extends Specification with CatsEffect {
     storage: FakeIbkrStatementStorage,
     instruments: FakeBrokerInstrumentStorage,
     flex: FakeFlexWebService,
-    service: IbkrSyncService[IO]
+    alerts: FakeSystemAlerts,
+    service: IbkrSyncService[IO],
+    restart: IO[IbkrSyncService[IO]]
   ) {
     def shared: IO[Vector[AccountOperation]] =
       storage.operations(accountId, Instant.EPOCH, now.plus(1, ChronoUnit.DAYS))
@@ -69,15 +73,19 @@ class IbkrSyncServiceImplSpec extends Specification with CatsEffect {
     stored: List[IbkrStatementRow] = Nil,
     translations: List[AccountOperation] = Nil,
     respond: FlexRequest => IO[String] = emptyStatement,
-    at: Instant = now
+    at: Instant = now,
+    alerting: FakeSystemAlerts => SystemAlerts[IO] = identity
   ): IO[Fixture] = {
     implicit val clock: Clock[IO] = McpFakes.clockAt(at)
     for {
       storage <- IbkrFakes.statementStorage(stored, translations)
       instruments <- MarketDataFakes.brokerInstrumentStorage()
       flex <- IbkrFakes.flexWebService(respond)
-      service <- IbkrSyncServiceImpl.create[IO, IO](ibkrAccount, config, flex, storage, instruments)
-    } yield Fixture(storage, instruments, flex, service)
+      alerts <- AlertFakes.systemAlerts()
+      create = IbkrSyncServiceImpl
+        .create[IO, IO](ibkrAccount, config, flex, storage, instruments, alerting(alerts))
+      service <- create
+    } yield Fixture(storage, instruments, flex, alerts, service, create)
   }
 
   private def window(from: String, to: String): (LocalDate, LocalDate) =
@@ -151,7 +159,61 @@ class IbkrSyncServiceImplSpec extends Specification with CatsEffect {
     )
 
   private def translationsOf(row: IbkrStatementRow, canceled: Set[IbkrTransactionId] = Set.empty) =
-    IbkrRowTranslation.translate(row, newYork, canceled).toOption.get
+    IbkrRecords.of(List(row), canceled, Nil, newYork).toOption.get.records.flatMap(_.translations)
+
+  // The leg of a corporate action as the parser keeps it, `quantity` signed, to store before a sync.
+  private def storedLeg(
+    id: String,
+    actionId: String,
+    code: String,
+    conid: String,
+    quantity: String,
+    reportDate: String,
+    overrides: (String, String)*
+  ): IbkrStatementRow =
+    storedRow(
+      IbkrSection.CorporateAction,
+      id,
+      reportDate,
+      (Map(
+        "actionID" -> actionId,
+        "type" -> code,
+        "conid" -> conid,
+        "currency" -> "USD",
+        "quantity" -> quantity,
+        "reportDate" -> reportDate.replace("-", ""),
+        "dateTime" -> s"${reportDate.replace("-", "")};202500"
+      ) ++ overrides).toSeq*
+    )
+
+  // The leg of a corporate action as a statement lists it, `reportDate` as yyyyMMdd.
+  private def legElement(
+    id: String,
+    actionId: String,
+    code: String,
+    conid: String,
+    quantity: String,
+    reportDate: String = "20261105",
+    overrides: (String, String)*
+  ): String =
+    element(
+      "CorporateAction",
+      (Map(
+        "accountId" -> "U1111111",
+        "transactionID" -> id,
+        "actionID" -> actionId,
+        "type" -> code,
+        "conid" -> conid,
+        "currency" -> "USD",
+        "quantity" -> quantity,
+        "reportDate" -> reportDate,
+        "dateTime" -> s"$reportDate;202500",
+        "levelOfDetail" -> "DETAIL"
+      ) ++ overrides).toSeq*
+    )
+
+  private def translationsOfLegs(rows: List[IbkrStatementRow]): List[AccountOperation] =
+    IbkrCorporateActions.interpret(rows, Nil, newYork).toOption.get.records.flatMap(_.translations)
 
   "IbkrSyncServiceImpl" >> {
     "sync" >> {
@@ -652,6 +714,253 @@ class IbkrSyncServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
+      "corporate actions" >> {
+        val oneWindow = config.copy(windowDays = 5000)
+        val parentIsin = "KYG875721634"
+        val spinoffDescription =
+          s"NNND($parentIsin) SPINOFF 1 FOR 10 (NND.SPO, NNN SPINOFF, KYG875721000)"
+        // An action of a type IB does not document, which the sync can only tell of.
+        val unknown =
+          legElement(
+            "5001",
+            "A5",
+            "XX",
+            "265598",
+            "5",
+            "20261105",
+            "description" -> "SOMETHING NEW"
+          )
+
+        "a window with a cancelling leg records the leg stored earlier again, as canceled" >> {
+          val earlier = storedLeg("4001", "A1", "RS", "222", "5", "2026-11-03")
+          val cancel = legElement("4002", "A2", "RS", "222", "-5", "20261105", "code" -> "Ca")
+          for {
+            f <- fixture(
+              oneWindow,
+              List(earlier),
+              translationsOfLegs(List(earlier)),
+              respondWith(cancel)
+            )
+            before <- f.shared
+            _ <- f.service.sync
+            after <- f.shared
+            rows <- f.storage.storedRows
+          } yield {
+            before.map(op => (op.kind, op.state)) must_==
+              Vector((OperationKind.Split, OperationState.Executed))
+            after.map(op => (op.ref, op.kind, op.state)) must_== Vector(
+              (
+                OperationRef("corporate_action/4001"),
+                OperationKind.SecurityIn,
+                OperationState.Canceled
+              ),
+              (
+                OperationRef("corporate_action/4002"),
+                OperationKind.SecurityOut,
+                OperationState.Canceled
+              )
+            )
+            rows.find(_.transactionId == IbkrTransactionId("4001")) must beSome(earlier)
+          }
+        }
+
+        "a window reads the legs of an action together with those stored earlier" >> {
+          // Alone, the stored leg that gave up units is a sale; with the leg that received units, a
+          // conversion.
+          val gaveUp = storedLeg("4001", "A1", "TC", "111", "-100", "2026-11-03")
+          val received = legElement("4002", "A1", "TC", "222", "50", "20261105")
+          for {
+            f <- fixture(
+              oneWindow,
+              List(gaveUp),
+              translationsOfLegs(List(gaveUp)),
+              respondWith(received)
+            )
+            _ <- f.service.sync
+            shared <- f.shared
+          } yield shared.map(op => (op.ref, op.kind)) must_== Vector(
+            (OperationRef("corporate_action/4001"), OperationKind.Conversion),
+            (OperationRef("corporate_action/4002"), OperationKind.Conversion)
+          )
+        }
+
+        "a leg the window reports again stands in place of the stored one" >> {
+          val stale = storedLeg("4001", "A1", "FS", "222", "5", "2026-11-05")
+          val corrected = legElement("4001", "A1", "FS", "222", "6", "20261105")
+          for {
+            f <- fixture(
+              oneWindow,
+              List(stale),
+              translationsOfLegs(List(stale)),
+              respondWith(corrected)
+            )
+            _ <- f.service.sync
+            shared <- f.shared
+          } yield shared.map(_.quantity) must_== Vector(BigDecimal(6))
+        }
+
+        "the parent of a spin-off is found among the stored rows by its ISIN" >> {
+          val parentTrade =
+            storedTrade("1001", "2026-10-15", "isin" -> parentIsin, "conid" -> "111")
+          val child =
+            legElement(
+              "4001",
+              "A1",
+              "SO",
+              "444",
+              "5",
+              "20261105",
+              "description" -> spinoffDescription
+            )
+          for {
+            f <- fixture(
+              oneWindow,
+              List(parentTrade),
+              translationsOf(parentTrade),
+              respondWith(child)
+            )
+            _ <- f.service.sync
+            shared <- f.shared
+            raised <- f.alerts.raised
+          } yield {
+            shared
+              .filter(_.ref.value.startsWith("corporate_action"))
+              .map(op => (op.ref, op.kind, op.quantity, op.instrument)) must_== Vector(
+              (
+                OperationRef("corporate_action/4001"),
+                OperationKind.Spinoff,
+                BigDecimal(5),
+                Some(instrumentKey("444"))
+              ),
+              (
+                OperationRef("corporate_action/4001/parent"),
+                OperationKind.Spinoff,
+                BigDecimal(0),
+                Some(instrumentKey("111"))
+              )
+            )
+            raised must beEmpty
+          }
+        }
+
+        "a window without corporate action legs loads no stored rows to read them with" >> {
+          for {
+            f <- fixture(
+              oneWindow,
+              respond = respondWith(tradeElement("1001"), cashElement("2001"))
+            )
+            _ <- f.service.sync
+            lookups <- f.storage.lookups
+          } yield lookups must_== 0
+        }
+
+        "an action that is not read for certain is told of in the system alert ibkr-corporate-actions:<account id>" >> {
+          for {
+            f <- fixture(oneWindow, respond = respondWith(unknown))
+            _ <- f.service.sync
+            raised <- f.alerts.raised
+          } yield raised must_== List(
+            RaisedSystemAlert(
+              "ibkr-corporate-actions:1",
+              "IB corporate actions need a look: account 1",
+              "Corporate actions of account 1 that the bot did not read for certain:\n" +
+                "Action A5 (XX) of 2026-11-05, \"SOMETHING NEW\": not interpreted, so its legs are " +
+                "recorded as shares in and out, which keeps the positions but carries no cost over"
+            )
+          )
+        }
+
+        "the alert never names the IB account" >> {
+          for {
+            f <- fixture(oneWindow, respond = respondWith(unknown))
+            _ <- f.service.sync
+            raised <- f.alerts.raised
+          } yield raised.flatMap(alert => List(alert.name, alert.title, alert.body)) must
+            not(contain(contain("U1111111")))
+        }
+
+        "an action is told of once, not again at the next sync" >> {
+          for {
+            f <- fixture(oneWindow, respond = respondWith(unknown))
+            _ <- f.service.sync
+            _ <- f.service.sync
+            raised <- f.alerts.raised
+          } yield raised.map(_.name) must_== List("ibkr-corporate-actions:1")
+        }
+
+        "an action that comes later is told of on its own" >> {
+          val another =
+            legElement("5002", "A6", "XX", "265599", "7", "20261106", "description" -> "ANOTHER")
+          for {
+            elements <- Ref.of[IO, List[String]](List(unknown))
+            f <- fixture(
+              oneWindow,
+              respond = request => elements.get.flatMap(es => respondWith(es*)(request))
+            )
+            _ <- f.service.sync
+            _ <- elements.set(List(unknown, another))
+            _ <- f.service.sync
+            raised <- f.alerts.raised
+          } yield {
+            raised.size must_== 2
+            raised.last.body must contain("A6")
+            raised.last.body must not(contain("A5"))
+          }
+        }
+
+        "an action that could not be told of is tried again at the next sync" >> {
+          for {
+            attempts <- Ref.of[IO, Int](0)
+            flaky = (recorded: FakeSystemAlerts) =>
+              new SystemAlerts[IO] {
+                def raise(name: String, title: String, body: String): IO[Unit] =
+                  attempts
+                    .getAndUpdate(_ + 1)
+                    .flatMap(n =>
+                      if (n == 0) IO.raiseError(new RuntimeException("alert channel down"))
+                      else recorded.raise(name, title, body)
+                    )
+              }
+            f <- fixture(oneWindow, respond = respondWith(unknown), alerting = flaky)
+            first <- f.service.sync.attempt
+            _ <- f.service.sync
+            raised <- f.alerts.raised
+          } yield {
+            first must beLeft[Throwable]
+            raised.map(_.name) must_== List("ibkr-corporate-actions:1")
+          }
+        }
+
+        "an action is told of again by a service that starts again" >> {
+          for {
+            f <- fixture(oneWindow, respond = respondWith(unknown))
+            _ <- f.service.sync
+            restarted <- f.restart
+            _ <- restarted.sync
+            raised <- f.alerts.raised
+          } yield raised.map(_.name) must_==
+            List("ibkr-corporate-actions:1", "ibkr-corporate-actions:1")
+        }
+
+        "a window with a leg that cannot be read records nothing of the window" >> {
+          val noCurrency = legElement("4001", "A1", "FS", "222", "5", "20261105", "currency" -> "-")
+          for {
+            f <- fixture(oneWindow, respond = respondWith(cashElement("2001"), noCurrency))
+            failure <- f.service.sync.attempt
+            rows <- f.storage.storedRows
+          } yield {
+            failure must beLeft[Throwable](
+              IbkrStatementError.MissingAttribute(
+                IbkrSection.CorporateAction,
+                Some(IbkrTransactionId("4001")),
+                "currency"
+              )
+            )
+            rows must beEmpty
+          }
+        }
+      }
+
       "instruments" >> {
         val oneWindow = config.copy(windowDays = 5000)
 
@@ -780,6 +1089,76 @@ class IbkrSyncServiceImplSpec extends Specification with CatsEffect {
           _ <- f.service.rebuildTranslations
           shared <- f.shared
         } yield shared.map(_.ref) must_== Vector(OperationRef("trade/1001"))
+      }
+
+      "reads the stored legs of a corporate action together" >> {
+        val gaveUp = storedLeg("4001", "A1", "TC", "111", "-100", "2026-11-05")
+        val received = storedLeg("4002", "A1", "TC", "222", "50", "2026-11-05")
+        for {
+          f <- fixture(stored = List(gaveUp, received))
+          _ <- f.service.rebuildTranslations
+          shared <- f.shared
+        } yield shared.map(op => (op.ref, op.kind)) must_== Vector(
+          (OperationRef("corporate_action/4001"), OperationKind.Conversion),
+          (OperationRef("corporate_action/4002"), OperationKind.Conversion)
+        )
+      }
+
+      "cancels a leg that a stored cancelling leg names, whenever each arrived" >> {
+        val original = storedLeg("4001", "A1", "RS", "222", "5", "2026-11-03")
+        val cancel = storedLeg("4002", "A2", "RS", "222", "-5", "2026-11-05", "code" -> "Ca")
+        for {
+          f <- fixture(
+            stored = List(original, cancel),
+            translations = translationsOfLegs(List(original))
+          )
+          _ <- f.service.rebuildTranslations
+          shared <- f.shared
+        } yield shared.map(op => (op.ref, op.state)) must_== Vector(
+          (OperationRef("corporate_action/4001"), OperationState.Canceled),
+          (OperationRef("corporate_action/4002"), OperationState.Canceled)
+        )
+      }
+
+      "finds the parent of a stored spin-off among all the stored rows" >> {
+        val parentIsin = "KYG875721634"
+        val parentTrade = storedTrade("1001", "2026-10-15", "isin" -> parentIsin, "conid" -> "111")
+        val child = storedLeg(
+          "4001",
+          "A1",
+          "SO",
+          "444",
+          "5",
+          "2026-11-05",
+          "description" -> s"NNND($parentIsin) SPINOFF 1 FOR 10 (NND.SPO, NNN SPINOFF, KYG875721000)"
+        )
+        for {
+          f <- fixture(stored = List(parentTrade, child))
+          _ <- f.service.rebuildTranslations
+          shared <- f.shared
+        } yield shared
+          .filter(_.ref == OperationRef("corporate_action/4001/parent"))
+          .flatMap(_.instrument) must_==
+          Vector(instrumentKey("111"))
+      }
+
+      "tells of the actions it could not read for certain" >> {
+        val unknown = storedLeg("5001", "A5", "XX", "265598", "5", "2026-11-05")
+        for {
+          f <- fixture(stored = List(unknown))
+          _ <- f.service.rebuildTranslations
+          raised <- f.alerts.raised
+        } yield raised.map(_.name) must_== List("ibkr-corporate-actions:1")
+      }
+
+      "tells of an action once, however many times it rebuilds" >> {
+        val unknown = storedLeg("5001", "A5", "XX", "265598", "5", "2026-11-05")
+        for {
+          f <- fixture(stored = List(unknown))
+          _ <- f.service.rebuildTranslations
+          _ <- f.service.rebuildTranslations
+          raised <- f.alerts.raised
+        } yield raised.map(_.name) must_== List("ibkr-corporate-actions:1")
       }
 
       "leaves the stored rows as they are" >> {

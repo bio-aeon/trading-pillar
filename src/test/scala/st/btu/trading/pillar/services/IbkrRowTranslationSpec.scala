@@ -31,11 +31,12 @@ class IbkrRowTranslationSpec extends Specification {
   ): IbkrStatementRow =
     IbkrFakes.row(accountId, section, id, reportDate, (defaults ++ overrides).toSeq*)
 
+  // The operations of `row`, which the records route to the translation of its section.
   private def translate(
     row: IbkrStatementRow,
     canceled: Set[IbkrTransactionId] = Set.empty
   ): Either[IbkrStatementError, List[AccountOperation]] =
-    IbkrRowTranslation.translate(row, newYork, canceled)
+    IbkrRecords.of(List(row), canceled, Nil, newYork).map(_.records.flatMap(_.translations))
 
   private val tradeDefaults = Map(
     "assetCategory" -> "STK",
@@ -107,24 +108,6 @@ class IbkrRowTranslationSpec extends Specification {
   private def transfer(id: String = "3001", overrides: (String, String)*): IbkrStatementRow =
     row(IbkrSection.Transfer, id, transferDefaults, overrides)
 
-  private def corporateAction(
-    id: String,
-    quantity: String,
-    overrides: (String, String)*
-  ): IbkrStatementRow =
-    row(
-      IbkrSection.CorporateAction,
-      id,
-      Map(
-        "type" -> "RS",
-        "conid" -> "265598",
-        "currency" -> "USD",
-        "quantity" -> quantity,
-        "dateTime" -> dateTime
-      ),
-      overrides
-    )
-
   // The operations that translate to, as (ref, kind, quantity, amount, currency).
   private def shape(
     translation: Either[IbkrStatementError, List[AccountOperation]]
@@ -139,7 +122,7 @@ class IbkrRowTranslationSpec extends Specification {
     translation.map(_.map(_.state))
 
   "IbkrRowTranslation" >> {
-    "translate" >> {
+    "the operations of a row" >> {
 
       "stock trades" >> {
         "a positive quantity is a buy at the trade price, paid for with the proceeds" >> {
@@ -624,54 +607,6 @@ class IbkrRowTranslationSpec extends Specification {
         }
       }
 
-      "corporate actions" >> {
-        "a leg that grows a position is security_in with its quantity and its cash" >> {
-          val received = corporateAction("4001", "480", "proceeds" -> "12.5")
-
-          translate(received) must_== Right(
-            List(
-              AccountOperation(
-                accountId,
-                OperationRef("corporate_action/4001"),
-                OperationKind.SecurityIn,
-                OperationState.Executed,
-                occurredAt,
-                Some(apple),
-                BigDecimal(480),
-                None,
-                BigDecimal("12.5"),
-                usd,
-                BrokerOperationType("RS")
-              )
-            )
-          )
-        }
-
-        "a leg that shrinks a position is security_out with a negative quantity" >> {
-          val removed = corporateAction("4002", "-12000")
-
-          translate(removed).map(_.map(op => (op.kind, op.quantity))) must_== Right(
-            List((OperationKind.SecurityOut, BigDecimal(-12000)))
-          )
-        }
-
-        "a leg with no quantity is other, carrying the cash" >> {
-          val cashOnly = corporateAction("4003", "0", "proceeds" -> "30", "conid" -> "-")
-
-          shape(translate(cashOnly)) must_== Right(
-            List(
-              (
-                OperationRef("corporate_action/4003"),
-                OperationKind.Other,
-                BigDecimal(0),
-                BigDecimal(30),
-                usd
-              )
-            )
-          )
-        }
-      }
-
       "occurredAt" >> {
         "follows the daylight saving time of the statement zone" >> {
           val summer = trade("1001", "dateTime" -> "20260715;093000")
@@ -739,8 +674,7 @@ class IbkrRowTranslationSpec extends Specification {
             cancelRow.attributes + ("ibCommission" -> "1")
           ),
           "a cash transaction" -> cash("2001", "Dividends", "5"),
-          "a transfer with cash" -> transfer("3001", "cashTransfer" -> "250"),
-          "a corporate action leg" -> corporateAction("4001", "-12")
+          "a transfer with cash" -> transfer("3001", "cashTransfer" -> "250")
         )
 
         Fragments.foreach(rows) { case (name, row) =>

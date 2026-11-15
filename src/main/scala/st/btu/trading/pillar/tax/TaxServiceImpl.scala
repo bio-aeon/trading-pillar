@@ -9,7 +9,11 @@ import st.btu.trading.pillar.analytics.{FxRates, OperationHistoryYears}
 import st.btu.trading.pillar.gateways.{InstrumentDirectory, MarketDataSources}
 import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation, Currency, InstrumentKey}
 import st.btu.trading.pillar.models.market.Ticker
-import st.btu.trading.pillar.storages.{AccountOperationStorage, PriceHistoryStorage}
+import st.btu.trading.pillar.storages.{
+  AccountOperationStorage,
+  CorporateActionAllocationStorage,
+  PriceHistoryStorage
+}
 
 import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 
@@ -19,6 +23,7 @@ import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 // it.
 final class TaxServiceImpl[F[_]: Monad: Clock] private (
   operations: AccountOperationStorage[F],
+  allocations: CorporateActionAllocationStorage[F],
   directory: InstrumentDirectory[F],
   sources: MarketDataSources[F],
   priceHistory: PriceHistoryStorage[F],
@@ -28,7 +33,7 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   def annualReport(accountId: AccountId, year: Int): F[AnnualTaxReport] =
     for {
       ops <- loadOperations(accountId)
-      (ledger, _) <- buildLedger(ops)
+      (ledger, _) <- buildLedger(accountId, ops)
       fxRate <- fxRateFn(ops)
     } yield TaxReport.annual(year, ledger, ops, fxRate, config)
 
@@ -39,7 +44,7 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]] =
     for {
       ops <- loadOperations(accountId)
-      (ledger, tickerByInstrument) <- buildLedger(ops)
+      (ledger, tickerByInstrument) <- buildLedger(accountId, ops)
     } yield tickerByInstrument.toList
       .collect { case (instrument, t) if t == ticker => instrument }
       .sorted
@@ -60,17 +65,21 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   // in `ops` - at most one InstrumentDirectory lookup per instrument, not per operation. Returned
   // alongside the ledger so openLots can resolve a ticker back to its instruments through the very
   // same mapping.
-  private def buildLedger(ops: List[AccountOperation]): F[(LotLedger, Map[InstrumentKey, Ticker])] =
-    ops.iterator
-      .flatMap(_.instrument)
-      .toSet
-      .toVector
-      .traverse(key => directory.byKey(key).map(found => key -> found.map(_.ticker)))
-      .map { pairs =>
-        val tickerByInstrument =
-          pairs.collect { case (key, Some(ticker)) => key -> ticker }.toMap
-        (TaxLots.fifo(ops, tickerByInstrument.get), tickerByInstrument)
-      }
+  private def buildLedger(
+    accountId: AccountId,
+    ops: List[AccountOperation]
+  ): F[(LotLedger, Map[InstrumentKey, Ticker])] =
+    for {
+      pairs <- ops.iterator
+        .flatMap(_.instrument)
+        .toSet
+        .toVector
+        .traverse(key => directory.byKey(key).map(found => key -> found.map(_.ticker)))
+      stored <- allocations.byAccount(accountId)
+    } yield {
+      val tickerByInstrument = pairs.collect { case (key, Some(ticker)) => key -> ticker }.toMap
+      (TaxLots.fifo(ops, tickerByInstrument.get, stored), tickerByInstrument)
+    }
 
   // One PriceHistoryStorage.bars call per non-base currency actually used by `ops`, on the source
   // its rate ticker is configured to use and covering the same OperationHistoryYears window
@@ -108,14 +117,16 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
 object TaxServiceImpl {
 
   /** Wires a [[TaxService]] over the operations in `operations` that maps instruments through
-    * `directory` and reads exchange rates from `priceHistory` as `sources` configures them.
+    * `directory`, reads exchange rates from `priceHistory` as `sources` configures them, and splits
+    * the cost of a spin-off's parent as `allocations` says.
     */
   def create[F[_]: Monad: Clock](
     operations: AccountOperationStorage[F],
+    allocations: CorporateActionAllocationStorage[F],
     directory: InstrumentDirectory[F],
     sources: MarketDataSources[F],
     priceHistory: PriceHistoryStorage[F],
     config: TaxConfig
   ): TaxService[F] =
-    new TaxServiceImpl[F](operations, directory, sources, priceHistory, config)
+    new TaxServiceImpl[F](operations, allocations, directory, sources, priceHistory, config)
 }

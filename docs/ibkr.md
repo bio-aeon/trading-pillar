@@ -2,9 +2,8 @@
 
 Packages `st.btu.trading.pillar.models.ibkr` (identifiers, statement rows, open positions, errors),
 `gateways.ibkr` (the Flex Web Service client, the statement parser, the instrument directory),
-`services` (`IbkrRowTranslation`, `IbkrSyncService`, `IbkrSyncServiceImpl`, `IbkrSyncConfig`,
-`IbkrReconciler`), `processes` (`IbkrSyncProcess`, `IbkrSyncProcessImpl`) and
-`storages.IbkrStatementStorage`.
+`services` (`IbkrSyncService`, `IbkrSyncServiceImpl`, `IbkrSyncConfig`, `IbkrReconciler`),
+`processes` (`IbkrSyncProcess`, `IbkrSyncProcessImpl`) and `storages.IbkrStatementStorage`.
 
 An Interactive Brokers (IB) account is read from the statements of an **Activity Flex Query** that
 its owner saves in IB's Client Portal. The library fetches each statement through IB's Flex Web
@@ -13,7 +12,8 @@ so that the valuation, the tax services and `/export` cover the account like an 
 other broker. Prices come from the market data sources; IB's statements carry none.
 
 For each window of dates the Flex Web Service returns the statement as XML, `IbkrStatementParser`
-reads it into rows, `IbkrRowTranslation` translates each row into operations, and
+reads it into rows, each trade, cash transaction and transfer is translated into operations, the
+legs of each corporate action are interpreted together, and
 `IbkrStatementStorage.record` stores every row together with its operations. The statement also
 reports the positions IB holds for the account at its end, and after a sync `IbkrReconciler`
 compares them with the positions the recorded operations leave (see
@@ -79,12 +79,15 @@ One token reads every account of one IB login. Each account needs the id of its 
 
 | Section | Needed | Used when present |
 |---|---|---|
-| Trades | `transactionID`, `reportDate`, `assetCategory`, `currency`, `quantity`, `proceeds`, and `conid` of a stock trade | `levelOfDetail`, `dateTime`, `buySell`, `tradePrice`, `ibCommission`, `ibCommissionCurrency`, `taxes`, `transactionType`, `origTransactionID`, `notes`, `symbol` (a currency pair), `conid` (any other trade), and for the instrument `listingExchange` and `description` |
-| Cash Transactions | `transactionID`, `reportDate`, `type`, `amount`, `currency` | `levelOfDetail`, `dateTime`, `conid` |
-| Transfers | `transactionID`, `reportDate`, `currency`, and `assetCategory`, `quantity` and `conid` of a stock transfer | `dateTime` (or `date`), `type`, `direction`, `transferPrice`, `cashTransfer`, `conid` |
-| Corporate Actions | `transactionID`, `reportDate`, `currency`, and `conid` of a leg that has a `quantity` | `levelOfDetail`, `dateTime`, `type`, `quantity`, `proceeds`, `conid` |
+| Trades | `transactionID`, `reportDate`, `assetCategory`, `currency`, `quantity`, `proceeds`, and `conid` of a stock trade | `levelOfDetail`, `dateTime`, `buySell`, `tradePrice`, `ibCommission`, `ibCommissionCurrency`, `taxes`, `transactionType`, `origTransactionID`, `notes`, `symbol` (a currency pair), `conid` (any other trade), `isin`, and for the instrument `listingExchange` and `description` |
+| Cash Transactions | `transactionID`, `reportDate`, `type`, `amount`, `currency` | `levelOfDetail`, `dateTime`, `conid`, `isin` |
+| Transfers | `transactionID`, `reportDate`, `currency`, and `assetCategory`, `quantity` and `conid` of a stock transfer | `dateTime` (or `date`), `type`, `direction`, `transferPrice`, `cashTransfer`, `conid`, `isin` |
+| Corporate Actions | `transactionID`, `reportDate`, `currency`, and `conid` of a leg that has a `quantity` | `levelOfDetail`, `dateTime`, `actionID`, `type`, `code`, `quantity`, `proceeds`, `value`, `description`, `isin`, `conid` |
 | Financial Instrument Information | `conid`, `symbol` | `assetCategory`, `listingExchange`, `description`, `isin`, `currency` |
 | Open Positions | `conid`, `position` | `levelOfDetail`, `assetCategory`, `symbol` |
+
+The `isin` of a row of any section, with its `conid`, is where the parent of a spin-off is found (see
+[Corporate actions](#corporate-actions)), so select it in every section.
 
 A row is dated by its `dateTime`, else by its `date` or `tradeDate`, else by its `reportDate`, the
 booking date, so select `dateTime` to date a trade by when it was made. The `levelOfDetail` of a row
@@ -205,7 +208,8 @@ fails sends its message to the logs and the system alerts.
 ## The sync
 
 `IbkrSyncService[F]` brings the rows of one IB account up to date; `IbkrSyncServiceImpl.create`
-builds it for an `IbkrAccount(accountId, ibkrAccountId, queryId)`.
+builds it for an `IbkrAccount(accountId, ibkrAccountId, queryId)`, with the `SystemAlerts` it tells
+of corporate actions through (see [Notices](#notices)).
 
 ```scala
 final case class IbkrSyncConfig(historyStart: Option[LocalDate] = None, rereadDays: Int = 30,
@@ -250,12 +254,15 @@ least twelve minutes at the default pace.
    `IbkrStatementError.AccountNotInStatement` when there is none.
 2. Attribute the rows to the account, keeping the last of rows that share a section and a
    transaction id.
-3. Translate them with the cancellations (below). A row that cannot be translated fails the sync
+3. Translate them with the cancellations (below), and with the corporate actions: when the window
+   has corporate action rows, they are interpreted together with the legs stored earlier (see
+   [What a window loads](#what-a-window-loads)). A row that cannot be translated fails the sync
    before anything of the window is recorded.
 4. Record the rows with their translations, at most 500 rows per `IbkrStatementStorage.record`
-   call.
-5. Record the instruments the statement describes.
-6. Keep the open positions of the statement, as of the last day the statement says it covers, its
+   call, and with them the legs stored earlier that the window interpreted again.
+5. Raise the system alert for the corporate action notices it has not raised yet.
+6. Record the instruments the statement describes.
+7. Keep the open positions of the statement, as of the last day the statement says it covers, its
    `toDate`.
 
 `sync` returns the open positions of the last window it read, as an `IbkrOpenPositions`: the last
@@ -267,19 +274,21 @@ its second half, so those are the positions returned.
 ### Cancellations
 
 A cancelling row (a trade of type `TradeCancel`, or noted `Ca`) names the trade it cancels by
-`origTransactionID`, and arrives one to three days after it. `IbkrRowTranslation.translate` takes the
+`origTransactionID`, and arrives one to three days after it. The translation of a trade takes the
 set of cancelled transaction ids: the operations of a cancelling row and of a trade it names are
 `canceled`. The sync computes the set from the rows of the window, and loads the named trades that
 the window does not repeat from the storage, so that a trade stored earlier is recorded again as
-cancelled. A correction is a cancel plus a new trade, and the new trade counts.
+cancelled. A correction is a cancel plus a new trade, and the new trade counts. A cancelling leg of a
+corporate action is not a trade: see [Corporate actions](#corporate-actions).
 
 ### Rebuilding the translations
 
 `rebuildTranslations` translates every stored row again, with the cancellations computed from all of
-them, and records the result, which replaces each row's operations as a whole and so removes one a
-row no longer produces. It leaves the stored rows as they are. The process runs it once
-before the first sync of each account, which fills the shared operations on the first run and
-brings them up to date after a change to the translation.
+them and the corporate actions interpreted together, and records the result, which replaces each
+row's operations as a whole and so removes one a row no longer produces. It leaves the stored rows
+as they are, and raises the alert for the corporate action notices it has not raised yet. The
+process runs it once before the first sync of each account, which fills the shared operations on
+the first run and brings them up to date after a change to the translation.
 
 ### The process
 
@@ -290,7 +299,8 @@ that names the account. A failure, an expired token, an invalid query or an unre
 included, is logged and raised as the system alert `process-crashed:ibkr-sync:<account id>` by
 `ProcessLoop.restarting`, and the loop starts again after `interval`; the other accounts go on.
 `resource` builds one `FlexWebServiceImpl` for the token, a sync service for each account and one
-`IbkrReconciler` for all of them.
+`IbkrReconciler` for all of them, the syncs raising the [corporate action
+alert](#notices) through the same `systemAlerts` as the process.
 
 ```scala
 object IbkrSyncProcessImpl {
@@ -307,7 +317,9 @@ object IbkrSyncProcessImpl {
 
 ## Translation
 
-`IbkrRowTranslation.translate(row, zone, canceled)` is pure. One row gives one or more operations.
+The translation of a trade, a cash transaction or a transfer is pure and takes the row alone; the
+legs of a corporate action are interpreted together instead (see
+[Corporate actions](#corporate-actions)). One row gives one or more operations.
 The `ref` of the first is the row's own, `IbkrStatementRow.ref`: its section's persisted value and
 its transaction id, such as `trade/123456`, which is unique within the account. The others add a
 suffix, such as `trade/123456/commission`. Every `ref` of a row therefore starts with the row's
@@ -334,7 +346,7 @@ the statement zone, else its `date`, else its `tradeDate`, else its report date.
 | Transfer of stock (`assetCategory` `STK`) | `security_in` or `security_out` with the quantity signed by the `direction`, at `transferPrice` when there is one; `brokerType` is the `type` and the `direction`, such as `ACATS IN` |
 | Transfer, its `cashTransfer` when it comes with stock | `other`, `ref` `transfer/<id>/cash`, carrying the cash amount |
 | Transfer that moves no stock | `other` carrying the `cashTransfer` |
-| Corporate action leg | `security_in` for a positive `quantity`, `security_out` for a negative one, `other` for none, with `proceeds` as the cash; `brokerType` is the action's `type` code |
+| Corporate action leg | by its action, see [Corporate actions](#corporate-actions) |
 
 The `ref` of a cash transaction is `cash_transaction/<id>`, that of a transfer `transfer/<id>` and
 that of a corporate action leg `corporate_action/<id>`. A cash transaction keeps IB's sign of the
@@ -342,11 +354,109 @@ amount, names its instrument when the row has a `conid`, and has the row's `type
 `brokerType`. A commission or a tax is a `fee` of its own, naming the instrument, so that the tax
 lots add it to the cost of the trade.
 
-A corporate action is translated by its legs for now: the old instrument leaves with
-`security_out` and the new one arrives with `security_in`, which keeps the positions right. The tax
-lots see a `security_in` with no price as a lot at no cost, and see the `security_out` as a
-transfer, which consumes lots without realizing a gain; the cost basis through a split or a merger
-is therefore not carried over yet.
+## Corporate actions
+
+The sync interprets all the corporate action legs of an account at once, in a pure function, since
+what a leg means depends on the other legs of its action, and a cancelling leg names a leg reported
+earlier. The interpretation gives the operations of every leg and the [notices](#notices).
+
+**What IB reports**:
+
+- One row, a leg, for each instrument an action changes. The legs of an action share an `actionID`;
+  a leg without one is an action of its own, and has no group.
+- A leg's `quantity` is the signed change of its own instrument: a 1-for-25 reverse split is the old
+  contract at -12000 and a new contract at +480.
+- A leg's `proceeds` is the cash it carries, which IB books under net trades and not as a cash
+  transaction. Its `value` is the leg's market value, filled for mergers, stock dividends and rights
+  subscriptions, and zero for splits, issue changes and spin-offs.
+- A spin-off's parent has no row: only the `description` names it, by the ISIN in parentheses that
+  starts it, as in `NNND(KYG875721634) SPINOFF 1 FOR 10 (NND.SPO, ...)`.
+- An action of several steps, such as a tender into a temporary instrument that a later merger pays
+  out, is a separate action at each step.
+
+**Cancellations**: a leg whose `code` has `Ca` among its codes is a cancelling leg. It cancels the
+leg of the same `conid` and `type` with the opposite quantity that was reported last on or before it,
+by report date and then transaction id, other than a cancelling leg and a leg that another cancelling
+leg cancels. Both become `canceled`, as `security_in`, `security_out` or `other` by their sign, and
+leave their action's interpretation. A cancelling leg that cancels none is canceled alone.
+
+**Reading an action**: by its `type` code first.
+
+| Code | Legs | Each leg becomes |
+|---|---|---|
+| `FS`, `RS` | one leg, without cash | `split` |
+| `FS`, `RS`, `IC`, `TC`, `TO`, `SR` | out-legs (negative `quantity`) and in-legs (positive) | `conversion` |
+| `TC`, `DW`, `TM` | out-legs only | `sell` at its `proceeds`, which a worthless delisting has at zero |
+| `SD` | in-legs only, without cash | `stock_dividend` |
+| `SO`, `RI` | in-legs only, without cash | `spinoff`, with the parent's marker |
+
+Any other code IB documents (`OR`, `BC`, `BM`, `CD`, `HD`, `HI`, `CC`, `CA`, `CO`, `CS`, `CI`,
+`CP`, `DI`, `ED`, `UE`, `FA`, `FI`, `GV`, `PC`, `PI`, `TI`, `UB`, `CH`, `CT`, `PV`), and a code of the
+table whose legs fit none of its rows, is read by the shape of its legs, which gives a notice:
+
+1. one leg without cash, on the instrument its description names: `split`;
+2. out-legs and in-legs: `conversion`;
+3. out-legs only: each a `sell` at its `proceeds`;
+4. in-legs only, without cash, none on the instrument the description names: `spinoff`.
+
+A leg is on the instrument its description names when its `isin` is the first ISIN in parentheses of
+the description. A leg of no units counts in the shape only by its cash.
+
+**Not interpreted**: an action matching no shape, one whose `type` IB does not document or that has
+none, one whose legs disagree about the `type`, and one whose cash is in more than one currency,
+counting for a sale the legs that gave up units when a leg of no units carries cash.
+Its legs are recorded as `security_in`, `security_out` or `other` by the sign of their quantity,
+carrying their `proceeds`, which keeps the positions right and carries no cost over. It gives a
+notice, and the [reconciliation](#reconciliation) catches any position it gets wrong.
+
+**What a leg becomes**: every operation of a leg carries the action's `actionID` as its group, and
+the `type` as its `brokerType`.
+
+| Kind | `quantity` | `price` | `amount` |
+|---|---|---|---|
+| `split` | as IB gives it | none | zero |
+| `conversion` | as IB gives it | \|`value`\| / \|`quantity`\|, where IB gives a value | the leg's `proceeds` |
+| `sell` | as IB gives it | none | the leg's `proceeds`, and its share of the cash of the action's legs of no units |
+| `stock_dividend` | as IB gives it | \|`value`\| / \|`quantity`\|, where IB gives a value | zero |
+| `spinoff` | as IB gives it | none | zero |
+
+A leg of no units is a `conversion` leg of no units in a conversion, so that its cash is the
+conversion's. In a sale its cash goes to the legs that gave up units, shared by their units, the
+last taking what the others leave, and the leg is an `other` operation of no cash, as it is in any
+other action that is read.
+
+**The marker of a spin-off's parent** is one more operation of each new instrument's leg, with the
+`ref` `corporate_action/<id>/parent`: a `spinoff` of quantity zero and no cash, naming the parent.
+The parent is the contract of the row whose `isin` is the first ISIN in parentheses of the leg's
+description, among the account's stored rows and the window's, other than the legs of the action; of
+several, it is the latest by report date and then transaction id. The tax lots read the marker (see
+[`tax.md`](tax.md#spin-offs)). Without a parent there is no marker.
+
+### Notices
+
+Each of these gives a notice:
+
+- an action that is not interpreted;
+- an action read by its shape, with the kind its legs got;
+- a stock dividend without a value, which opens its lot at no cost and counts no income;
+- a spin-off whose parent was not found, whose lots start at no cost on the day of the action.
+
+After each recording of corporate actions, a window that has any and the rebuild alike, the sync
+raises the system alert `ibkr-corporate-actions:<account id>` for the notices it has not raised yet.
+Each notice names the action's id, type and date, IB's description and what the bot did with it,
+and the alert never names the IB account. The notices raised are kept in memory, so a restart raises
+the ones that still stand once more, and an alert that failed to go out is tried again at the next
+sync.
+
+### What a window loads
+
+A window that has corporate action rows also loads the account's stored corporate action rows
+(`rowsOfSection`) and the stored rows of any section whose `isin` is one the descriptions of those
+rows name (`rowsByIsin`). It interprets its own rows together with the stored legs, its own version
+of a row standing in place of the stored one, and records the stored legs again with its own, so
+that a leg stored earlier takes up what the window adds, such as a cancellation or the other leg of
+its action. A window without corporate action rows loads nothing extra. The rebuild interprets all
+the stored rows together.
 
 ## Instruments
 
@@ -457,7 +567,19 @@ object IbkrReconciler {
 - **A commission in another currency than its trade's** is recorded as a fee in its own currency.
   The tax lots share a fee only among the trades in its currency, so such a commission is in no
   lot's cost and the estimate leaves it out.
-- **Corporate actions** carry no cost basis through a split or a merger yet (see above).
+- **Corporate actions** are read from the shapes IB's rows were seen to have, and some are not
+  confirmed against a real statement:
+  - the shape of a forward split on an unchanged contract;
+  - the shape of the types other than `RS`, `IC`, `SD`, `SO`, `TC`, `TO`, `RI`, `SR`, `DW` and `TM`,
+    which are read by the shape of their legs and tell of it in a notice;
+  - whether IB keeps the original acquisition dates of lots through an action;
+  - a report that IB gives the trades from before a split split-adjusted when a statement is run
+    again, which a first import spanning the split would then count twice.
+
+  The reconciliation catches a position that an action gets wrong. A temporary instrument that an
+  action leaves, such as `CORPACT` or a `.TEN` instrument, counts as unmapped in the valuation while
+  the directory does not know it, until a later action converts it. Lots carry no currency, so a
+  conversion into an instrument quoted in another currency keeps the cost in the old one.
 - **History** is limited to what IB keeps available through Flex, 1 January four calendar years
   back. What IB answers for dates before the account existed is not documented, so `historyStart`
   lets an owner start on the day the account opened.

@@ -125,6 +125,19 @@ package object domain {
     implicit val loggable: Loggable[OperationRef] = Loggable.stringValue
   }
 
+  /** The broker's own id for an event that several operations belong to, such as the id of a
+    * corporate action whose legs are separate operations. The operations of one group are applied
+    * together.
+    */
+  opaque type OperationGroup = String
+
+  object OperationGroup {
+    def apply(value: String): OperationGroup = value
+    extension (group: OperationGroup) def value: String = group
+    implicit val show: Show[OperationGroup] = Show.catsShowForString
+    implicit val loggable: Loggable[OperationGroup] = Loggable.stringValue
+  }
+
   /** The id a broker knows an instrument by, such as a FIGI at Tinkoff. */
   opaque type BrokerInstrumentId = String
 

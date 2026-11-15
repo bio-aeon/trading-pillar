@@ -20,6 +20,9 @@ object IbkrFakes {
 
     /** Every stored row of every account. */
     def storedRows: IO[List[IbkrStatementRow]]
+
+    /** How many times rows were asked for by section or by ISIN. */
+    def lookups: IO[Int]
   }
 
   // `record` upserts as the contract says: a row by (account, section, transaction id), and the
@@ -32,6 +35,7 @@ object IbkrFakes {
       rowsRef <- Ref.of[IO, List[IbkrStatementRow]](rows)
       translationsRef <- Ref.of[IO, List[AccountOperation]](translations)
       batchSizesRef <- Ref.of[IO, List[Int]](List.empty)
+      lookupsRef <- Ref.of[IO, Int](0)
     } yield new FakeIbkrStatementStorage {
       def record(records: List[IbkrRowRecord]): IO[Unit] =
         batchSizesRef.update(_ :+ records.size) >>
@@ -57,6 +61,19 @@ object IbkrFakes {
           ).toVector
         )
 
+      def rowsOfSection(accountId: AccountId, section: IbkrSection): IO[Vector[IbkrStatementRow]] =
+        lookupsRef.update(_ + 1) >> rowsRef.get.map(
+          _.filter(row => row.accountId == accountId && row.section == section).toVector
+        )
+
+      def rowsByIsin(accountId: AccountId, isins: Set[Isin]): IO[Vector[IbkrStatementRow]] =
+        lookupsRef.update(_ + 1) >> rowsRef.get.map(
+          _.filter(row =>
+            row.accountId == accountId &&
+              row.attributes.get(IbkrAttributes.Name.Isin).map(Isin(_)).exists(isins)
+          ).toVector
+        )
+
       def operations(
         accountId: AccountId,
         since: Instant,
@@ -70,6 +87,8 @@ object IbkrFakes {
       def recordedBatchSizes: IO[List[Int]] = batchSizesRef.get
 
       def storedRows: IO[List[IbkrStatementRow]] = rowsRef.get
+
+      def lookups: IO[Int] = lookupsRef.get
     }
 
   private def upsertRow(

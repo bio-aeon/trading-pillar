@@ -7,9 +7,10 @@ import java.time.LocalDate
 
 /** Builds one year's [[AnnualTaxReport]] from a FIFO ledger plus the operations it was built from.
   * `operations` supplies what the ledger alone cannot: the dividend, coupon and withheld-tax
-  * amounts, which never open or close a lot. This is an estimate for personal reference, not tax
-  * advice: it does not know about loss carry-forward, IIS deductions, or any rule beyond the ones
-  * implemented here.
+  * amounts, which never open or close a lot, and the market value of the shares received as stock
+  * dividends, which is income as well as a new lot. This is an estimate for personal reference, not
+  * tax advice: it does not know about loss carry-forward, IIS deductions, or any rule beyond the
+  * ones implemented here.
   */
 object TaxReport {
 
@@ -66,20 +67,26 @@ object TaxReport {
       operations.filter(op => op.state == OperationState.Executed && op.occurredOn.getYear == year)
     val dividends =
       sumConverted(yearOps.filter(_.kind == OperationKind.Dividend), convert, _.amount)
+    val stockDividends = sumConverted(
+      yearOps.filter(op => op.kind == OperationKind.StockDividend && op.price.isDefined),
+      convert,
+      op => op.price.fold(Zero)(_ * op.quantity)
+    )
     val coupons = sumConverted(yearOps.filter(_.kind == OperationKind.Coupon), convert, _.amount)
     val withheld =
       sumConverted(yearOps.filter(_.kind == OperationKind.Tax), convert, op => -op.amount)
 
     val estimatedTax = progressiveTax(taxableGains, config)
     val unconverted =
-      gainsUnconverted + dividends.unconverted + coupons.unconverted + withheld.unconverted
+      gainsUnconverted + dividends.unconverted + stockDividends.unconverted +
+        coupons.unconverted + withheld.unconverted
 
     AnnualTaxReport(
       year,
       realizedGains,
       exemptGains,
       taxableGains,
-      dividends.total,
+      dividends.total + stockDividends.total,
       coupons.total,
       withheld.total,
       estimatedTax,

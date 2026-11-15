@@ -130,15 +130,33 @@ class ExportHandlerSpec extends Specification with CatsEffect {
             doc.filename must_== "operations-2024.csv"
             doc.mimeType must_== "text/csv"
             csvOf(doc) must_== List(
-              "occurred_at,kind,state,broker_type,instrument_broker,instrument_id,quantity,price,amount,currency",
-              "2024-02-10T00:00:00Z,deposit,executed,OPERATION_TYPE_INPUT_SWIFT,,,0,,5000,RUB",
-              "2024-03-01T09:30:00Z,buy,executed,OPERATION_TYPE_BUY,tinkoff,BBG004730N88,10,100.05,-1000.5,RUB",
-              "2024-03-05T10:00:00Z,buy,pending,OPERATION_TYPE_BUY,tinkoff,BBG000B9XRY4,0.00000012,1666666.666666666667,-0.2,USD",
-              "2024-03-06T10:00:00Z,buy,canceled,OPERATION_TYPE_BUY,tinkoff,BBG000B9XRY4,0,,0,USD",
+              "occurred_at,kind,state,broker_type,instrument_broker,instrument_id,quantity,price,amount,currency,group_ref",
+              "2024-02-10T00:00:00Z,deposit,executed,OPERATION_TYPE_INPUT_SWIFT,,,0,,5000,RUB,",
+              "2024-03-01T09:30:00Z,buy,executed,OPERATION_TYPE_BUY,tinkoff,BBG004730N88,10,100.05,-1000.5,RUB,",
+              "2024-03-05T10:00:00Z,buy,pending,OPERATION_TYPE_BUY,tinkoff,BBG000B9XRY4,0.00000012,1666666.666666666667,-0.2,USD,",
+              "2024-03-06T10:00:00Z,buy,canceled,OPERATION_TYPE_BUY,tinkoff,BBG000B9XRY4,0,,0,USD,",
               ""
             ).mkString("\r\n")
             messages must beEmpty
           }
+        }
+
+        "ends a row with the group of its operation, empty when it has none" >> {
+          val legOfAction = accountOperation(
+            OperationKind.Conversion,
+            BigDecimal(0),
+            "2024-03-01T09:30:00Z",
+            instrument = Some("265598"),
+            quantity = BigDecimal(-12000),
+            brokerType = "RS"
+          ).copy(group = Some(OperationGroup("A1")))
+          for {
+            pair <- handlerWith(operations = List(deposit, legOfAction))
+            (handler, tgGateway) = pair
+            _ <- handler.handle(chatId, List("operations", "2024"))
+            docs <- tgGateway.sentDocuments
+          } yield csvOf(docs.head).linesIterator.toList.map(_.split(",", -1).last) must_==
+            List("group_ref", "", "A1")
         }
 
         "leaves out operations of other years, from the first instant of the next year on" >> {

@@ -56,4 +56,16 @@ package object ibkr {
     implicit val show: Show[IbkrTransactionId] = Show.catsShowForString
     implicit val loggable: Loggable[IbkrTransactionId] = Loggable.stringValue
   }
+
+  /** An International Securities Identification Number, such as `US0378331005`, as IB reports it
+    * for an instrument and names it in the description of a corporate action.
+    */
+  opaque type Isin = String
+
+  object Isin {
+    def apply(value: String): Isin = value
+    extension (isin: Isin) def value: String = isin
+    implicit val show: Show[Isin] = Show.catsShowForString
+    implicit val loggable: Loggable[Isin] = Loggable.stringValue
+  }
 }

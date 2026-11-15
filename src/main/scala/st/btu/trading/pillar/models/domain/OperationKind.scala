@@ -48,6 +48,31 @@ object OperationKind extends StringEnum[OperationKind] {
     */
   case object Exchange extends OperationKind("exchange")
 
+  /** A split or consolidation of the units of one instrument, with no cash: `quantity` is the
+    * change of the position, positive for a forward split and negative for a reverse one. It has no
+    * `price`, and its `amount` is zero.
+    */
+  case object Split extends OperationKind("split")
+
+  /** One leg of an event that exchanges one instrument for others, such as a merger or a reverse
+    * split onto a new instrument. `quantity` is the signed change of the leg's instrument: negative
+    * for what is given up and positive for what is received. `price` is the market value per unit
+    * where the broker reports one. `amount` is the cash the event pays (positive) or charges
+    * (negative), which one leg of the group carries.
+    */
+  case object Conversion extends OperationKind("conversion")
+
+  /** One leg of a spin-off, which gives the holder units of a new instrument while the holding in
+    * the parent stays. `quantity` is the units of the new instrument received, positive, with no
+    * `price` and no `amount`. The leg that names the parent instead has `quantity` zero.
+    */
+  case object Spinoff extends OperationKind("spinoff")
+
+  /** Units of an instrument received as a dividend, with no cash: `quantity` is the units received,
+    * positive, and `price` is the market value per unit where the broker reports one.
+    */
+  case object StockDividend extends OperationKind("stock_dividend")
+
   /** Anything else, including what a broker names but the bot does not classify; it carries no
     * change of position.
     */

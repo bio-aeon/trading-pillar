@@ -874,8 +874,8 @@ and sends it with [`TgGateway.sendDocument`](#tggatewaysenddocument) as `<kind>-
 The `operations` file has one row per operation, in terms shared by every broker, under the header
 
 ```
-occurred_at,kind,state,broker_type,instrument_broker,instrument_id,quantity,price,amount,currency
-2025-03-01T09:30:00Z,buy,executed,OPERATION_TYPE_BUY,tinkoff,BBG004730N88,10,285.5,-2855,RUB
+occurred_at,kind,state,broker_type,instrument_broker,instrument_id,quantity,price,amount,currency,group_ref
+2025-03-01T09:30:00Z,buy,executed,OPERATION_TYPE_BUY,tinkoff,BBG004730N88,10,285.5,-2855,RUB,
 ```
 
 where `occurred_at` is the UTC instant, `kind` and `state` are the `OperationKind` and
@@ -883,6 +883,8 @@ where `occurred_at` is the UTC instant, `kind` and `state` are the `OperationKin
 `instrument_*` columns are the broker and the id that broker gives the instrument, both empty for an
 operation that names none. `quantity` is the signed change of the position in executed units and
 `price` is empty when the broker gives none; `amount` is the signed change of cash in `currency`.
+`group_ref` is the group of the operation, the broker's id for the event it belongs to along with
+other operations, such as a corporate action, and empty for an operation that belongs to none.
 Numbers are plain decimal digits, without trailing zeros or an exponent.
 
 `year` defaults to the current year (UTC) when omitted or not an integer; the `kind` token is

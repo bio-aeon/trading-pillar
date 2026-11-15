@@ -112,7 +112,8 @@ final class ExportHandler[F[_]: Monad: Clock](
       Replies.plain(op.quantity),
       op.price.fold("")(Replies.plain),
       Replies.plain(op.amount),
-      op.currency.value
+      op.currency.value,
+      op.group.fold("")(_.value)
     )
 
   private def valuationRow(p: ValuationPoint): List[String] =
@@ -141,7 +142,8 @@ object ExportHandler {
       "quantity",
       "price",
       "amount",
-      "currency"
+      "currency",
+      "group_ref"
     )
   private val ValuationsHeader = List("date", "value", "invested", "cash_flow")
   private val DividendsHeader = List("ticker", "ex_date", "amount", "currency")

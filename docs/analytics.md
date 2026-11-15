@@ -175,9 +175,11 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
 3. **Positions per instrument** are the [`Holdings`](#holdings) of the executed operations: the sum
    of their signed `quantity`, per `InstrumentKey` (the broker and the id that broker gives the
    instrument), with a position that nets to zero left out. `quantity` is already in executed
-   units, positive for a `buy` and a `security_in`, negative for a `sell` and a `security_out` and
-   zero for every other kind, so a partly filled buy adds only the units that were filled, and a
-   fractional share or coin counts as the fraction it is.
+   units, positive for a `buy` and a `security_in`, negative for a `sell` and a `security_out`,
+   of either sign for a `split` and for a `conversion` leg, positive for a `stock_dividend` and for
+   the new instrument of a `spinoff` and zero for every other kind, a spin-off's marker of its parent
+   included, so a partly filled buy adds only the units that were filled, and a fractional share or
+   coin counts as the fraction it is.
 4. **Cash** is the running sum of `amount` over *every* executed operation (commissions, taxes,
    dividends, buys/sells, deposits/withdrawals, the legs of currency exchanges - all of them), kept
    as one running total per operation `currency`, not just the base currency. A currency exchange
@@ -187,7 +189,9 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    broker names them by (Tinkoff's SWIFT, acquiring and multi-currency transfers are deposits and
    withdrawals too), attributed to their own date; `invested` is their running sum, `cashFlow` is
    that date's own sum, both per currency. An `exchange` is not an external flow: it is cash that
-   stays in the account.
+   stays in the account. Nor are the corporate action kinds, `split`, `conversion`, `spinoff` and
+   `stock_dividend`: they change what the account holds, and the cash a `conversion` pays or charges
+   is cash like any other, and nothing is paid in from outside.
 6. **Value**: `cash + Σ quantity × last known close on or before the date`. Bars for every ticker
    with a nonzero position are fetched once per `dailySeries` call, over
    `[from - priceLookback, to]` - `priceLookback` (default 10 days) is how far before `from` a

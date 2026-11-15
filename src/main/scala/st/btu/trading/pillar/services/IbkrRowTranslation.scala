@@ -7,7 +7,9 @@ import st.btu.trading.pillar.models.ibkr.IbkrAttributes.{Category, Name}
 import java.time.{Instant, ZoneId}
 import java.util.Locale
 
-/** Translates the rows of an Activity Flex Query statement into `AccountOperation`s. Pure: the
+/** Translates the trades, the cash transactions and the transfers of an Activity Flex Query
+  * statement into `AccountOperation`s, one function for each section; `IbkrRecords` routes each row
+  * to its section's, and the legs of corporate actions to `IbkrCorporateActions`. Pure: the
   * translation of a row depends on the row, the time zone IB's times are in, and which trades have
   * been cancelled.
   *
@@ -20,22 +22,17 @@ import java.util.Locale
   *     a fee;
   *   - a trade of any other asset category is `other`, with its cash and no position;
   *   - a cash transaction is classified by IB's type of it;
-  *   - a transfer of stock is `security_in` or `security_out`, and a leg of a corporate action is
-  *     `security_in` or `security_out` by the sign of its quantity.
+  *   - a transfer of stock is `security_in` or `security_out`.
   *
   * An operation is executed, except those of a trade that was cancelled and of the cancelling row,
   * which are cancelled. A shape the translation does not know is `other`, carrying the cash and no
   * position.
   */
-object IbkrRowTranslation {
+private[services] object IbkrRowTranslation {
 
   private type Translation[A] = Either[IbkrStatementError, A]
 
   private val Zero = BigDecimal(0)
-
-  // The attributes that date a row, in the order they are tried. The report date dates a row that
-  // carries none of them.
-  private val OccurrenceAttributes = List(Name.DateTime, Name.Date, Name.TradeDate)
 
   // A currency conversion is a trade of a pair such as EUR.USD.
   private val CurrencyPair = "([A-Z]{3})\\.([A-Z]{3})".r
@@ -74,7 +71,7 @@ object IbkrRowTranslation {
     "commission adjustments" -> OperationKind.Fee
   )
 
-  /** The operations `row` translates to.
+  /** The operations of `row`, a trade.
     *
     * @param zone
     *   the time zone of the times in the statement, which carry none
@@ -85,31 +82,26 @@ object IbkrRowTranslation {
     *   the operations, or the reason the row cannot be translated: an attribute it needs is missing
     *   or malformed
     */
-  def translate(
+  def trade(
     row: IbkrStatementRow,
     zone: ZoneId,
     canceled: Set[IbkrTransactionId]
-  ): Either[IbkrStatementError, List[AccountOperation]] = {
-    val fields = new Fields(row)
-    for {
-      occurredAt <- fields.occurredAt(zone)
-      context = Context(row, fields, occurredAt, stateOf(row, canceled))
-      operations <- row.section match {
-        case IbkrSection.Trade => trade(context)
-        case IbkrSection.CashTransaction => cashTransaction(context)
-        case IbkrSection.Transfer => transfer(context)
-        case IbkrSection.CorporateAction => corporateAction(context)
-      }
-    } yield operations
-  }
+  ): Either[IbkrStatementError, List[AccountOperation]] =
+    contextOf(row, zone, stateOf(row, canceled)).flatMap(tradeOperations)
 
-  /** `row` paired with its translation. */
-  def recordOf(
+  /** The operations of `row`, a cash transaction, or the reason it cannot be translated. */
+  def cashTransaction(
     row: IbkrStatementRow,
-    zone: ZoneId,
-    canceled: Set[IbkrTransactionId]
-  ): Either[IbkrStatementError, IbkrRowRecord] =
-    translate(row, zone, canceled).map(IbkrRowRecord(row, _))
+    zone: ZoneId
+  ): Either[IbkrStatementError, List[AccountOperation]] =
+    contextOf(row, zone, OperationState.Executed).flatMap(cashTransactionOperations)
+
+  /** The operations of `row`, a transfer, or the reason it cannot be translated. */
+  def transfer(
+    row: IbkrStatementRow,
+    zone: ZoneId
+  ): Either[IbkrStatementError, List[AccountOperation]] =
+    contextOf(row, zone, OperationState.Executed).flatMap(transferOperations)
 
   /** The ids of the trades that the cancelling rows among `rows` name. A trade is cancelled by a
     * row of type `TradeCancel`, or one noted `Ca`, which names it by `origTransactionID`.
@@ -127,10 +119,19 @@ object IbkrRowTranslation {
         row.attribute(Name.Notes).exists(_.split(NoteSeparator).exists(_.trim == CancelNote))
     )
 
+  // The state of a trade's operations: cancelled for a cancelling row and for a trade it names.
   private def stateOf(row: IbkrStatementRow, canceled: Set[IbkrTransactionId]): OperationState =
-    if (isCancellation(row) || (row.section == IbkrSection.Trade && canceled(row.transactionId)))
-      OperationState.Canceled
+    if (isCancellation(row) || canceled(row.transactionId)) OperationState.Canceled
     else OperationState.Executed
+
+  private def contextOf(
+    row: IbkrStatementRow,
+    zone: ZoneId,
+    state: OperationState
+  ): Translation[Context] = {
+    val fields = new IbkrRowFields(row)
+    fields.occurredAt(zone).map(Context(row, fields, _, state))
+  }
 
   // The kind of an operation that grows what it is about when `amount` is positive and shrinks it
   // when negative; one of no size is `other`.
@@ -146,7 +147,7 @@ object IbkrRowTranslation {
   // What every operation of a row shares.
   private final case class Context(
     row: IbkrStatementRow,
-    fields: Fields,
+    fields: IbkrRowFields,
     occurredAt: Instant,
     state: OperationState
   ) {
@@ -189,55 +190,7 @@ object IbkrRowTranslation {
       operation(ref, kind, instrument, Zero, None, amount, currency, brokerType)
   }
 
-  // Reads the attributes of a row, failing with the row's name when one is missing or malformed.
-  private final class Fields(row: IbkrStatementRow) {
-    private val id = Some(row.transactionId)
-
-    def text(name: String): Option[String] = row.attribute(name)
-
-    def required(name: String): Translation[String] =
-      text(name).toRight(IbkrStatementError.MissingAttribute(row.section, id, name))
-
-    def currency(name: String): Translation[Currency] = required(name).map(Currency(_))
-
-    def decimal(name: String): Translation[Option[BigDecimal]] =
-      text(name) match {
-        case None => Right(None)
-        case Some(value) =>
-          IbkrAttributes
-            .decimal(value)
-            .map(Some(_))
-            .toRight(IbkrStatementError.InvalidAttribute(row.section, id, name, value))
-      }
-
-    def requiredDecimal(name: String): Translation[BigDecimal] =
-      decimal(name).flatMap(_.toRight(IbkrStatementError.MissingAttribute(row.section, id, name)))
-
-    def decimalOrZero(name: String): Translation[BigDecimal] = decimal(name).map(_.getOrElse(Zero))
-
-    // The price per unit, where the row has one other than zero.
-    def price(name: String): Translation[Option[BigDecimal]] =
-      decimal(name).map(_.filter(_.signum != 0))
-
-    def instrument: Option[InstrumentKey] = text(Name.Conid).map(instrumentOf)
-
-    def requiredInstrument: Translation[InstrumentKey] = required(Name.Conid).map(instrumentOf)
-
-    def occurredAt(zone: ZoneId): Translation[Instant] =
-      OccurrenceAttributes.flatMap(name => text(name).map(name -> _)).headOption match {
-        case Some((name, value)) =>
-          IbkrAttributes
-            .dateTime(value)
-            .toRight(IbkrStatementError.InvalidAttribute(row.section, id, name, value))
-            .map(_.atZone(zone).toInstant)
-        case None => Right(row.reportDate.atStartOfDay(zone).toInstant)
-      }
-  }
-
-  private def instrumentOf(conid: String): InstrumentKey =
-    InstrumentKey(Broker.Ibkr, BrokerInstrumentId(conid))
-
-  private def trade(context: Context): Translation[List[AccountOperation]] = {
+  private def tradeOperations(context: Context): Translation[List[AccountOperation]] = {
     val fields = context.fields
     for {
       category <- fields.required(Name.AssetCategory)
@@ -368,7 +321,7 @@ object IbkrRowTranslation {
     }
   }
 
-  private def cashTransaction(context: Context): Translation[List[AccountOperation]] = {
+  private def cashTransactionOperations(context: Context): Translation[List[AccountOperation]] = {
     val fields = context.fields
     for {
       cashType <- fields.required(Name.Type)
@@ -396,7 +349,7 @@ object IbkrRowTranslation {
   // Stock moves in or out with its quantity. Cash that comes with a transfer is an operation of its
   // own, `other` because the statement does not say what the cash is for. A transfer that moves no
   // stock is the cash alone, or nothing.
-  private def transfer(context: Context): Translation[List[AccountOperation]] = {
+  private def transferOperations(context: Context): Translation[List[AccountOperation]] = {
     val fields = context.fields
     val brokerType =
       List(fields.text(Name.Type), fields.text(Name.Direction)).flatten.mkString(" ")
@@ -448,33 +401,5 @@ object IbkrRowTranslation {
       currency,
       brokerType
     )
-  }
-
-  // Each leg moves its instrument by its signed quantity and carries the cash of the action in its
-  // proceeds.
-  private def corporateAction(context: Context): Translation[List[AccountOperation]] = {
-    val fields = context.fields
-    for {
-      currency <- fields.currency(Name.Currency)
-      quantity <- fields.decimalOrZero(Name.Quantity)
-      proceeds <- fields.decimalOrZero(Name.Proceeds)
-      instrument <-
-        if (quantity.signum != 0) fields.requiredInstrument.map(Some(_))
-        else Right(fields.instrument)
-    } yield {
-      val kind = kindBySign(quantity, OperationKind.SecurityIn, OperationKind.SecurityOut)
-      List(
-        context.operation(
-          context.ref,
-          kind,
-          instrument,
-          quantity,
-          None,
-          proceeds,
-          currency,
-          fields.text(Name.Type).getOrElse(kind.value)
-        )
-      )
-    }
   }
 }

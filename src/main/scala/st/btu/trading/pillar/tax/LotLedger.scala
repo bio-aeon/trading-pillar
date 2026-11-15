@@ -5,14 +5,14 @@ import st.btu.trading.pillar.models.domain.InstrumentKey
 /** The result of [[TaxLots.fifo]] over one account's executed operations.
   *
   * @param open
-  *   lots not yet, or not fully, consumed by a sell, oldest first, keyed by instrument; an
-  *   instrument with no remaining open quantity has no entry at all
+  *   lots not yet, or not fully, consumed by a sell, oldest first by acquisition date, keyed by
+  *   instrument; an instrument with no remaining open quantity has no entry at all
   * @param realized
-  *   exactly one entry per sell operation, whether or not it was fully covered by open lots, sorted
-  *   by (sellDate, instrument)
+  *   one entry per sell operation, whether or not it was fully covered by open lots, and one per
+  *   leg of a conversion that gave up units and was paid cash, sorted by (sellDate, instrument)
   * @param unmatched
-  *   per instrument, the quantity sold that exceeded the lots available at the time; absent for an
-  *   instrument that was never oversold
+  *   per instrument, the quantity sold, transferred out or given up that exceeded the lots
+  *   available at the time; absent for an instrument that never lacked lots
   */
 final case class LotLedger(
   open: Map[InstrumentKey, List[Lot]],

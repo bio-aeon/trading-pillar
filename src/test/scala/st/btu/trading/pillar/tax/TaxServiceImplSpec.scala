@@ -3,10 +3,10 @@ package st.btu.trading.pillar.tax
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation, Currency, OperationKind}
+import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.testkit.MarketDataFakes.{brokerInstrument, instrumentKey}
-import st.btu.trading.pillar.testkit.{AnalyticsFakes, MarketDataFakes}
+import st.btu.trading.pillar.testkit.{AnalyticsFakes, MarketDataFakes, TaxFakes}
 
 import java.time.{Instant, LocalDate, ZoneOffset}
 
@@ -72,15 +72,18 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
     directory: List[BrokerInstrument] = Nil,
     bars: List[Bar] = Nil,
     settings: List[TickerSource] = Nil,
-    config: TaxConfig = TaxConfig()
+    config: TaxConfig = TaxConfig(),
+    allocations: List[CorporateActionAllocation] = Nil
   ): IO[TaxService[IO]] =
     for {
       operations <- AnalyticsFakes.accountOperationStorage(ops)
+      allocationStorage <-
+        TaxFakes.corporateActionAllocationStorage(Map(accountId -> allocations))
       instrumentDirectory <- MarketDataFakes.instrumentDirectory(directory)
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       sources <- MarketDataFakes.marketDataSources(settings = settings)
     } yield TaxServiceImpl
-      .create[IO](operations, instrumentDirectory, sources, priceHistory, config)
+      .create[IO](operations, allocationStorage, instrumentDirectory, sources, priceHistory, config)
 
   "TaxServiceImpl" >> {
     "annualReport" >> {
@@ -229,6 +232,30 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
           Lot(instrumentKey("FIGI6"), 10, 100, LocalDate.of(2019, 1, 1)),
           Lot(instrumentKey("FIGI5"), 5, 120, LocalDate.of(2020, 1, 1))
         )
+      }
+
+      "gives a spin-off's new instrument the share of the parent's cost that the stored allocation names" >> {
+        // 10 shares of FIGI3 cost 1000, and a spin-off gives 5 shares of FIGI4, with a fifth of the cost.
+        val group = Some(OperationGroup("A1"))
+        val ops = List(
+          op(OperationKind.Buy, -1000, LocalDate.of(2019, 1, 1), Some("FIGI3"), quantity = 10),
+          op(OperationKind.Spinoff, 0, LocalDate.of(2020, 1, 1), Some("FIGI4"), quantity = 5)
+            .copy(group = group),
+          op(OperationKind.Spinoff, 0, LocalDate.of(2020, 1, 1), Some("FIGI3")).copy(group = group)
+        )
+        val directory =
+          List(brokerInstrument("FIGI3", Ticker("CCC")), brokerInstrument("FIGI4", Ticker("DDD")))
+        val allocations = List(
+          CorporateActionAllocation(OperationGroup("A1"), instrumentKey("FIGI4"), BigDecimal("0.2"))
+        )
+        for {
+          service <- build(ops, directory, allocations = allocations)
+          parent <- service.openLots(accountId, Ticker("CCC"))
+          child <- service.openLots(accountId, Ticker("DDD"))
+        } yield {
+          parent must_== List(Lot(instrumentKey("FIGI3"), 10, 80, LocalDate.of(2019, 1, 1)))
+          child must_== List(Lot(instrumentKey("FIGI4"), 5, 40, LocalDate.of(2019, 1, 1)))
+        }
       }
 
       "returns nothing for a ticker with no instrument mapping" >> {
