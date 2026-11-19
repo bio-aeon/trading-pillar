@@ -14,5 +14,8 @@ object Broker extends StringEnum[Broker] {
     */
   case object Ibkr extends Broker("ibkr")
 
+  /** Binance, whose spot account history is read through its REST API with a read-only key. */
+  case object Binance extends Broker("binance")
+
   val values = findValues
 }

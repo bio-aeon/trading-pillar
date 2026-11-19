@@ -18,7 +18,7 @@ final class IbkrInstrumentDirectory[F[_]] private (storage: BrokerInstrumentStor
   def byKey(key: InstrumentKey): F[Option[BrokerInstrument]] =
     key.broker match {
       case Broker.Ibkr => storage.find(key)
-      case Broker.Tinkoff => F.pure(None)
+      case Broker.Tinkoff | Broker.Binance => F.pure(None)
     }
 }
 

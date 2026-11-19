@@ -7,7 +7,7 @@ class PersistedOperationValuesSpec extends Specification {
 
   "Broker" >> {
     "persists as the strings a consumer stores" >> {
-      Broker.values.map(_.value) must contain(exactly("tinkoff", "ibkr"))
+      Broker.values.map(_.value) must contain(exactly("tinkoff", "ibkr", "binance"))
     }
   }
 

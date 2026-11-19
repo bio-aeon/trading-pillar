@@ -8,6 +8,7 @@ import cats.syntax.functor.*
 import cats.syntax.monadError.*
 import sttp.client3.*
 import sttp.model.{HeaderNames, StatusCode, Uri}
+import st.btu.trading.pillar.gateways.CallPacer
 import st.btu.trading.pillar.models.ibkr.{FlexQueryId, FlexToken}
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
@@ -135,7 +136,7 @@ final class FlexWebServiceImpl[F[_]: Logging] private (
     val uri: Uri =
       BaseUri.addPath(path).addParams(parameters*).addParam(VersionParameter, ApiVersion)
     for {
-      _ <- pacer.awaitTurn
+      _ <- pacer.awaitTurn(config.minSpacing)
       response <- send(uri, parameters.map { case (_, value) => value })
       body <- bodyOf(response)
       parsed <- FlexResponse.parse(body).liftTo[F]
@@ -230,7 +231,7 @@ object FlexWebServiceImpl {
     backend: SttpBackend[F, Any]
   )(implicit logs: Logs[I, F]): I[FlexWebService[F]] =
     for {
-      pacer <- CallPacer.create[I, F](config.minSpacing)
+      pacer <- CallPacer.create[I, F]
       service <- logs
         .forService[FlexWebService[F]]
         .map(implicit log => new FlexWebServiceImpl[F](token, config, backend, pacer))

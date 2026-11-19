@@ -35,7 +35,7 @@ final class TcsInstrumentDirectory[F[_]] private (
   def byKey(key: InstrumentKey): F[Option[BrokerInstrument]] =
     key.broker match {
       case Broker.Tinkoff => lookUp(key)
-      case Broker.Ibkr => F.pure(None)
+      case Broker.Ibkr | Broker.Binance => F.pure(None)
     }
 
   private def lookUp(key: InstrumentKey): F[Option[BrokerInstrument]] =

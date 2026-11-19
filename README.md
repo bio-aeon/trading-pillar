@@ -4,9 +4,9 @@ Reusable building blocks for trading bots: Telegram bot plumbing, market-data ga
 strategy/backtesting engine, and a spam-resistant alert pipeline. Strategies, backtests, alerts and
 the analytics math don't depend on a broker; the portfolio side (valuation, tax lots, `/export`)
 reads each account's operations in terms shared by every broker, and only the operations sync and
-the instrument directory are a broker's own (Tinkoff Invest's and Interactive Brokers'). A consumer
-application wires these pieces together and owns its strategies, storage implementations and
-configuration; nothing account- or credential-specific lives here.
+the instrument directory are a broker's own (Tinkoff Invest's, Interactive Brokers' and Binance's).
+A consumer application wires these pieces together and owns its strategies, storage implementations
+and configuration; nothing account- or credential-specific lives here.
 
 ## Overview
 
@@ -29,8 +29,9 @@ trading-pillar gives you:
 - **Existing broker integrations** - Tinkoff Invest (gRPC: operations), Interactive Brokers
   (the statements of an Activity Flex Query, read through the Flex Web Service: trades, cash
   transactions, transfers and corporate actions, with the open positions the recorded positions
-  are checked against) and a Binance gateway (HMAC-SHA256 signed HTTP; not yet wired to a sync
-  process).
+  are checked against) and Binance (a spot account's trades, deposits and withdrawals, fiat
+  orders, card purchases and Convert orders, read through the REST API with a read-only key whose
+  permissions are checked on every run).
 
 None of this is a runnable application by itself. A consumer application wires these pieces
 together, implements the storage traits (see [`docs/storage-contracts.md`](docs/storage-contracts.md))
@@ -44,8 +45,8 @@ strategy is registered.
 | `models.domain` | `Command`, `Broker`, `AccountOperation` (an account's operation in terms shared by every broker) with `OperationKind`, `OperationState`, `OperationGroup` (the broker's id for an event several operations belong to, such as the legs of a corporate action) and `InstrumentKey`, `TcsPortfolioOperation` (Tinkoff's own record) with `TcsOperationRecord`, opaque types (`AccountId`, `Figi`, ...) |
 | `models` | `Account` |
 | `models.market` | `Ticker`, `YahooSymbol`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board or Yahoo symbol), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
-| `models.tg`, `models.tcs`, `models.ibkr`, `models.binance` | Telegram, Tinkoff, Interactive Brokers (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, ...) and Binance wire/domain types |
-| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `BinanceGateway`, `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (the id a broker gives an instrument to the instrument) with `RoutingInstrumentDirectory` choosing each broker's directory, `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC), `gateways.ibkr` (`FlexWebService` for Interactive Brokers' Flex Web Service, `IbkrStatementParser`, `IbkrInstrumentDirectory`) |
+| `models.tg`, `models.tcs`, `models.ibkr`, `models.binance` | Telegram, Tinkoff, Interactive Brokers (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, ...) and Binance (`BinanceAccount`, `ApiKey`, `SecretKey`, `BinanceRecord`, `BinanceSource`, `BinancePair`, ...) wire/domain types |
+| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (the id a broker gives an instrument to the instrument) with `RoutingInstrumentDirectory` choosing each broker's directory and `StoredInstrumentDirectory` answering from storage alone for a broker with no lookup, such as Binance, `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC), `gateways.ibkr` (`FlexWebService` for Interactive Brokers' Flex Web Service, `IbkrStatementParser`, `IbkrInstrumentDirectory`), `gateways.binance` (`BinanceApi` for Binance's REST API with its signing and per-bucket pacing) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
 | `gateways.news` | `NewsSource`, `YahooNewsSource`, `NewsItem` - per-ticker headlines, backs `/news` |
 | `facades` | `TcsFacade` - high-level Tinkoff gRPC API (operations) |
@@ -58,10 +59,10 @@ strategy is registered.
 | `alerts` | `Alert`, `AlertKind`, `AlertRule` (`PriceCrossed`, `StrategyBinding`), `Proximity`, `QuietHours`, `DeliveryPolicy`, `AlertEngine`, `AlertDispatcher`, `LiveStrategyService`, `AlertProcess`, `TelegramAlertChannel`, `FailureTracker` (consecutive-failure counter), `SystemAlerts` (infrastructure alerts, e.g. a crashed process loop or a sync failure) |
 | `paper` | `PaperBroker`/`PaperBrokerImpl`, `PaperAccount`/`PaperPosition`/`PaperOrder`, `PaperBrokerConfig` - simulated order execution for a paper-mode `StrategyBinding`; see [`docs/paper-trading.md`](docs/paper-trading.md) |
 | `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching, carried through splits, mergers, spin-offs and stock dividends), `CorporateActionAllocation` (the share of a spin-off parent's cost a new instrument takes), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
-| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements, reading the legs of each corporate action together), `IbkrReconciler` (compares an Interactive Brokers account's recorded positions with the Open Positions IB reports and raises a system alert while they differ), `HeldInstrumentsService` (puts the instruments an account holds on its watchlist, with the source setting its broker's pricing rule gives) |
+| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements, reading the legs of each corporate action together), `IbkrReconciler` (compares an Interactive Brokers account's recorded positions with the Open Positions IB reports and raises a system alert while they differ), `BinanceSyncService` (the same for a Binance account's records, with the pure `BinanceTranslation` and the one-minute prices that value trades between coins), `HeldInstrumentsService` (puts the instruments an account holds on its watchlist, with the source setting its broker's pricing rule gives; Binance's coins stay off it) |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
 | `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
-| `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess` (one loop per Tinkoff account it is given), `IbkrSyncProcess` (one loop per Interactive Brokers account, each reconciling its positions after a sync), `PriceHistorySyncProcess` (adds the held instruments to the watchlists, then syncs them), `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
+| `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess` (one loop per Tinkoff account it is given), `IbkrSyncProcess` (one loop per Interactive Brokers account, each reconciling its positions after a sync), `BinanceSyncProcess` (one loop per Binance account), `PriceHistorySyncProcess` (adds the held instruments to the watchlists, then syncs them), `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
 | `mcp` | MCP server for AI agents: `McpTools` (`ticker_status`, `live_quote`, `bot_query`, `bot_backtest`, `bot_command`), `McpToolBuilder` (the conventions of a tool, for the consumer's own tools too), `McpToolServer`, `McpHttpServer` behind a bearer token (`McpHttpConfig`, `AccessToken`), `EffectBridge`; see [`docs/mcp.md`](docs/mcp.md) |
 | `data` | `ProcessContext`, `TraceIds`, `UtcClock` - the trace/account context threaded through every process via `tofu.WithLocal`, and a UTC-normalized clock helper |
 | `storages` | Storage traits a consumer implements; see [`docs/storage-contracts.md`](docs/storage-contracts.md) |
@@ -70,7 +71,8 @@ strategy is registered.
 Full docs: [market data](docs/market-data.md) · [strategies](docs/strategies.md) ·
 [backtesting](docs/backtesting.md) · [analytics](docs/analytics.md) · [alerts](docs/alerts.md) ·
 [paper trading](docs/paper-trading.md) · [tax](docs/tax.md) ·
-[Interactive Brokers](docs/ibkr.md) · [Telegram commands](docs/telegram-commands.md) ·
+[Interactive Brokers](docs/ibkr.md) · [Binance](docs/binance.md) ·
+[Telegram commands](docs/telegram-commands.md) ·
 [storage contracts](docs/storage-contracts.md) · [MCP server](docs/mcp.md)
 
 ## Quick start
@@ -406,8 +408,9 @@ trading-pillar change the consumer needs to see.
   production. The shapes of IB's corporate action rows come from IB's documentation and from rows
   others published, and some are unconfirmed - see
   [`docs/ibkr.md`](docs/ibkr.md#limits-and-unconfirmed-points).
-- Held instruments joining the watchlists, for both brokers: implemented and covered by the test
-  suite, but not yet used in production.
+- Held instruments joining the watchlists, for Tinkoff and Interactive Brokers: implemented and
+  covered by the test suite, but not yet used in production. Binance's coins stay off the
+  watchlists until a market data source serves their tickers.
 - Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategies and
   backtesting (multi-symbol runs, parameter sweeps, walk-forward validation), alerts and system
   alerts, analytics, dividends, paper trading and the tax-estimate report: implemented and covered
@@ -417,5 +420,9 @@ trading-pillar change the consumer needs to see.
   [`docs/market-data.md`](docs/market-data.md).
 - The MCP server for AI agents: implemented and covered by the test suite, which sends its requests
   through the HTTP routes in memory; not yet used in production.
-- Binance: a minimal gateway, one signed `allOrders` request returning raw JSON. No process uses it,
-  and the gateway has no tests.
+- The records sync for each Binance account it is given, with the translation of every record into
+  `AccountOperation`s and the one-minute prices that value trades between coins and fees paid in
+  BNB: implemented and covered by the test suite, but not yet used in production. The REST client,
+  its signing and its pacing have run only against stubbed answers written from Binance's
+  documentation, so a real answer may still differ from them - see
+  [`docs/binance.md`](docs/binance.md#limits-and-unconfirmed-points).

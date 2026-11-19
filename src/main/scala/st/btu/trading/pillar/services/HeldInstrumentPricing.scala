@@ -20,6 +20,12 @@ private[services] object HeldInstrumentPricing {
 
     /** Interactive Brokers lists the instrument on an exchange, or on none, with no Yahoo rule. */
     case NoExchangeRule(exchange: Option[ClassCode])
+
+    /** No source serves the broker's tickers, so the instrument is kept off the watchlists and no
+      * setting is written for it. A ticker with a setting of its own, such as one made with
+      * `/source`, is watched all the same.
+      */
+    case Unwatched
   }
 
   // `serves` says which sources the router has an adapter for: a setting it cannot serve would
@@ -31,6 +37,7 @@ private[services] object HeldInstrumentPricing {
         else Outcome.NoSetting
       case Broker.Ibkr =>
         if (serves(Source.Yahoo)) yahooSetting(instrument) else Outcome.NoSetting
+      case Broker.Binance => Outcome.Unwatched
     }
 
   private def yahooSetting(instrument: BrokerInstrument): Outcome =

@@ -410,10 +410,14 @@ about *when* to raise anything; that policy lives in the caller.
 | `IbkrReconciler` | `ibkr-reconciliation:<accountId>` | The positions the account's recorded operations leave differ from the Open Positions IB reports, and the differences are not the ones raised last. The body names each instrument with its symbol, contract id and both quantities, and never the IB account |
 | `IbkrReconciler` | `ibkr-reconciled:<accountId>` | The first reconciliation that finds the positions equal after an `ibkr-reconciliation` was raised, once |
 | `IbkrSyncServiceImpl` | `ibkr-corporate-actions:<accountId>` | After the sync of a window with corporate actions, or the rebuild of an account's translations, recorded a corporate action that the library could not read for certain, and the alert has not told of it yet: one that is not interpreted, read by the shape of its legs, a stock dividend without a value, or a spin-off whose parent was not found. The body names each action's id, type and date, IB's description and what the bot did with it, and never the IB account |
+| `BinanceSyncProcessImpl` | `process-crashed:binance-sync:<accountId>` | The same for a Binance account's loop, whose exceptions come from the sync, among them a key that can do more than read or that Binance refuses, or from recording the account's stored records again at startup |
+| `BinanceSyncServiceImpl` | `binance-unvalued:<accountId>` | A run or the rebuild of an account's translations recorded a record that no one-minute bar could value, and the alert has not told of it yet: a trade or a Convert between two coins that becomes a conversion carrying its cost, or a commission or a network fee paid in a coin that leaves at its cost. The body names each record by its `ref`, and never the key |
 
 `IbkrReconciler` keeps the differences it last raised for each account in memory, as
 `PriceHistorySyncProcessImpl` keeps its `sync-failed` state, so a restart raises the differences that
 are still there once more. See [`ibkr.md`](ibkr.md#reconciliation) for what it compares.
+`BinanceSyncServiceImpl` keeps the records it raised in memory too, so a restart raises the ones
+that still stand once more; see [`binance.md`](binance.md#notes).
 
 `PriceHistorySyncProcessImpl.create` and `AlertProcessImpl.create` both take `SystemAlerts[F]` (and
 `PriceHistorySyncProcessImpl` also a `FailureTracker[F]`) as required constructor/`create`

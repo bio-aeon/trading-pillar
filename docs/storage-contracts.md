@@ -27,7 +27,7 @@ Read-only from trading-pillar's side: `AnalyticsProcess` iterates `allAccounts`,
 provides the accounts by whatever means it chooses. An `Account` names the `Broker` it is held at,
 which decides where its operations come from. A relational implementation could use a table such
 as `accounts` with an integer `id` (it maps to `AccountId(value: Int)`), a unique `name`, a
-`broker` (`tinkoff` | `ibkr`, the `Broker` values) and `created_at`.
+`broker` (`tinkoff` | `ibkr` | `binance`, the `Broker` values) and `created_at`.
 
 ## `TcsPortfolioOperationStorage[F[_]]`
 
@@ -124,6 +124,95 @@ the row's `ref` and a slash, and that are not among the new ones. Match the pref
 an underscore, which `LIKE` reads as a wildcard. PostgreSQL's `starts_with(ref, '<row ref>/')` does
 it. See [`ibkr.md`](ibkr.md) for what the rows hold and how they are translated.
 
+## `BinanceRecordStorage[F[_]]`
+
+```scala
+trait BinanceRecordStorage[F[_]] {
+  def record(records: List[BinanceTranslatedRecord]): F[Unit]
+  def latestOccurredAt(accountId: AccountId, source: BinanceSource): F[Option[Instant]]
+  def records(accountId: AccountId): F[Vector[BinanceRecord]]
+  def lastTradeIds(accountId: AccountId): F[Map[BinanceSymbol, BinanceTradeId]]
+}
+```
+
+The records of a Binance account's history as Binance reported them. Written by the library, via
+`BinanceSyncProcess`, through `record`. A `BinanceTranslatedRecord` pairs a record with its
+translations into `AccountOperation`s (see [`AccountOperationStorage`](#accountoperationstoragef_)
+below), and `record` stores both:
+
+- **The record** is identified by `(accountId, source, recordId)`. One not stored yet is inserted.
+  One stored already has its `occurredAt` and `attributes` replaced, so a record Binance reports
+  again, in another state, overwrites the earlier one. The sync reads each source again from a few
+  days back on every run, so a record usually arrives for one stored already.
+- **The translations** of a record, one or several, are replaced as a whole. They are the account's
+  operations whose `ref` is the record's `ref`, or that followed by a slash and a suffix. The
+  record's `ref` (`BinanceRecord.ref`) is its source's value and its record id, such as
+  `trade/BTCUSDC/28457`, and the other operations of the record add a suffix:
+  `trade/BTCUSDC/28457/fee`, `trade/ETHBTC/12/received`, `fiat_buy/P1/deposit`. `record` stores the
+  record's translations, each keyed by `(accountId, ref)`, and removes the record's stored
+  translations that are not among them, so that a translation the record no longer produces does
+  not stay. `BinanceRecord.owns` tells whether a `ref` belongs to a record.
+- **All in one transaction**: a failure leaves none of it done, neither the record, nor its
+  translations, nor the removal of the stale ones. A relational implementation can group the
+  records of a call into batches and run each batch in one transaction. The library records at most
+  500 records per call.
+
+`attributes` holds the JSON object Binance sent for the record, every field exactly as Binance
+sent it, strings as strings and numbers as the digits sent: a Convert `orderId` exceeds what a
+double holds, so a store that parses numbers as doubles loses it. The sync reads the records back
+to translate them again, `records` each time the process starts. `latestOccurredAt` tells it where
+to resume a source, and `lastTradeIds` where to resume each pair: the highest `id` among the stored
+trades of each `symbol`, both read from `attributes`. The order of `records` does not matter. A
+relational implementation could use a table such as `binance_records` with a generated `id`,
+`account_id`, `source` (`trade` | `deposit` | `withdrawal` | `fiat_deposit` | `fiat_withdrawal` |
+`fiat_buy` | `fiat_sell` | `convert`, the `BinanceSource` values), `record_id`, `occurred_at`,
+`attributes` (a JSON object) and `updated_at`, a unique key on `(account_id, source, record_id)` for
+`record` to conflict on, and an index on `(account_id, occurred_at)` for `latestOccurredAt`;
+`lastTradeIds` groups the stored trades by `attributes->>'symbol'` and takes the maximum of
+`(attributes->>'id')::bigint` in PostgreSQL. For each record, such an implementation upserts the
+translations on `(account_id, ref)`, and then deletes, from the account's operations, those whose
+`ref` equals the record's `ref` or starts with the record's `ref` and a slash, and that are not
+among the new ones. Match the prefix literally and not with a pattern: a source's value can
+contain an underscore, which `LIKE` reads as a wildcard. PostgreSQL's
+`starts_with(ref, '<record ref>/')` does it. See [`binance.md`](binance.md) for what the records
+hold and how they are translated.
+
+## `BinancePairStorage[F[_]]`
+
+```scala
+trait BinancePairStorage[F[_]] {
+  def upsert(pairs: List[BinancePair]): F[Unit]
+  def all: F[List[BinancePair]]
+}
+```
+
+The spot pairs whose trades have been read. A trade names only its symbol, and Binance drops a
+delisted pair from its exchange information, so the two assets of each pair are kept to translate a
+stored trade again. Written by the library, via `BinanceSyncProcess`, before it records the trades
+of the pair (`upsert`); read when the translations are rebuilt (`all`). Pairs are the market's, not
+an account's. A relational implementation could use a table such as `binance_pairs` with `symbol`
+as its key, `base_asset`, `quote_asset` and `updated_at`, which `upsert` sets.
+
+## `BinanceMinutePriceStorage[F[_]]`
+
+```scala
+trait BinanceMinutePriceStorage[F[_]] {
+  def closes(minutes: Set[BinanceMinute]): F[Map[BinanceMinute, BigDecimal]]
+  def save(prices: List[BinanceMinutePrice]): F[Unit]
+}
+```
+
+The closes of the one-minute bars that valued Binance operations: a trade between two coins, and a
+fee paid in a coin. The sync stores each close the first time it needs it, so that translating a
+record again reads the price it was first translated with, though Binance can no longer serve the
+bar. A `BinanceMinute` is a pair and the instant its minute starts. `closes` answers the stored
+close of each minute it is asked about that has one; `save` inserts each price, or replaces the one
+stored for the same pair and minute, and carries when the close was read. Prices are the market's,
+not an account's. A relational implementation could use a table such as `binance_minute_prices`
+with a generated `id`, `symbol`, `minute`, `close` as a wide fixed-point decimal, since a coin can
+be priced below a cent, and `fetched_at`, and a unique key on `(symbol, minute)` for `save` to
+conflict on.
+
 ## `AccountOperationStorage[F[_]]`
 
 ```scala
@@ -134,11 +223,12 @@ trait AccountOperationStorage[F[_]] {
 
 An account's operations in terms shared by every broker. Read-only: each broker's own storage
 records its operations together with their translations, so for Tinkoff the translations are
-written by `TcsPortfolioOperationStorage.record` and for Interactive Brokers by
-`IbkrStatementStorage.record`. The valuation, the tax services, `/export`, the held instruments
-service and the reconciliation of Interactive Brokers positions read this port, and nothing else, for
-an account's operations: only executed operations count towards positions, cash and tax, and
-`/export operations` lists the operations of every state.
+written by `TcsPortfolioOperationStorage.record`, for Interactive Brokers by
+`IbkrStatementStorage.record` and for Binance by `BinanceRecordStorage.record`. The valuation, the
+tax services, `/export`, the held instruments service and the reconciliation of Interactive Brokers
+positions read this port, and nothing else, for an account's operations: only executed operations
+count towards positions, cash and tax, and `/export operations` lists the operations of every
+state.
 
 `operations` returns the operations that occurred from `since` (inclusive) until `until`
 (exclusive), oldest first, and in `ref` order among those at the same instant.
@@ -146,8 +236,9 @@ an account's operations: only executed operations count towards positions, cash 
 An `AccountOperation` names the broker's record it was translated from through its `ref`, which
 is unique within the account and built from the raw record's own key (for Tinkoff, the operation's
 id and type, joined with a slash; for Interactive Brokers, the row's section and transaction id,
-such as `trade/123456`, with a suffix such as `/commission` for the operations beyond the first).
-One raw record can give several operations, never the reverse.
+such as `trade/123456`, with a suffix such as `/commission` for the operations beyond the first; for
+Binance, the record's source and record id, such as `trade/BTCUSDC/28457`, with a suffix such as
+`/fee`). One raw record can give several operations, never the reverse.
 `kind`, `state`, `instrument.broker` and `brokerType` are persisted by their string values (the
 `value` of `OperationKind`, `OperationState` and `Broker`; `brokerType` is the broker's own name
 for the operation). A relational implementation could use a table such as `account_operations`
@@ -306,8 +397,11 @@ instrument the broker knows is fetched once - see
 has no lookup call: the statement sync writes the instruments each statement describes with
 `upsert`, and `IbkrInstrumentDirectory` answers from `find` alone. The reconciliation of an
 Interactive Brokers account's positions reads `find` too, for the symbol of a contract that IB does
-not report. The `broker` is stored as the `value` of a `Broker`, and the `instrument.id` is the
-broker's own, a FIGI for Tinkoff and a contract id for Interactive Brokers. A
+not report. Binance has no lookup of a coin by its code either: the sync writes a record for each
+coin its translations name, and `StoredInstrumentDirectory` answers from `find` alone. The
+`broker` is stored as the `value` of a `Broker`, and the `instrument.id` is the broker's own, a
+FIGI for Tinkoff, a contract id for Interactive Brokers and an asset code, such as `BTC`, for
+Binance. A
 relational implementation could use a table such as `broker_instruments` with a generated `id`, the
 broker (`broker`) and the instrument id (`instrument_id`), `ticker`, a nullable `class_code` (the
 board, for a broker that has one), `name`, `instrument_type`, `currency` and `updated_at`, and a
@@ -533,7 +627,10 @@ implementation runs its statements in one transaction.
 | `AccountStorage` | `accounts` | none | `allAccounts` |
 | `TcsPortfolioOperationStorage` | `tcs_portfolio_operations` (and `account_operations`) | `record` | `lastOperation`, `operationsByDtRange`, for the sync only |
 | `IbkrStatementStorage` | `ibkr_statement_rows` (and `account_operations`) | `record` | `latestReportDate`, `rows`, `rowsByTransactionIds`, `rowsOfSection`, `rowsByIsin`, for the sync only |
-| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record` and `IbkrStatementStorage.record` | `operations` |
+| `BinanceRecordStorage` | `binance_records` (and `account_operations`) | `record` | `latestOccurredAt`, `records`, `lastTradeIds`, for the sync only |
+| `BinancePairStorage` | `binance_pairs` | `upsert` | `all`, for the rebuild only |
+| `BinanceMinutePriceStorage` | `binance_minute_prices` | `save` | `closes`, for the sync and the rebuild |
+| `AccountOperationStorage` | `account_operations` | none, written by `TcsPortfolioOperationStorage.record`, `IbkrStatementStorage.record` and `BinanceRecordStorage.record` | `operations` |
 | `PriceHistoryStorage` | `price_history` | `upsertBars` | `lastBarDate`, `bars`, `latestBars` |
 | `InstrumentStorage` | `instrument_metadata` | `upsert` | `find` |
 | `WatchlistStorage` | `watchlist_items` | `add`, `remove` | `allEnabled`, `byAccount` |

@@ -19,6 +19,9 @@ trait HeldInstrumentsService[F[_]] {
     * source. The rule gives a setting only for a source the market data router serves, since one it
     * cannot serve would make every sync of the ticker fail. A stored setting is never changed.
     *
+    * A held ticker that has no setting, and whose broker's rule finds no source to serve it, such
+    * as a Binance coin, is left off the watchlist, and the service logs it.
+    *
     * @return
     *   a failed `F` when a storage fails
     */

@@ -83,6 +83,14 @@ class HeldInstrumentPricingSpec extends Specification {
             Outcome.NoExchangeRule(None)
         }
       }
+
+      "Binance" >> {
+        "is unwatched, whichever sources the router serves" >> {
+          val coin = instrument(Broker.Binance, "BTCUSDC", None)
+          List(servesTinkoff, servesYahoo, servesNothing)
+            .map(HeldInstrumentPricing.of(coin, _)) must_== List.fill(3)(Outcome.Unwatched)
+        }
+      }
     }
   }
 }

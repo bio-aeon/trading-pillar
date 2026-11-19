@@ -66,24 +66,24 @@ final class HeldInstrumentsServiceImpl[F[_]: Logging] private (
     listed: Set[Ticker],
     now: ZonedDateTime,
     instrument: BrokerInstrument
-  ): F[Unit] =
-    ensureSourceSetting(instrument) >> F.unlessA(listed(instrument.ticker))(
-      addToWatchlist(accountId, instrument.ticker, now)
-    )
-
-  private def ensureSourceSetting(instrument: BrokerInstrument): F[Unit] =
-    tickerSources.find(instrument.ticker).flatMap {
-      case Some(_) => F.unit
+  ): F[Unit] = {
+    val ticker = instrument.ticker
+    val added = F.unlessA(listed(ticker))(addToWatchlist(accountId, ticker, now))
+    tickerSources.find(ticker).flatMap {
+      case Some(_) => added
       case None =>
         HeldInstrumentPricing.of(instrument, sources.serves) match {
           case Outcome.Setting(setting) =>
             val described = SourceSettings.describe(setting)
-            tickerSources.upsert(TickerSource(instrument.ticker, setting)) >>
-              info"Set held ticker ${instrument.ticker} to $described"
-          case Outcome.NoSetting => F.unit
-          case Outcome.NoExchangeRule(exchange) => noExchangeRule(instrument.ticker, exchange)
+            tickerSources.upsert(TickerSource(ticker, setting)) >>
+              info"Set held ticker $ticker to $described" >> added
+          case Outcome.NoSetting => added
+          case Outcome.NoExchangeRule(exchange) => noExchangeRule(ticker, exchange) >> added
+          case Outcome.Unwatched =>
+            info"No source serves the instruments of ${instrument.instrument.broker.value}; held ticker $ticker is left off the watchlist"
         }
     }
+  }
 
   private def noExchangeRule(ticker: Ticker, exchange: Option[ClassCode]): F[Unit] = {
     val listedOn = exchange.fold("no exchange")(_.value)

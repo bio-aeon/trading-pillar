@@ -25,6 +25,7 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
   private val created = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
   private val tinkoff = Account(AccountId(1), "tinkoff", Broker.Tinkoff, created)
   private val ibkr = Account(AccountId(2), "ibkr", Broker.Ibkr, created)
+  private val binance = Account(AccountId(3), "binance", Broker.Binance, created)
 
   private val now = Instant.parse("2026-11-10T12:00:00Z")
   private val earlier = Instant.parse("2026-10-01T10:00:00Z")
@@ -34,6 +35,7 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
   private val sber = brokerInstrument("F1", Ticker("SBER"))
   private val gazprom = brokerInstrument("F2", Ticker("GAZP"))
   private val vodafone = ibkrInstrument("12345", "VOD", "LSE")
+  private val bitcoin = binanceInstrument("BTC", "BTCUSDC")
 
   private def ibkrInstrument(conid: String, symbol: String, exchange: String): BrokerInstrument =
     BrokerInstrument(
@@ -45,6 +47,26 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
       Currency("GBP"),
       created
     )
+
+  private def binanceInstrument(asset: String, ticker: String): BrokerInstrument =
+    BrokerInstrument(
+      InstrumentKey(Broker.Binance, BrokerInstrumentId(asset)),
+      Ticker(ticker),
+      None,
+      asset,
+      "crypto",
+      Currency("USDC"),
+      created
+    )
+
+  // The same at Binance, for the coin with this asset code.
+  private def movedAtBinance(
+    owner: Account,
+    asset: String,
+    quantity: BigDecimal
+  ): AccountOperation =
+    accountOperation(owner.id, OperationKind.Buy, 0, earlier, quantity = quantity)
+      .copy(instrument = Some(InstrumentKey(Broker.Binance, BrokerInstrumentId(asset))))
 
   // `quantity` units of the Tinkoff instrument with this FIGI, bought, or sold when negative.
   private def moved(owner: Account, figi: String, quantity: BigDecimal): AccountOperation = {
@@ -349,6 +371,56 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
             items must_== List(held(ibkr, "AAPL"))
             entries.exists(entry => entry.contains("AAPL") && entry.contains("SMART")) must beTrue
           }
+        }
+      }
+
+      "Binance coins" >> {
+        "are left off the watchlist and given no source setting, which is logged with the ticker" >> {
+          for {
+            logging <- LogFakes.recordingLogging
+            f <- fixture(
+              List(binance),
+              List(movedAtBinance(binance, "BTC", 2)),
+              directoryOf(List(bitcoin)),
+              logging = logging
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+            settings <- f.settings.all
+            entries <- logging.entries
+          } yield {
+            items must beEmpty
+            settings must beEmpty
+            entries.exists(_.contains("BTCUSDC")) must beTrue
+          }
+        }
+
+        "with a source setting of their own are watched all the same, the setting left as it is" >> {
+          val chosen =
+            TickerSource(Ticker("BTCUSDC"), SourceSetting.Yahoo(Some(YahooSymbol("BTC-USD"))))
+          for {
+            f <- fixture(
+              List(binance),
+              List(movedAtBinance(binance, "BTC", 2)),
+              directoryOf(List(bitcoin)),
+              settings = List(chosen)
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+            settings <- f.settings.all
+          } yield {
+            items must_== List(held(binance, "BTCUSDC"))
+            settings must_== List(chosen)
+          }
+        }
+
+        "do not keep another account's instruments off its watchlist" >> {
+          val operations = List(moved(tinkoff, "F1", 10), movedAtBinance(binance, "BTC", 2))
+          for {
+            f <- fixture(List(tinkoff, binance), operations, directoryOf(List(sber, bitcoin)))
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(held(tinkoff, "SBER"))
         }
       }
 

@@ -6,6 +6,8 @@ Package `st.btu.trading.pillar.models.market` (domain), `gateways.MarketDataSour
 and to the Yahoo symbol or Tinkoff board that setting names),
 `gateways.InstrumentDirectory` (resolves the id a broker gives an instrument to the instrument),
 `gateways.ibkr` (Interactive Brokers' instrument directory - see [`ibkr.md`](ibkr.md)),
+`gateways.StoredInstrumentDirectory` (the instrument directory of a broker with no lookup, such
+as Binance - see [`binance.md`](binance.md)),
 `services`/`processes` (sync loop), `storages` (persistence contracts - see
 [`storage-contracts.md`](storage-contracts.md)).
 
@@ -389,6 +391,23 @@ object IbkrInstrumentDirectory {
 }
 ```
 
+`gateways.StoredInstrumentDirectory` is the directory of a broker whose API has no lookup of an
+instrument by the id it gives it. It answers from `BrokerInstrumentStorage` alone: a key of its
+broker that the storage holds is answered from it, and any other key, a key of another broker
+included, with `None`. It raises no error of its own: only a failure of the storage reaches the
+caller. Binance is such a broker: its instrument ids are asset codes such as `BTC`, and the Binance
+sync fills the storage with a record for each coin its translations name, whose ticker is the coin's
+pair with the first price quote that Binance lists, such as `BTCUSDC`, whose type is `crypto` and
+whose currency is that quote, with no board - see [`binance.md`](binance.md#recording).
+
+```scala
+object StoredInstrumentDirectory {
+  def create[F[_]: Applicative](broker: Broker, storage: BrokerInstrumentStorage[F]): StoredInstrumentDirectory[F]
+}
+
+val binanceDirectory = StoredInstrumentDirectory.create[IO](Broker.Binance, brokerInstrumentStorage)
+```
+
 ## Routing multiple sources (`MarketDataSources`)
 
 Which source serves a ticker is a setting of the ticker, not of a watchlist entry, so every
@@ -546,7 +565,8 @@ every stored account, in turn:
    An entry that exists is left as it is, a disabled one included: `add` can re-enable an existing
    entry, so it is called only for a ticker the account lacks. Nothing is ever removed, so the entry
    of a sold holding stays. Two instruments of one ticker, such as one listed on two boards, add it
-   once, and the first of them in key order sets its source.
+   once, and the first of them in key order sets its source. A ticker that has no setting and whose
+   rule leaves it unwatched is not added.
 
 The pricing rule is an exhaustive match on the instrument's `Broker`:
 
@@ -554,9 +574,13 @@ The pricing rule is an exhaustive match on the instrument's `Broker`:
 |---|---|
 | Tinkoff | `SourceSetting.Tinkoff` on the instrument's own board, `BrokerInstrument.classCode`, while the router serves Tinkoff; no setting otherwise, so the ticker keeps the default source |
 | Interactive Brokers | `SourceSetting.Yahoo` under the symbol the [exchange rule](ibkr.md#yahoo-symbols) gives for the IB symbol and the listing exchange, written as `Yahoo(None)` when that symbol is the ticker itself, so that a deployment whose default source is not Yahoo still prices the instrument there; this while the router serves Yahoo, and no setting otherwise. An exchange without a rule, or an instrument that names none, gets no setting, and the service logs the ticker and its exchange |
+| Binance | none: no source serves the tickers of Binance's coins yet, so the outcome of the rule is `Unwatched`. The service writes no setting, leaves the ticker off the watchlist and logs it |
 
 A storage that fails fails the call, and the price-history process logs it and goes on. An
-instrument that has no setting after all of this is priced from the router's default source.
+instrument that has no setting after all of this is priced from the router's default source, except
+one the rule leaves unwatched: a ticker that is `Unwatched` and has no setting of its own stays off
+the watchlist, and one that has a setting of its own, such as a Binance coin set with
+`/source BTCUSDC yahoo BTC-USD`, joins the watchlist as any other held ticker does.
 
 Known limits:
 

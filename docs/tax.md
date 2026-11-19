@@ -240,6 +240,36 @@ the gain on the shares of a stock dividend shows up when they are sold.
 **Known limit**: lots carry no currency, so a conversion into an instrument quoted in another currency
 keeps the cost in the old one.
 
+### Trades between coins and fees paid in a coin
+
+A broker that exchanges coins for coins, as Binance does, reaches the ledger through the kinds
+above, with no rule of its own:
+
+- A trade or a Convert between two coins is a `sell` of the coin given up and a `buy` of the coin
+  received, both at one amount in one currency, a stablecoin, so their cash amounts cancel. The
+  sale consumes lots and realizes a gain, `proceeds` less cost, in that currency, and the coin
+  received opens a lot at `|amount| / quantity` in it: the coin given up is disposed of at its
+  market value, and the coin received starts at its market value.
+- When no price values such an exchange, its legs are `conversion` operations of one group with no
+  cash. The lots of the coin given up move to the coin received with their cost and acquisition
+  dates (see ["Conversions"](#conversions)), and no gain is realized until the coin received is
+  sold.
+- A fee paid in a coin, BNB as a rule, is a `sell` of that coin, which realizes its own gain, and a
+  `fee` of the same value naming the coin traded. The fee takes part in the [fee
+  pro-ration](#fee-pro-ration) as any fee does, shared among the day's buys or sells of the coin in
+  the fee's currency. The adapter values the fee in the currency of its trade where it can, so that
+  it joins the trade's pool. A fee that names no coin, such as the network fee of a withdrawal or
+  the fee of a conversion between cash assets, goes into no lot's cost. A commission paid in the
+  coin received is a smaller quantity bought for the same amount, so the coin costs more per unit.
+  A commission that no price values is a `security_out`, which consumes lots with no gain.
+- A coin deposited from elsewhere is a `security_in` with no price, so its lot costs nothing and a
+  sale of it counts the whole proceeds as gain.
+
+**Known limit**: lots carry no currency, so a coin bought in one currency, such as EUR, and sold in
+another, such as USDT, has its cost counted as if it were in the currency of the sale. The same goes
+for a conversion into an instrument quoted in another currency, and for a coin that was bought
+with one stablecoin and sold for another.
+
 ### Determinism
 
 Operations are taken in the order of their `occurredAt`, and those at the same instant in the order
