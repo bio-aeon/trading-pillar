@@ -29,7 +29,7 @@ class SourceHandlerSpec extends Specification with CatsEffect {
     for {
       tgGateway <- Fakes.tgGateway()
       settings <- MarketDataFakes.tickerSourceStorage(stored)
-      sources = new MarketDataSourcesImpl[IO](None, None, settings, default)
+      sources = new MarketDataSourcesImpl[IO](None, None, None, settings, default)
     } yield BuiltSourceHandler(
       new SourceHandler[IO](tgGateway, settings, sources),
       tgGateway,
@@ -75,6 +75,15 @@ class SourceHandlerSpec extends Specification with CatsEffect {
               |VOD - yahoo, symbol VOD.L""".stripMargin
         }
 
+        "names a Binance ticker by its source alone" >> {
+          for {
+            (text, _) <- run(
+              Nil,
+              stored = List(TickerSource(Ticker("BTCUSDC"), SourceSetting.Binance))
+            )
+          } yield text must_== "BTCUSDC - binance"
+        }
+
         "says that every ticker uses the default when none has a setting" >> {
           for {
             (text, _) <- run(Nil)
@@ -100,6 +109,15 @@ class SourceHandlerSpec extends Specification with CatsEffect {
               stored = List(TickerSource(vod, SourceSetting.Yahoo(Some(vodL))))
             )
           } yield text must_== "VOD uses yahoo, symbol VOD.L."
+        }
+
+        "shows a Binance ticker" >> {
+          for {
+            (text, _) <- run(
+              List("btcusdc"),
+              stored = List(TickerSource(Ticker("BTCUSDC"), SourceSetting.Binance))
+            )
+          } yield text must_== "BTCUSDC uses binance."
         }
 
         "says when the ticker is on the default source" >> {
@@ -163,6 +181,15 @@ class SourceHandlerSpec extends Specification with CatsEffect {
             after must_==
               List(TickerSource(Ticker("USD000UTSTOM"), SourceSetting.Tinkoff(Some(cets))))
             text must_== "USD000UTSTOM now uses tinkoff, board CETS."
+          }
+        }
+
+        "sets a ticker to binance, which has no board or symbol" >> {
+          for {
+            (text, after) <- run(List("btcusdc", "binance"))
+          } yield {
+            after must_== List(TickerSource(Ticker("BTCUSDC"), SourceSetting.Binance))
+            text must_== "BTCUSDC now uses binance."
           }
         }
 
@@ -244,6 +271,10 @@ class SourceHandlerSpec extends Specification with CatsEffect {
 
         "rejects more than one board for tinkoff" >> {
           rejects(List("sber", "tinkoff", "TQBR", "CETS"))
+        }
+
+        "rejects a board or a symbol after binance" >> {
+          rejects(List("btcusdc", "binance", "BTCUSDT"))
         }
 
         "rejects words after default" >> {

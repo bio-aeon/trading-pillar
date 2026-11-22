@@ -117,10 +117,15 @@ final class ExportHandler[F[_]: Monad: Clock](
     )
 
   private def valuationRow(p: ValuationPoint): List[String] =
-    List(p.date.toString, p.value.toString, p.invested.toString, p.cashFlow.toString)
+    List(
+      p.date.toString,
+      Replies.plain(p.value),
+      Replies.plain(p.invested),
+      Replies.plain(p.cashFlow)
+    )
 
   private def dividendRow(e: DividendEvent): List[String] =
-    List(e.ticker.value, e.exDate.toString, e.amount.toString, e.currency.fold("")(_.value))
+    List(e.ticker.value, e.exDate.toString, Replies.plain(e.amount), e.currency.fold("")(_.value))
 
   private def resolveYear(arg: Option[String]): F[Int] =
     arg.flatMap(a => Try(a.toInt).toOption) match {

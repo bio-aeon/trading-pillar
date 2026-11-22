@@ -69,6 +69,7 @@ class CommandEffectSpec extends Specification {
             "/source AAPL fast",
             "/source VOD yahoo VOD.L VOD.MX",
             "/source SBER tinkoff TQBR CETS",
+            "/source BTCUSDC binance BTCUSDT",
             "/source AAPL default now"
           )
         )
@@ -79,6 +80,7 @@ class CommandEffectSpec extends Specification {
             "/source VOD YAHOO vod.l",
             "/source SBER tinkoff",
             "/source SBER tinkoff cets",
+            "/source BTCUSDC binance",
             "/source AAPL default",
             "/source AAPL DEFAULT",
             "/source AAPL Tinkoff"

@@ -70,6 +70,18 @@ class AlertRuleHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "summarises a threshold and an absolute proximity below a cent in their significant digits" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          rules <- AlertFakes.alertRuleStorage()
+          h = new AlertRuleHandler[IO](tgGateway, rules, accountId, channels)
+          _ <- h.handle(chatId, List("price", "shib", "<", "0.00000823", "proximity=0.0000005"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must contain(
+          "SHIB below 0.00000823 (proximity 0.0000005, cooldown"
+        )
+      }
+
       "replies with the one-line usage on a parse error" >> {
         for {
           tgGateway <- Fakes.tgGateway()

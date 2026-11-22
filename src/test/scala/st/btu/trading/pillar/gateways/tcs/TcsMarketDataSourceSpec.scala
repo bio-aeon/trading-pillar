@@ -91,21 +91,21 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
   "TcsMarketDataSource" >> {
     "dailyBars" >> {
 
-      "scales a units-and-nanos quote to a 6-decimal price" >> {
+      "reads a quotation's units and nanos as a price, keeping every nano" >> {
         val day = LocalDate.of(2024, 1, 10)
         for {
           instruments <- workingInstruments
           marketData <- TcsMarketDataFakes.marketDataService(candles =
             Map(
               figi -> IO
-                .pure(GetCandlesResponse(Seq(candle(day, close = Quotation(150, 123456000)))))
+                .pure(GetCandlesResponse(Seq(candle(day, close = Quotation(150, 123456789)))))
             )
           )
           source <- buildSource(instruments, marketData)
           bars <- source.dailyBars(ticker, day, day)
         } yield {
-          bars.map(_.close) must_== List(BigDecimal("150.123456"))
-          bars.map(_.adjClose) must_== List(BigDecimal("150.123456")) // adjClose = close
+          bars.map(_.close) must_== List(BigDecimal("150.123456789"))
+          bars.map(_.adjClose) must_== List(BigDecimal("150.123456789")) // adjClose = close
         }
       }
 
@@ -209,7 +209,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
           quote <- source.latestQuote(ticker)
         } yield {
           quote must beSome
-          quote.map(_.price) must beSome(BigDecimal("305.000000"))
+          quote.map(_.price) must beSome(BigDecimal("305"))
           quote.map(_.currency) must beSome(Currency("RUB"))
         }
       }
@@ -374,7 +374,7 @@ class TcsMarketDataSourceSpec extends Specification with CatsEffect {
         } yield {
           events must haveSize(1)
           events.head.exDate must_== LocalDate.of(2024, 5, 11)
-          events.head.amount must_== BigDecimal("1.500000")
+          events.head.amount must_== BigDecimal("1.5")
           events.head.currency must beSome(Currency("USD"))
           events.head.source must_== Source.Tinkoff
         }

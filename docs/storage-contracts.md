@@ -10,7 +10,7 @@ Each section ends with a suggested relational layout. Its table and column names
 point for an implementer, not a schema the library owns or requires: any store that honours the
 method semantics works. In those layouts an `account_id` can reference an `accounts` table, a JSON
 value can live in a JSON column or in plain JSON text, and decimal values are best held as
-fixed-point decimals rather than floating point (the library itself rounds prices to six decimal
+fixed-point decimals rather than floating point (the library itself gives prices to 18 decimal
 places).
 
 A stored currency column holds the `value` of a `models.domain.Currency`, and the library reads it
@@ -267,8 +267,10 @@ Written by the library: `PriceHistorySyncService` (driven by `PriceHistorySyncPr
 every sync replace bars instead of duplicating them; bars from different sources for the same
 ticker and date coexist. Read by `BacktestService`, `LiveStrategyService`, `AlertProcess`'s ATR
 lookups and the valuation, tax and analysis services. A relational implementation could use a table
-such as `price_history` with `symbol`, `date`, `source`, `open`, `high`, `low`, `close`, `adj_close`,
-`volume` and a unique key on `(symbol, date, source)`.
+such as `price_history` with `symbol`, `date`, `source` (`yahoo` | `tinkoff` | `binance`, the
+`Source` values), `open`, `high`, `low`, `close`, `adj_close`, `volume` and a unique key on
+`(symbol, date, source)`. The five price columns are fixed-point decimals with 18 decimal places,
+since a coin can be priced far below a cent and the library keeps every digit of a price it reads.
 
 ## `InstrumentStorage[F[_]]`
 
@@ -292,10 +294,10 @@ row only when its origin's source is the ticker's configured one (see
 [`analytics.md`](analytics.md#portfolio-valuation)); resolving an instrument a broker knows to a
 ticker is the job of `InstrumentDirectory`, backed by `BrokerInstrumentStorage` below. A relational
 implementation could use a table such as `instrument_metadata` with the ticker (`symbol`) as
-primary key, `source` (`yahoo` | `tinkoff`, the `Source` values), a nullable `class_code` (the
-board; null unless the origin is a Tinkoff board), a nullable `yahoo_symbol` (the Yahoo symbol; null
-unless the origin is Yahoo under a symbol), `name`, `instrument_type`, `currency`, `exchange`,
-`timezone`, a nullable `figi` and `updated_at`.
+primary key, `source` (`yahoo` | `tinkoff` | `binance`, the `Source` values), a nullable
+`class_code` (the board; null unless the origin is a Tinkoff board), a nullable `yahoo_symbol` (the
+Yahoo symbol; null unless the origin is Yahoo under a symbol), `name`, `instrument_type`,
+`currency`, `exchange`, `timezone`, a nullable `figi` and `updated_at`.
 
 `InstrumentInfo.origin` maps to those columns as follows, and back:
 
@@ -305,6 +307,7 @@ unless the origin is Yahoo under a symbol), `name`, `instrument_type`, `currency
 | `SourceSetting.Yahoo(Some(symbol))` | `yahoo` | NULL | `symbol` |
 | `SourceSetting.Tinkoff(Some(board))` | `tinkoff` | `board` | NULL |
 | `SourceSetting.Tinkoff(None)` | `tinkoff` | NULL | NULL |
+| `SourceSetting.Binance` | `binance` | NULL | NULL |
 
 The sync compares the whole origin with the adapter's. A Tinkoff adapter always reports a board, so
 a `tinkoff` row with no `class_code` never matches: the next sync of its ticker refetches the window
@@ -374,11 +377,12 @@ settings through `all`. Written by the library: `/source` and `/watchlist add` c
 `/source SYM default` calls `delete`; the held instruments service calls `upsert` for a held ticker
 that has no setting. The consumer can also manage settings by other means, since the library
 re-reads them on every lookup. A relational implementation could use a table such as
-`ticker_sources` with the ticker (`symbol`) as primary key, `source` (`yahoo` | `tinkoff`, the
-`Source` values), a nullable `class_code` that only a `tinkoff` row may set (a
+`ticker_sources` with the ticker (`symbol`) as primary key, `source` (`yahoo` | `tinkoff` |
+`binance`, the `Source` values), a nullable `class_code` that only a `tinkoff` row may set (a
 `SourceSetting.Tinkoff` with no board stores NULL), a nullable `yahoo_symbol` that only a `yahoo` row
 may set (a `SourceSetting.Yahoo` with no symbol, which looks the ticker up as given, stores NULL) and
-`updated_at`.
+`updated_at`. A `binance` row, which `SourceSetting.Binance` stores, has neither a board nor a
+symbol.
 
 ## `BrokerInstrumentStorage[F[_]]`
 
@@ -538,7 +542,8 @@ A relational implementation could use two tables, and save in one transaction:
   that name the instrument and `quantity` is nullable: an instrument the directory does not know has
   no ticker, name, type, currency, exchange or source, and a position with no close or exchange
   rate has no price, value, weight or day return. `quantity` is a decimal wide enough for coins,
-  since a position can be a fraction of a unit.
+  since a position can be a fraction of a unit, and `price` is a fixed-point decimal with 18
+  decimal places, since a coin can be priced far below a cent.
 
 Saving replaces the day's `portfolio_snapshots` row and its positions in one transaction, so a
 reader never sees a snapshot with the positions of another run.

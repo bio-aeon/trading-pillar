@@ -324,8 +324,11 @@ ticker: `config.fxTickers(currency)` when it names one, otherwise the convention
 `<currency><baseCurrency>=X` pair (the exact same convention `PortfolioValuationServiceImpl`
 documents in [`analytics.md`](analytics.md#rules) - both share the lookup through
 `analytics.FxRates`). The rate ticker's bars are read from the source that ticker is configured to
-use, never from another source. When `fxRate` returns `None` for some amount (no bar on or before
-that date for that currency), that one amount is dropped from every sum it would have contributed
+use, never from another source. The bars are there once the rate ticker is on a watchlist, which the
+held instruments step arranges for the currencies of the account's operations (see
+[`market-data.md`](market-data.md#rate-tickers-on-the-watchlist)). When `fxRate` returns `None` for
+some amount (no bar on or before that date for that currency, as for a currency whose rate ticker
+has no bars at all), that one amount is dropped from every sum it would have contributed
 to and `unconverted` is incremented once for it - never twice, even for a realized gain that would
 otherwise have counted toward both `realizedGains` and `exemptGains`.
 

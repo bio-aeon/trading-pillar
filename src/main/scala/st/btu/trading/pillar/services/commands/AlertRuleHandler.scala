@@ -122,12 +122,12 @@ final class AlertRuleHandler[F[_]: Monad](
       Some(s"cooldown $cooldown"),
       maxPerDay.map(m => s"max $m/day")
     ).flatten
-    s"${ticker.value} $directionWord ${Replies.scaled(threshold)} (${parts.mkString(", ")})"
+    s"${ticker.value} $directionWord ${Replies.price(threshold)} (${parts.mkString(", ")})"
   }
 
   private def describeProximity(p: Proximity): String = p match {
     case Proximity.Percent(pct) => s"${Replies.scaled(pct)}%"
-    case Proximity.Absolute(x) => Replies.scaled(x)
+    case Proximity.Absolute(x) => Replies.price(x)
     case Proximity.Atr(mult, period) => s"${Replies.scaled(mult)}xATR($period)"
   }
 

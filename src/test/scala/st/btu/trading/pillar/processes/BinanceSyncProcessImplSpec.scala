@@ -11,7 +11,7 @@ import sttp.client3.impl.cats.implicits.*
 import sttp.client3.testing.SttpBackendStub
 import sttp.model.StatusCode
 import st.btu.trading.pillar.data.ProcessContext
-import st.btu.trading.pillar.gateways.binance.BinanceApiConfig
+import st.btu.trading.pillar.gateways.binance.{BinanceApiConfig, BinanceIpBuckets}
 import st.btu.trading.pillar.models.binance.{ApiKey, BinanceAccount, SecretKey}
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.processes.BinanceSyncProcessImpl.AccountSync
@@ -19,7 +19,7 @@ import st.btu.trading.pillar.security.{Bouncy, CryptoImpl}
 import st.btu.trading.pillar.services.{BinanceSyncConfig, BinanceSyncService}
 import st.btu.trading.pillar.testkit.AlertFakes.FakeSystemAlerts
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
-import st.btu.trading.pillar.testkit.{AlertFakes, BinanceFakes, MarketDataFakes}
+import st.btu.trading.pillar.testkit.{AlertFakes, BinanceFakes, MarketDataFakes, VirtualTime}
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
@@ -192,14 +192,11 @@ class BinanceSyncProcessImplSpec extends Specification with CatsEffect {
           BinanceAccount(first, ApiKey("key-one"), SecretKey("secret-one")),
           BinanceAccount(second, ApiKey("key-two"), SecretKey("secret-two"))
         )
-        // A read of trades has 600 ms * 20 / (6000 * 0.00667) = 300 ms to itself on /api/v3.
-        val spacing = 300.millis
-        val limits = BinanceApiConfig(
-          limitWindow = 600.millis,
-          ipBudget = 0.00667,
-          retryDelay = 1.milli,
-          rateLimitDelay = 1.milli
-        )
+        // A read of trades has 15 s * 20 / (6000 * 0.5) = 100 ms to itself on /api/v3.
+        val spacing = 100.millis
+        val interval = 1.hour
+        val limits =
+          BinanceApiConfig(limitWindow = 15.seconds, retryDelay = 1.milli, rateLimitDelay = 1.milli)
         val fiatEmpty = """{"code":"000000","message":"success","success":true}"""
         def answer(path: String): String =
           path match {
@@ -207,13 +204,15 @@ class BinanceSyncProcessImplSpec extends Specification with CatsEffect {
               """{"symbols":[{"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT"}]}"""
             case "/sapi/v1/account/apiRestrictions" =>
               """{"enableReading":true,"ipRestrict":true}"""
+            case "/api/v3/account" => """{"balances":[]}"""
             case "/sapi/v1/fiat/orders" | "/sapi/v1/fiat/payments" => fiatEmpty
             case "/sapi/v1/convert/tradeFlow" => """{"list":[],"moreData":false}"""
             case _ => "[]"
           }
-        for {
+        VirtualTime.run(for {
           h <- harness
           tradeTimes <- Ref.of[IO, List[FiniteDuration]](List.empty)
+          ipBuckets <- BinanceIpBuckets.create[IO, IO]
           records <- BinanceFakes.recordStorage()
           pairs <- BinanceFakes.pairStorage()
           prices <- BinanceFakes.minutePriceStorage()
@@ -234,34 +233,35 @@ class BinanceSyncProcessImplSpec extends Specification with CatsEffect {
             implicit val genUUID: GenUUID[IO] = GenUUID.syncGenUUID[IO]
             implicit val logs: Logs[IO, IO] =
               Logs.const[IO, IO](Logging.Make.plain[IO].forService[BinanceSyncProcess[IO]])
-            def untilBothRead: IO[Unit] =
-              tradeTimes.get.map(_.size >= 2).ifM(IO.unit, IO.sleep(PollEvery) >> untilBothRead)
             BinanceSyncProcessImpl
               .resource[IO, IO](
                 accounts,
                 BinanceSyncConfig(historyStart = yesterday),
-                1.hour,
+                interval,
                 records,
                 pairs,
                 prices,
                 instruments,
+                records,
                 h.alerts,
                 CryptoImpl.create[IO],
                 backend,
+                ipBuckets,
                 limits
               )
-              .use(process => IO.race(process.run.compile.drain, untilBothRead))
-              .timeout(Patience)
+              // long enough for the first sync of every account, and not for a second
+              .use(_.run.interruptAfter(interval / 2).compile.drain)
           }
-          reads <- tradeTimes.get.map(_.sorted)
+          reads <- tradeTimes.get
           raised <- h.alerts.raised
         } yield {
-          reads.size must be_>=(2)
-          // Apart in time, where a client of its own limits for each account would send the two
-          // reads together.
-          (reads(1) - reads.head) must be_>=(spacing / 2)
+          reads.size must_== 2
+          // How far apart the two reads fall depends on the accounts' other calls through the same
+          // limits, so they are at least a spacing apart. A client of its own limits for each
+          // account would send them together.
+          VirtualTime.gaps(reads).head must be_>=(spacing)
           raised must beEmpty
-        }
+        })
       }
     }
   }

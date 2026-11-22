@@ -5,6 +5,7 @@ import cats.syntax.traverse.*
 import io.circe.{Json, JsonObject}
 import st.btu.trading.pillar.models.binance.*
 
+import java.time.{Instant, LocalDate, ZoneOffset}
 import scala.util.Try
 
 // Reads the answers of Binance's endpoints. An answer that is not of the documented shape fails
@@ -34,13 +35,30 @@ private[binance] object BinanceResponses {
     val Name = "name"
     val ConvertList = "list"
     val MoreData = "moreData"
+    val Balances = "balances"
+    val Asset = "asset"
+    val Free = "free"
+    val Locked = "locked"
+    val Freeze = "freeze"
+    val Withdrawing = "withdrawing"
+    val Price = "price"
   }
 
   // Binance's own marker of a successful fiat answer, in the `code` of its envelope.
   private val FiatSuccessCode = "000000"
 
-  // The position of a bar's close in the array Binance gives for the bar.
-  private val CloseIndex = 4
+  // The positions of the values of a bar in the array Binance gives for the bar.
+  private object BarIndex {
+    val OpenTime = 0
+    val Open = 1
+    val High = 2
+    val Low = 3
+    val Close = 4
+    val Volume = 5
+    val CloseTime = 6
+  }
+
+  private val Zero = BigDecimal(0)
 
   // The permission flags that do not give the key more than reading: reading itself, and reading
   // over the FIX protocol.
@@ -152,21 +170,41 @@ private[binance] object BinanceResponses {
   def close(json: Json): Reading[Option[BigDecimal]] =
     for {
       bars <- arrayOf(json, "the bar list")
-      close <- bars.headOption match {
-        case None => None.asRight
-        case Some(bar) =>
-          for {
-            values <- arrayOf(bar, "a bar")
-            text <- values
-              .lift(CloseIndex)
-              .flatMap(value => value.asString.orElse(value.asNumber.map(_.toString)))
-              .toRight(unexpected("a bar has no close"))
-            closing <- Try(BigDecimal(text)).toEither.leftMap(_ =>
-              unexpected("a close is no number")
-            )
-          } yield Some(closing)
+      close <- bars.headOption.traverse { bar =>
+        arrayOf(bar, "a bar").flatMap(decimalAt(_, BarIndex.Close, "close"))
       }
     } yield close
+
+  /** The bars an answer of `klines` holds, as daily bars, in the order Binance lists them. */
+  def dailyBars(json: Json): Reading[List[BinanceDailyBar]] =
+    arrayOf(json, "the bar list").flatMap(_.traverse(dailyBarOf))
+
+  /** The price an answer of the ticker price holds. */
+  def price(json: Json): Reading[BigDecimal] =
+    objectOf(json, "the ticker price").flatMap(decimal(_, Field.Price, "the ticker price"))
+
+  /** The amount of each asset in the balances of an answer of the spot account, free and locked
+    * together, leaving out an asset with none.
+    */
+  def spotBalances(json: Json): Reading[Map[BinanceAsset, BigDecimal]] =
+    for {
+      body <- objectOf(json, "the spot account")
+      balances <- body(Field.Balances)
+        .flatMap(_.asArray)
+        .toRight(unexpected("the spot account has no balances"))
+      assets <- balances.toList.traverse(balanceOf(_, List(Field.Free, Field.Locked)))
+    } yield held(assets)
+
+  /** The amount of each asset in an answer of the funding wallet, free, locked, frozen and
+    * withdrawing together, leaving out an asset with none.
+    */
+  def fundingBalances(json: Json): Reading[Map[BinanceAsset, BigDecimal]] =
+    for {
+      entries <- arrayOf(json, "the funding wallet")
+      assets <- entries.traverse(
+        balanceOf(_, List(Field.Free, Field.Locked, Field.Freeze, Field.Withdrawing))
+      )
+    } yield held(assets)
 
   private def isPermissionFlag(name: String): Boolean =
     PermissionFlagPrefixes.exists(name.startsWith) && !ReadingFlags(name)
@@ -178,6 +216,69 @@ private[binance] object BinanceResponses {
       base <- field(body, Field.BaseAsset, "a symbol of the exchange information")
       quote <- field(body, Field.QuoteAsset, "a symbol of the exchange information")
     } yield BinancePair(BinanceSymbol(symbol), BinanceAsset(base), BinanceAsset(quote))
+
+  // The asset of an entry of a balance list and the sum of the amounts it holds in `amounts`.
+  private def balanceOf(entry: Json, amounts: List[String]): Reading[(BinanceAsset, BigDecimal)] =
+    for {
+      body <- objectOf(entry, "a balance")
+      asset <- field(body, Field.Asset, "a balance")
+      parts <- amounts.traverse(decimal(body, _, "a balance"))
+    } yield BinanceAsset(asset) -> parts.sum
+
+  // The amount held of each asset, with an asset that appears twice added up and one with none left
+  // out.
+  private def held(balances: List[(BinanceAsset, BigDecimal)]): Map[BinanceAsset, BigDecimal] =
+    balances
+      .groupMapReduce { case (asset, _) => asset } { case (_, amount) => amount }(_ + _)
+      .filter { case (_, amount) => amount != Zero }
+
+  private def dailyBarOf(entry: Json): Reading[BinanceDailyBar] =
+    for {
+      values <- arrayOf(entry, "a bar")
+      openTime <- instantAt(values, BarIndex.OpenTime, "open time")
+      open <- decimalAt(values, BarIndex.Open, "open")
+      high <- decimalAt(values, BarIndex.High, "high")
+      low <- decimalAt(values, BarIndex.Low, "low")
+      close <- decimalAt(values, BarIndex.Close, "close")
+      volume <- decimalAt(values, BarIndex.Volume, "volume")
+      closeTime <- instantAt(values, BarIndex.CloseTime, "close time")
+    } yield BinanceDailyBar(
+      LocalDate.ofInstant(openTime, ZoneOffset.UTC),
+      open,
+      high,
+      low,
+      close,
+      volume,
+      closeTime
+    )
+
+  // The text of a number, which Binance writes as a JSON string and sometimes as a JSON number.
+  private def numberText(json: Json): Option[String] =
+    json.asString.orElse(json.asNumber.map(_.toString))
+
+  private def parseDecimal(text: String, of: String): Reading[BigDecimal] =
+    Try(BigDecimal(text)).toEither.leftMap(_ => unexpected(s"$of is no number"))
+
+  private def decimal(body: JsonObject, name: String, of: String): Reading[BigDecimal] =
+    body(name)
+      .flatMap(numberText)
+      .toRight(unexpected(s"$of has no $name"))
+      .flatMap(parseDecimal(_, s"the $name of $of"))
+
+  private def decimalAt(values: List[Json], index: Int, name: String): Reading[BigDecimal] =
+    values
+      .lift(index)
+      .flatMap(numberText)
+      .toRight(unexpected(s"a bar has no $name"))
+      .flatMap(parseDecimal(_, s"the $name of a bar"))
+
+  private def instantAt(values: List[Json], index: Int, name: String): Reading[Instant] =
+    values
+      .lift(index)
+      .flatMap(_.asNumber)
+      .flatMap(_.toLong)
+      .map(Instant.ofEpochMilli)
+      .toRight(unexpected(s"a bar has no $name"))
 
   private def field(body: JsonObject, name: String, of: String): Reading[String] =
     body(name).toRight(unexpected(s"$of has no $name")).flatMap(stringOf(_, s"the $name of $of"))

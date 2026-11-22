@@ -47,7 +47,7 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
       tgGateway <- Fakes.tgGateway()
       storage <- MarketDataFakes.watchlistStorage(items)
       settings <- MarketDataFakes.tickerSourceStorage(stored)
-      sources = new MarketDataSourcesImpl[IO](None, None, settings, default)
+      sources = new MarketDataSourcesImpl[IO](None, None, None, settings, default)
     } yield BuiltWatchlistHandler(
       new WatchlistHandler[IO](tgGateway, storage, settings, sources, accountId),
       tgGateway,
@@ -169,6 +169,21 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
           }
         }
 
+        "sets the ticker to binance when the source token says so, with the words after it as the note" >> {
+          for {
+            built <- build()
+            _ <- built.handler.handle(chatId, List("add", "btcusdc", "binance", "core", "coin"))
+            items <- built.storage.items
+            stored <- built.settings.all
+            messages <- built.tgGateway.sentMessages
+          } yield {
+            items.map(_.ticker) must_== List(Ticker("BTCUSDC"))
+            items.head.note must beSome("core coin")
+            stored must_== List(TickerSource(Ticker("BTCUSDC"), SourceSetting.Binance))
+            messages.head.message must_== "Added BTCUSDC (binance) to the watchlist."
+          }
+        }
+
         "keeps the words after the source token as the note" >> {
           for {
             built <- build()
@@ -249,11 +264,11 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
         "treats a word that names no source as the start of the note" >> {
           for {
             built <- build()
-            _ <- built.handler.handle(chatId, List("add", "aapl", "binance", "hedge"))
+            _ <- built.handler.handle(chatId, List("add", "aapl", "ibkr", "hedge"))
             items <- built.storage.items
             stored <- built.settings.all
           } yield {
-            items.head.note must beSome("binance hedge")
+            items.head.note must beSome("ibkr hedge")
             stored must beEmpty
           }
         }
@@ -267,7 +282,7 @@ class WatchlistHandlerSpec extends Specification with CatsEffect {
           } yield {
             items must beEmpty
             // The reply sanitizer strips square brackets, so options are marked with parentheses.
-            messages.head.message must contain("/watchlist add SYM (yahoo|tinkoff) (note)")
+            messages.head.message must contain("/watchlist add SYM (yahoo|tinkoff|binance) (note)")
           }
         }
       }

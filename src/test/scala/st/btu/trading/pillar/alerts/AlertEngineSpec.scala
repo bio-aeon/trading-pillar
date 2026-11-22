@@ -34,6 +34,30 @@ class AlertEngineSpec extends Specification {
         alerts.head.triggerValue must beSome(BigDecimal(99.5))
       }
 
+      "writes the prices of a TargetHit in plain digits, whatever scale they carry" >> {
+        val alerts = AlertEngine.evaluatePriceRule(
+          rule.copy(threshold = BigDecimal("100.50")),
+          Some(q(BigDecimal("99.000000000000000000"))),
+          q(BigDecimal("101.250000000000000000")),
+          None
+        )
+        alerts.map(_.body) must_== List("AAPL rose above 100.5 (now 101.25)")
+      }
+
+      "writes the prices of a PreTarget in plain digits, down to a price below a cent" >> {
+        val cheap = rule.copy(
+          threshold = BigDecimal("0.00001"),
+          proximity = Some(Proximity.Absolute(BigDecimal("0.000001")))
+        )
+        val alerts = AlertEngine.evaluatePriceRule(
+          cheap,
+          Some(q(BigDecimal("0.000008000000000000"))),
+          q(BigDecimal("0.000009230000000000")),
+          None
+        )
+        alerts.map(_.body) must_== List("AAPL at 0.00000923, 0.00000077 away from 0.00001")
+      }
+
       "emits nothing when still far from the threshold" >> {
         AlertEngine.evaluatePriceRule(rule, Some(q(80)), q(81), None) must beEmpty
       }

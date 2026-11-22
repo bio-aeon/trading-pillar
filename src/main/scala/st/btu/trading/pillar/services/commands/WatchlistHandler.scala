@@ -23,7 +23,8 @@ final class WatchlistHandler[F[_]: Monad: Clock](
 ) extends CommandHandler[F] {
   def command: Command = Command.Watchlist
 
-  def usage: String = "/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM"
+  def usage: String =
+    "/watchlist, /watchlist add SYM (yahoo|tinkoff|binance) (note), or /watchlist rm SYM"
 
   def handle(chatId: tg.ChatId, args: List[String]): F[Unit] =
     args match {

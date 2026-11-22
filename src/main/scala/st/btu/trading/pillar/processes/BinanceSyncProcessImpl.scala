@@ -14,16 +14,12 @@ import st.btu.trading.pillar.models.binance.BinanceAccount
 import st.btu.trading.pillar.models.domain.AccountId
 import st.btu.trading.pillar.security.Crypto
 import st.btu.trading.pillar.services.{
+  BinanceReconciler,
   BinanceSyncConfig,
   BinanceSyncService,
   BinanceSyncServiceImpl
 }
-import st.btu.trading.pillar.storages.{
-  BinanceMinutePriceStorage,
-  BinancePairStorage,
-  BinanceRecordStorage,
-  BrokerInstrumentStorage
-}
+import st.btu.trading.pillar.storages.*
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
@@ -68,8 +64,10 @@ object BinanceSyncProcessImpl {
 
   /** Wires the Binance sync process for `accounts`, each reading with its own key. The limits that
     * Binance counts per IP address are shared by every account, so all the accounts' calls are
-    * paced together. The records, the pairs, the prices and the instruments are recorded in the
-    * given storages, and the syncs raise their alerts through `systemAlerts`.
+    * paced together in `ipBuckets`, which every other client of the address, such as the market
+    * data source, shares too. The records, the pairs, the prices and the instruments are recorded
+    * in the given storages, and the syncs raise their alerts through `systemAlerts`. One reconciler
+    * compares the balances of every account with the operations recorded in `operationStorage`.
     *
     * @param crypto
     *   signs the requests
@@ -85,16 +83,19 @@ object BinanceSyncProcessImpl {
     pairStorage: BinancePairStorage[F],
     priceStorage: BinanceMinutePriceStorage[F],
     instrumentStorage: BrokerInstrumentStorage[F],
+    operationStorage: AccountOperationStorage[F],
     systemAlerts: SystemAlerts[F],
     crypto: Crypto[F],
     backend: SttpBackend[F, Any],
+    ipBuckets: BinanceIpBuckets[F],
     apiConfig: BinanceApiConfig = BinanceApiConfig()
   )(implicit
     logs: Logs[I, F],
     WL: WithLocal[F, ProcessContext]
   ): Resource[I, BinanceSyncProcessImpl[F]] =
     Resource.eval(for {
-      ipBuckets <- BinanceIpBuckets.create[I, F]
+      reconciler <- BinanceReconciler
+        .create[I, F](operationStorage, systemAlerts, config.cashAssets)
       syncs <- accounts.traverse { account =>
         for {
           api <- BinanceApiImpl
@@ -107,7 +108,8 @@ object BinanceSyncProcessImpl {
             pairStorage,
             priceStorage,
             instrumentStorage,
-            systemAlerts
+            systemAlerts,
+            reconciler
           )
         } yield AccountSync(account.accountId, service)
       }

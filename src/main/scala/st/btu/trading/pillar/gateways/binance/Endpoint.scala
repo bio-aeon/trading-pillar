@@ -1,6 +1,6 @@
 package st.btu.trading.pillar.gateways.binance
 
-import sttp.model.Uri
+import sttp.model.{Method, Uri}
 
 // What a bucket of request weight is counted against.
 private[binance] enum Scope {
@@ -23,79 +23,80 @@ private[binance] enum Bucket(val limit: Int, val scope: Scope) {
   case Coins extends Bucket(SapiIpLimit, Scope.Ip)
   case Deposits extends Bucket(SapiIpLimit, Scope.Ip)
   case FiatPayments extends Bucket(SapiIpLimit, Scope.Ip)
+  case FundingAsset extends Bucket(SapiIpLimit, Scope.Ip)
   case Withdrawals extends Bucket(SapiAccountLimit, Scope.Account)
   case FiatOrders extends Bucket(SapiAccountLimit, Scope.Account)
   case ConvertTradeFlow extends Bucket(SapiAccountLimit, Scope.Account)
 }
 
-// Whether a call reads the account, and so carries the key and a signature, or reads public data.
-private[binance] enum Access {
-  case Public
-  case Signed
+// An endpoint the clients call, with the request weight Binance documents for it and its HTTP
+// method. Signed calls and `exchangeInfo` go to the API host, `klines` and the ticker price to the
+// market data host, which needs no key.
+private[binance] sealed trait Endpoint {
+  def path: String
+  def weight: Int
+  def bucket: Bucket
+  def method: Method
+
+  // The address of the endpoint, with no query.
+  def uri: Uri
 }
 
-// The endpoints the client calls, with the request weight Binance documents for each and their
-// access. Signed calls and `exchangeInfo` go to the API host, `klines` to the market data host,
-// which needs no key.
-private[binance] enum Endpoint(
+// The endpoints that read public data, and so carry neither the key nor a signature.
+private[binance] enum PublicEndpoint(
+  host: String,
+  val path: String,
+  val weight: Int,
+  val bucket: Bucket
+) extends Endpoint {
+  case Time extends PublicEndpoint(ApiHost, "/api/v3/time", 1, Bucket.Api)
+  case ExchangeInfo extends PublicEndpoint(ApiHost, "/api/v3/exchangeInfo", 20, Bucket.Api)
+  case Klines extends PublicEndpoint(MarketHost, "/api/v3/klines", 2, Bucket.Market)
+  case TickerPrice extends PublicEndpoint(MarketHost, "/api/v3/ticker/price", 2, Bucket.Market)
+
+  val method: Method = Method.GET
+  val uri: Uri = Uri.unsafeParse(host + path)
+}
+
+// The endpoints that read the account, and so carry the key and a signature. They are read with
+// GET unless a case says otherwise.
+private[binance] enum SignedEndpoint(
   host: String,
   val path: String,
   val weight: Int,
   val bucket: Bucket,
-  val access: Access
-) {
-  case Time extends Endpoint(ApiHost, "/api/v3/time", 1, Bucket.Api, Access.Public)
-  case ExchangeInfo extends Endpoint(ApiHost, "/api/v3/exchangeInfo", 20, Bucket.Api, Access.Public)
-  case MyTrades extends Endpoint(ApiHost, "/api/v3/myTrades", 20, Bucket.Api, Access.Signed)
-  case Klines extends Endpoint(MarketHost, "/api/v3/klines", 2, Bucket.Market, Access.Public)
+  val method: Method = Method.GET
+) extends Endpoint {
+  case MyTrades extends SignedEndpoint(ApiHost, "/api/v3/myTrades", 20, Bucket.Api)
+  case SpotAccount extends SignedEndpoint(ApiHost, "/api/v3/account", 20, Bucket.Api)
   case KeyRestrictions
-      extends Endpoint(
-        ApiHost,
-        "/sapi/v1/account/apiRestrictions",
-        1,
-        Bucket.KeyRestrictions,
-        Access.Signed
-      )
+      extends SignedEndpoint(ApiHost, "/sapi/v1/account/apiRestrictions", 1, Bucket.KeyRestrictions)
   case DelistSchedule
-      extends Endpoint(
-        ApiHost,
-        "/sapi/v1/spot/delist-schedule",
-        100,
-        Bucket.DelistSchedule,
-        Access.Signed
-      )
-  case Coins
-      extends Endpoint(ApiHost, "/sapi/v1/capital/config/getall", 10, Bucket.Coins, Access.Signed)
+      extends SignedEndpoint(ApiHost, "/sapi/v1/spot/delist-schedule", 100, Bucket.DelistSchedule)
+  case Coins extends SignedEndpoint(ApiHost, "/sapi/v1/capital/config/getall", 10, Bucket.Coins)
   case Deposits
-      extends Endpoint(
-        ApiHost,
-        "/sapi/v1/capital/deposit/hisrec",
-        1,
-        Bucket.Deposits,
-        Access.Signed
-      )
+      extends SignedEndpoint(ApiHost, "/sapi/v1/capital/deposit/hisrec", 1, Bucket.Deposits)
   case Withdrawals
-      extends Endpoint(
+      extends SignedEndpoint(
         ApiHost,
         "/sapi/v1/capital/withdraw/history",
         18000,
-        Bucket.Withdrawals,
-        Access.Signed
+        Bucket.Withdrawals
       )
-  case FiatOrders
-      extends Endpoint(ApiHost, "/sapi/v1/fiat/orders", 45000, Bucket.FiatOrders, Access.Signed)
+  case FiatOrders extends SignedEndpoint(ApiHost, "/sapi/v1/fiat/orders", 45000, Bucket.FiatOrders)
   case FiatPayments
-      extends Endpoint(ApiHost, "/sapi/v1/fiat/payments", 1, Bucket.FiatPayments, Access.Signed)
+      extends SignedEndpoint(ApiHost, "/sapi/v1/fiat/payments", 1, Bucket.FiatPayments)
   case ConvertTradeFlow
-      extends Endpoint(
+      extends SignedEndpoint(ApiHost, "/sapi/v1/convert/tradeFlow", 3000, Bucket.ConvertTradeFlow)
+  case FundingAsset
+      extends SignedEndpoint(
         ApiHost,
-        "/sapi/v1/convert/tradeFlow",
-        3000,
-        Bucket.ConvertTradeFlow,
-        Access.Signed
+        "/sapi/v1/asset/get-funding-asset",
+        1,
+        Bucket.FundingAsset,
+        Method.POST
       )
 
-  // The address of the endpoint, with no query.
   val uri: Uri = Uri.unsafeParse(host + path)
 }
 

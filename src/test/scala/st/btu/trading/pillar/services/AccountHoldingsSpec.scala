@@ -3,12 +3,7 @@ package st.btu.trading.pillar.services
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.models.domain.{
-  AccountId,
-  AccountOperation,
-  InstrumentKey,
-  OperationKind
-}
+import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.testkit.AnalyticsFakes
 import st.btu.trading.pillar.testkit.AnalyticsFakes.accountOperation
 import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
@@ -42,6 +37,42 @@ class AccountHoldingsSpec extends Specification with CatsEffect {
           List(bought(until.minusSeconds(1), 4), bought(until, 3), bought(until.plusSeconds(1), 2))
 
         holdingsBefore(operations).map(_ must_== Map(instrumentKey("F1") -> BigDecimal(4)))
+      }
+    }
+
+    "cashOf" >> {
+      def cash(
+        kind: OperationKind,
+        amount: BigDecimal,
+        currency: String,
+        state: OperationState = OperationState.Executed
+      ): AccountOperation =
+        accountOperation(accountId, kind, amount, until, currency = currency, state = state)
+
+      "adds up the amount of every kind of operation, per currency" >> {
+        val operations = List(
+          cash(OperationKind.Deposit, 100, "USDT"),
+          cash(OperationKind.Buy, -40, "USDT"),
+          cash(OperationKind.Fee, -1, "USDT"),
+          cash(OperationKind.Deposit, 50, "EUR")
+        )
+
+        AccountHoldings.cashOf(operations) must_==
+          Map(Currency("USDT") -> BigDecimal(59), Currency("EUR") -> BigDecimal(50))
+      }
+
+      "leaves out the operations that are not executed" >> {
+        val operations = List(
+          cash(OperationKind.Deposit, 100, "USDT"),
+          cash(OperationKind.Deposit, 7, "USDT", OperationState.Pending),
+          cash(OperationKind.Deposit, 9, "USDT", OperationState.Canceled)
+        )
+
+        AccountHoldings.cashOf(operations) must_== Map(Currency("USDT") -> BigDecimal(100))
+      }
+
+      "gives nothing for no operation" >> {
+        AccountHoldings.cashOf(Nil) must beEmpty
       }
     }
   }

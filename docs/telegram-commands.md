@@ -21,6 +21,14 @@ Package `st.btu.trading.pillar.services.commands` (parsing, router, handlers) an
    stripped (Telegram's legacy `parse_mode=Markdown` would otherwise silently reformat the message
    or reject it with "can't parse entities"), then the text is capped at 4000 characters.
 
+A price in a reply reads at two decimals from 1 up, and below 1 at four significant digits with the
+trailing zeros dropped and never an exponent: `187.50`, `0.1235`, `0.00000823`. A coin priced below
+a cent therefore does not show as `0.00`. This covers the price in `/positions`, `/screen`,
+`/analyze` and `/compare` (the price, the moving averages and the 52-week high and low), the
+price, average cost and fill price in `/paper`, the unit cost in `/lots` and the threshold and
+absolute proximity in `/alert`. Values, cash, totals and percentages read at two decimals, and a
+quantity as its plain digits.
+
 ## Built-in vs. registered handlers
 
 The library ships 27 commands. `TgUpdatesProcessImpl.resource` always builds `PingHandler`; every
@@ -102,7 +110,7 @@ Working normally. Time is: 2026-09-28 14:32:07.
 
 ### `/watchlist`
 
-Usage: `/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM`
+Usage: `/watchlist, /watchlist add SYM (yahoo|tinkoff|binance) (note), or /watchlist rm SYM`
 
 Single-account app: rows are written under a fixed `AccountId` the handler is constructed with, not
 derived from the chat. The ticker is always upper-cased. A watchlist entry has no source of its
@@ -116,12 +124,13 @@ listing shows it.
 AAPL (yahoo) - core position
 SBER (tinkoff, board TQBR)
 VOD (yahoo, symbol VOD.L)
+BTCUSDC (binance)
 MSFT (yahoo) (disabled)
 ```
 (`Watchlist is empty.` if there are none.) Each line names the source the ticker effectively uses:
 the setting it has of its own, or the default source when it has none. For a Tinkoff setting the
 board follows, `default board` when the setting names none; for a Yahoo setting the Yahoo symbol
-follows when it names one.
+follows when it names one; a Binance setting names the source alone.
 
 ```
 /watchlist add aapl core position
@@ -130,13 +139,14 @@ follows when it names one.
 Added AAPL (yahoo) to the watchlist.
 ```
 
-The token right after the symbol is optional and sets the ticker's source: `yahoo` or `tinkoff`,
-matched regardless of case. Without it the ticker's source setting is left as it is, and the reply
-names the source the ticker effectively uses. A token that names neither source is treated as the
-first word of the note instead of being dropped. Asking for the source a ticker is already on keeps
-its board or Yahoo symbol; asking for the other one puts the ticker on it with no board or symbol,
-so `tinkoff` puts a ticker that is on Yahoo on the default board, and `yahoo` puts a ticker that is
-on Tinkoff on Yahoo as given.
+The token right after the symbol is optional and sets the ticker's source: `yahoo`, `tinkoff` or
+`binance`, matched regardless of case. Without it the ticker's source setting is left as it is, and
+the reply names the source the ticker effectively uses. A token that names none of the sources is
+treated as the first word of the note instead of being dropped. Asking for the source a ticker is
+already on keeps its board or Yahoo symbol; asking for another one puts the ticker on it with no
+board or symbol, so `tinkoff` puts a ticker that is on Yahoo on the default board, and `yahoo` puts a
+ticker that is on Tinkoff on Yahoo as given. `binance` reads the ticker as the Binance pair of the
+same symbol, such as `BTCUSDC`, which has neither a board nor a symbol.
 
 ```
 /watchlist add sber tinkoff
@@ -154,6 +164,13 @@ Added SBER (tinkoff, default board) to the watchlist.
 (note is `MOEX blue chip`; `/watchlist` then lists `SBER (tinkoff, default board) - MOEX blue chip`.)
 
 ```
+/watchlist add btcusdc binance
+```
+```
+Added BTCUSDC (binance) to the watchlist.
+```
+
+```
 /watchlist rm AAPL
 ```
 ```
@@ -167,7 +184,7 @@ of the sync, disable its entry through the consumer's own tooling instead of rem
 
 ### `/source`
 
-Usage: `/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), or /source SYM default`
+Usage: `/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), /source SYM binance, or /source SYM default`
 
 Shows or changes the market data source of a ticker. The setting belongs to the ticker, not to an
 account or a watchlist, so it applies everywhere the ticker is used: price-history sync, backtests,
@@ -176,13 +193,16 @@ router is configured with. A board is the broker's class code for a trading venu
 or `CETS`; only Tinkoff has boards. A Yahoo symbol is the code Yahoo Finance knows the instrument
 by, such as `VOD.L` for the broker ticker `VOD`; only Yahoo has symbols. With one set, Yahoo is
 asked for the symbol, while the watchlist, alerts, backtests and the stored bars, dividends and
-metadata keep using the ticker. `/news` still searches Yahoo for the ticker as given.
+metadata keep using the ticker. Binance has neither: a ticker set to `binance` is read as the Binance
+pair of the same symbol, such as `BTCUSDC`, and its prices are in the quote asset of the pair.
+`/news` still searches Yahoo for the ticker as given.
 
 ```
 /source
 ```
 ```
 AAPL - yahoo
+BTCUSDC - binance
 GAZP - tinkoff, default board
 SBER - tinkoff, board TQBR
 VOD - yahoo, symbol VOD.L
@@ -238,6 +258,16 @@ USD000UTSTOM now uses tinkoff, board CETS.
 (`TcsMarketDataConfig.defaultClassCode`) and drops a board it had; the board is upper-cased.
 
 ```
+/source btcusdc binance
+```
+```
+BTCUSDC now uses binance.
+```
+
+`/source SYM binance` takes no board or symbol, and puts a ticker that was on another source on
+Binance.
+
+```
 /source sber default
 ```
 ```
@@ -249,9 +279,9 @@ broker's setting again at the next price-history cycle (see
 does not keep a held ticker on the default source: set that source explicitly instead, as in
 `/source SYM yahoo`.
 
-The ticker is upper-cased, and `yahoo`, `tinkoff` and `default` are matched regardless of case. Any
-other form - an unknown word, more than one board or symbol, words after `default` - replies
-`Usage: ...` and changes nothing. Not tied to an account, unlike `/watchlist`.
+The ticker is upper-cased, and `yahoo`, `tinkoff`, `binance` and `default` are matched regardless of
+case. Any other form - an unknown word, more than one board or symbol, a board or symbol after
+`binance`, words after `default` - replies `Usage: ...` and changes nothing. Not tied to an account, unlike `/watchlist`.
 
 ### `/strategies`
 
@@ -981,8 +1011,8 @@ Usage: `/help - list available commands`
 ```
 ```
 /ping - health check
-/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
-/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), or /source SYM default
+/watchlist, /watchlist add SYM (yahoo|tinkoff|binance) (note), or /watchlist rm SYM
+/source, /source SYM, /source SYM yahoo (SYMBOL), /source SYM tinkoff (BOARD), /source SYM binance, or /source SYM default
 /strategies - list registered strategies
 /backtest strategyId SYM (years, default 2) (params=key:value,key:value), or /backtest strategyId SYM1,SYM2,... (years, default 2)
 /sweep strategyId SYM (years=N, default 2) key=from:to:step (more key=from:to:step) - parameter sweep, top 5 by Sharpe

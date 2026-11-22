@@ -1,16 +1,17 @@
 # Binance
 
-Packages `st.btu.trading.pillar.models.binance` (identifiers, keys, records, errors),
-`gateways.binance` (the REST client and its pacing), `services`
-(`BinanceSyncService`, `BinanceSyncServiceImpl`, `BinanceSyncConfig`), `processes`
-(`BinanceSyncProcess`, `BinanceSyncProcessImpl`) and the storages `BinanceRecordStorage`,
-`BinancePairStorage` and `BinanceMinutePriceStorage`.
+Packages `st.btu.trading.pillar.models.binance` (identifiers, keys, records, balances, errors),
+`gateways.binance` (the REST clients, their pacing and the market data source), `services`
+(`BinanceSyncService`, `BinanceSyncServiceImpl`, `BinanceSyncConfig`, `BinanceReconciler`),
+`processes` (`BinanceSyncProcess`, `BinanceSyncProcessImpl`) and the storages
+`BinanceRecordStorage`, `BinancePairStorage` and `BinanceMinutePriceStorage`.
 
 A Binance spot account is read through Binance's REST API with a key that can read and do nothing
 else. The library stores every record exactly as Binance sent it, translates the records into
 `AccountOperation`s, and so the valuation, the tax services and `/export` cover the account like an
-account at any other broker. The library has no call that places an order, withdraws or transfers,
-and it refuses a key that could.
+account at any other broker. It checks the recorded balances against the ones Binance reports, and
+it prices the coins from Binance's own daily bars. The library has no call that places an order,
+withdraws or transfers, and it refuses a key that could.
 
 Binance's API is not a complete record of an account, which shapes the sync:
 
@@ -63,6 +64,10 @@ A fiat order and a fiat payment each carry no direction of their own, so the dir
 decides the source. A Convert `orderId` exceeds what a double holds, so it is read as the digits
 Binance sent.
 
+Besides the records, each run reads the balances Binance reports, in the spot wallet
+(`GET /api/v3/account`) and the funding wallet (`POST /sapi/v1/asset/get-funding-asset`), to
+compare them with what the records leave (see [Balances](#balances-and-the-reconciliation)).
+
 What the sync does not read: Simple Earn, staking, Binance Pay and P2P, transfers between the
 account's wallets (its spot and funding wallets count as one pool), margin, futures, options, loans
 and the other products, the dust conversions and the distributions of the asset dividend log, and
@@ -71,13 +76,24 @@ recorded.
 
 ## The client
 
-`gateways.binance.BinanceApi[F]` is the port and `BinanceApiImpl` its implementation over sttp
-(`SttpBackend[F, Any]`), one for each key.
+Two ports, over sttp (`SttpBackend[F, Any]`): `gateways.binance.BinanceMarket[F]`, the calls that
+need no key, and `BinanceApi[F]`, which extends it with the calls that read an account.
+`BinanceMarketImpl` is the keyless implementation, one for the process, and `BinanceApiImpl` the
+keyed one, one for each key. Both make their calls through one shared transport, so that pacing,
+retries, the classification of answers and the redaction of secrets exist once. An endpoint is
+public or signed by its type, and the transport sends a signed one only with a signer, so only the
+keyed client, which holds the key, can make a signed call.
 
 ```scala
-trait BinanceApi[F[_]] {
-  def apiRestrictions: F[BinanceKeyPermissions]
+trait BinanceMarket[F[_]] {
   def exchangeInfo: F[List[BinancePair]]
+  def minuteClose(symbol: BinanceSymbol, minute: Instant): F[Option[BigDecimal]]
+  def dailyBars(symbol: BinanceSymbol, from: LocalDate, to: LocalDate): F[List[BinanceDailyBar]]
+  def lastPrice(symbol: BinanceSymbol): F[Option[BigDecimal]]
+}
+
+trait BinanceApi[F[_]] extends BinanceMarket[F] {
+  def apiRestrictions: F[BinanceKeyPermissions]
   def delistSchedule: F[List[BinanceSymbol]]
   def coins: F[Map[BinanceAsset, String]]
   def myTrades(symbol: BinanceSymbol, fromId: BinanceTradeId): F[List[JsonObject]]
@@ -86,7 +102,13 @@ trait BinanceApi[F[_]] {
   def fiatOrders(direction: FiatOrderDirection, from: Instant, to: Instant): F[List[JsonObject]]
   def fiatPayments(direction: FiatPaymentDirection, from: Instant, to: Instant): F[List[JsonObject]]
   def convertTradeFlow(from: Instant, to: Instant): F[List[JsonObject]]
-  def minuteClose(symbol: BinanceSymbol, minute: Instant): F[Option[BigDecimal]]
+  def spotBalances: F[Map[BinanceAsset, BigDecimal]]
+  def fundingBalances: F[Map[BinanceAsset, BigDecimal]]
+}
+
+object BinanceMarketImpl {
+  def create[I[_]: Sync, F[_]: Async](config: BinanceApiConfig, backend: SttpBackend[F, Any],
+                                      ipBuckets: BinanceIpBuckets[F])(implicit logs: Logs[I, F]): I[BinanceMarket[F]]
 }
 
 object BinanceApiImpl {
@@ -96,9 +118,14 @@ object BinanceApiImpl {
 }
 ```
 
-Records come back as the JSON objects Binance sent, so that they are stored as received;
-`exchangeInfo`, `apiRestrictions`, `delistSchedule`, `coins` and `minuteClose` come back as typed
-values. The windows are inclusive at both ends, to the millisecond.
+Records come back as the JSON objects Binance sent, so that they are stored as received; the other
+answers come back as typed values. The windows are inclusive at both ends, to the millisecond.
+`BinanceDailyBar` is one daily bar of a pair, with the UTC day it opens on, its open, high, low and
+close, its volume in the base asset, all as Binance wrote them, and its close time.
+
+The consumer builds one `BinanceIpBuckets` for the process and gives it to `BinanceMarketImpl.create`
+and to `BinanceSyncProcessImpl.resource`, so that every client calling from the address is paced
+together.
 
 | Call | Endpoint | Weight | Notes |
 |---|---|---|---|
@@ -113,13 +140,18 @@ values. The windows are inclusive at both ends, to the millisecond.
 | `fiatPayments` | `/sapi/v1/fiat/payments` | 1 | by `transactionType` (0 buy, 1 sell), paged like fiat orders |
 | `convertTradeFlow` | `/sapi/v1/convert/tradeFlow` | 3,000 per account | `limit` 1,000; a window that answers `moreData` is read again as two halves, down to a single millisecond, which fails |
 | `minuteClose` | `/api/v3/klines` on `data-api.binance.vision` | 2 | the close of the one-minute bar that starts at the minute, none when the pair had no bar or is unknown; needs no key |
+| `dailyBars` | `/api/v3/klines` on `data-api.binance.vision`, interval `1d` | 2 per page | the bars that open on the UTC days from the first to the last, both included, from the start of the first to the last millisecond of the last, 1,000 to a page; the next page starts the day after the last bar, and the reading ends at a page of fewer, or one that brings no day past where it started. A pair Binance does not know fails with `Refused` and code `-1121`; needs no key |
+| `lastPrice` | `/api/v3/ticker/price` on `data-api.binance.vision` | 2 | the price of the latest trade, none for a pair Binance does not know; needs no key |
+| `spotBalances` | `/api/v3/account` | 20 | `omitZeroBalances=true`; the `free` and `locked` amount of each asset added up, an asset with none left out |
+| `fundingBalances` | `POST /sapi/v1/asset/get-funding-asset` | 1, in a bucket of its own per IP address | the `free`, `locked`, `freeze` and `withdrawing` amount of each asset added up, an asset with none left out |
 
 ### Signing
 
-`https://api.binance.com` serves everything signed and `exchangeInfo`; `klines` goes to
-`https://data-api.binance.vision`, which needs no key. A signed request carries the key in
+`https://api.binance.com` serves everything signed and `exchangeInfo`; `klines` and the ticker price
+go to `https://data-api.binance.vision`, which needs no key. A signed request carries the key in
 `X-MBX-APIKEY` and a query of its parameters, then `recvWindow` (10 seconds by default) and
-`timestamp`, then `signature`.
+`timestamp`, then `signature`. A POST, such as the funding wallet's, is signed like a GET and sends
+its signed query string as the query, with no body.
 
 - The query string is built once. Each name and value is percent-encoded from its UTF-8 bytes, with
   RFC 3986's unreserved characters left as they are, as Binance has required of signed requests
@@ -136,19 +168,19 @@ values. The windows are inclusive at both ends, to the millisecond.
 Binance counts request weight per minute, and the client keeps each call's share of a limit before
 the next call of the same bucket:
 
-- `/api/v3` has one bucket of 6,000 a minute per IP address, and `data-api.binance.vision` one of
-  its own.
+- `/api/v3` has one bucket of 6,000 a minute per IP address, shared by the pairs, the trades and the
+  spot account, and `data-api.binance.vision`, the bars and the ticker price, one of its own.
 - Each `/sapi` endpoint has a bucket of its own, "independent" of the others: 12,000 a minute per IP
-  address for the endpoints weighed by IP, 180,000 a minute per account for the ones weighed by
-  account (withdrawals, fiat orders and Convert).
+  address for the endpoints weighed by IP (the funding wallet among them), 180,000 a minute per
+  account for the ones weighed by account (withdrawals, fiat orders and Convert).
 - A call keeps the next call of its bucket waiting for `limitWindow * weight / (limit * budget)`:
   the share of the limit its weight takes, divided by a budget that leaves room for every other
   process on the address. The budgets are 0.5 per IP address and 0.9 per account. A `myTrades` call
   therefore holds its bucket for 0.4 seconds, a withdrawal history for about 6.7 seconds and a fiat
   order history for about 16.7 seconds.
-- The buckets counted per IP address are shared by every account's client, so build one
-  `BinanceIpBuckets` with `BinanceIpBuckets.create` and give it to each client. Each client has its
-  own buckets counted per account.
+- The buckets counted per IP address are shared by every client, the market client and the client of
+  every account, so build one `BinanceIpBuckets` with `BinanceIpBuckets.create` and give it to each
+  client. Each keyed client has its own buckets counted per account.
 
 The client does not read Binance's used-weight headers, and it does not read `Retry-After`, which
 has been seen to say 0.
@@ -166,8 +198,9 @@ has been seen to say 0.
 | `Unreachable(detail)` | no answer came on any attempt |
 
 A 429 is tried again after `rateLimitDelay`, a 5xx and a call that got no answer after `retryDelay`,
-up to `maxAttempts` calls in all. `-1121` on `myTrades` and on `minuteClose` is a pair Binance does
-not know, such as a delisted one, and is an answer and not an error.
+up to `maxAttempts` calls in all. `-1121` on `myTrades`, on `minuteClose` and on `lastPrice` is a pair
+Binance does not know, such as a delisted one, and is an answer and not an error; on `dailyBars` it
+is raised, as the refusal it is.
 
 The query string, the signature and the keys are never logged or put in an error: they are taken
 out of Binance's message and out of the description of a failure, which is built from the cause
@@ -176,6 +209,31 @@ alone, because the exception of the HTTP client carries the request.
 `BinanceApiConfig` holds what differs between deployments, with the defaults of a real
 deployment: `recvWindow` (10 s), `limitWindow` (1 minute), `ipBudget` (0.5), `accountBudget` (0.9),
 `retryDelay` (10 s), `rateLimitDelay` (1 minute) and `maxAttempts` (5).
+
+## Market data
+
+`BinanceMarketDataSource` makes the keyless client a `MarketDataSource` (see
+[`market-data.md`](market-data.md#binance-implementation-binancemarketdatasource)): a ticker set to
+`SourceSetting.Binance` is read as the Binance pair of the same symbol, its daily bars, its last
+price and its description come from `BinanceMarket`, and its prices are in the quote asset of the
+pair. A consumer wires it as the router's Binance adapter:
+
+```scala
+for {
+  market <- BinanceMarketImpl.create[IO, F](config, backend, ipBuckets)
+  binance <- BinanceMarketDataSource.create[IO, F](market)
+  sources = new MarketDataSourcesImpl[F](yahoo, tinkoff, Some(binance), tickerSources, SourceSetting.Yahoo(None))
+} yield sources
+```
+
+While the router serves Binance, the held instruments service sets the ticker of every coin an
+account holds, `BTCUSDC`, to Binance and puts it on the account's watchlist, so that the
+price-history sync reads its bars and the valuation, the tax estimate and `/positions` can price the
+position. The ticker of a coin is its pair with the first price quote that Binance lists (see
+[Recording](#recording)), and the bars are in that quote. A coin whose ticker Binance does not list,
+such as one it has delisted, fails its price sync. The quote is a stablecoin, valued by its own rate
+ticker, which the same service puts on the watchlist (see
+[`market-data.md`](market-data.md#rate-tickers-on-the-watchlist)).
 
 ## The sync
 
@@ -206,11 +264,18 @@ price quote that is not a cash asset and for a negative `rereadDays`.
 ### One run
 
 1. Check the key (see [Setting up the key](#setting-up-the-key)).
-2. Read `exchangeInfo`, the pairs Binance lists, and write the instruments of the coins the
-   rebuild named (see [Rebuilding the translations](#rebuilding-the-translations)).
-3. Read each source other than trades, in the order of the table above, window by window, oldest
+2. Read `exchangeInfo`, the pairs Binance lists.
+3. Read the clock, and then the balances of the spot and the funding wallet. The comparison of
+   those balances with the records is made as of that instant. The coins whose balance differs
+   from what the records stored so far leave, in a way the last comparison did not find, have
+   their pairs read in this run (see
+   [Pairs](#pairs)). Write the instruments of the coins the rebuild named (see
+   [Rebuilding the translations](#rebuilding-the-translations)).
+4. Read each source other than trades, in the order of the table above, window by window, oldest
    first, recording each window before the next is read.
-4. Read the trades.
+5. Read the trades.
+6. Compare the balances with what the records leave now, and raise the alerts (see
+   [Balances and the reconciliation](#balances-and-the-reconciliation)).
 
 Anything that fails ends the run, and the process starts a new one after its interval.
 
@@ -240,13 +305,22 @@ while `exchangeInfo` lists it, since a pair Binance has dropped answers `-1121`.
   `pairsRescanInterval`, which finds a pair the account traded for the first time. The time of the
   last full read is kept in memory, and a full read that fails is made again by the next run.
 - **Any other run** reads the pairs that have stored trades, the pairs of every coin that another
-  record has just brought into the account, and the pairs `delist-schedule` announces, so that a
-  pair is read before Binance drops it.
+  record has just brought into the account, the pairs of every coin whose balance differs from the
+  records in a new way, and the pairs `delist-schedule` announces, so that a pair is read before
+  Binance drops it.
 - **A coin that arrived**: an executed deposit, Convert or card purchase of a coin brings every
   listed pair with that coin as its base or quote into the run. A cash asset brings none: reading
   every USDT pair after a USDT deposit would cost minutes. A record brings its pairs in once for
   as long as the process runs, though the record is read again for `rereadDays`, and a record that
   was pending brings them in once it is executed.
+- **A coin whose balance differs**: a coin, not a cash asset, whose balance at Binance is not what
+  the records stored before the run leave as of the instant the balances were read brings every
+  listed pair with that coin as its base or quote into the run, so that a coin bought on a pair
+  new to the account appears within one interval and not at the next read of every pair. It does so
+  once for a difference: a coin whose difference is the one the last comparison found brings no
+  pair in, and a new trade of the coin changes its balance and so its difference. A difference that
+  no trade explains, such as dust converted into BNB or a reward, therefore costs the coin's pairs
+  once, at 20 request weight each, and once more after a restart, which forgets the last comparison.
 
 ### Prices
 
@@ -293,6 +367,76 @@ network fee that no price values leaves as units at their cost. The alert never 
 notes raised are kept in memory, so a restart raises the ones that still stand once more, and an
 alert that failed to go out is tried again at the next run.
 
+### Balances and the reconciliation
+
+The API is not a complete record of an account, so each run compares what the records leave with the
+balances Binance reports, and raises the difference as a system alert, as `IbkrReconciler` does for
+the positions at Interactive Brokers. `BinanceReconciler` does it; `BinanceSyncProcessImpl.resource`
+builds one from the sync configuration's cash assets and the `AccountOperationStorage` it is given,
+and the services of all the accounts share it.
+
+```scala
+final class BinanceReconciler[F[_]] {
+  def differingCoins(accountId: AccountId, balances: BinanceBalances,
+                     listed: Iterable[BinancePair], asOf: Instant): F[Set[BinanceAsset]]
+  def reconcile(accountId: AccountId, balances: BinanceBalances,
+                listed: Iterable[BinancePair], asOf: Instant): F[Unit]
+}
+
+object BinanceReconciler {
+  def create[I[_]: Sync, F[_]: Sync](operations: AccountOperationStorage[F], systemAlerts: SystemAlerts[F],
+                                     cashAssets: Set[BinanceAsset])(implicit logs: Logs[I, F]): I[BinanceReconciler[F]]
+}
+```
+
+**What is compared.** The balance of an asset is its amount in the spot wallet and in the funding
+wallet added up (`BinanceBalances(spot, funding)`). What the account recorded is what its executed
+operations that occurred before `asOf` leave: for a coin, its position, and for a cash asset, the sum
+of the `amount` of the operations in that currency. An asset is cash when it is in
+`BinanceSyncConfig.cashAssets`, so a fiat currency the account holds has to be there, or it is
+compared with a position it never has. The comparison is exact, an asset on one side only counts as
+zero on the other, and the differences come ordered by asset.
+
+The `LD` tokens that Simple Earn shows in the spot wallet are left out. A spot asset named `LD` and
+another asset is one when no listed pair trades it and a listed pair trades the other asset:
+`LDBTC` is, and `LDO`, a coin of that name, is not.
+
+**Two comparisons in a run.** A run reads `asOf` from the clock and then both balances, right after
+`exchangeInfo`, and compares them twice as of `asOf`, so that a record dated at or after it, which
+the balances may not hold yet, is never counted:
+
+1. Before it reads any record, `differingCoins` gives the coins, never a cash asset, whose balance
+   differs from what the records stored so far leave, by a difference the last `reconcile` of the
+   account did not find. It raises nothing. The run reads the listed pairs of those coins with the
+   other pairs (see [Pairs](#pairs)).
+2. After the trades, `reconcile` compares again with what the run recorded.
+
+A failure to read either wallet ends the run before any record is read.
+
+**Alerts**, raised by `reconcile` and kept in memory per account, so that a restart raises the
+differences that are still there once more:
+
+| Alert | When |
+|---|---|
+| `binance-reconciliation:<account id>` | the balances differ from what the records leave, and the differences are not the ones raised last. The title is `Binance balances differ: account <id>`, and the body names each asset as `<asset>: recorded <amount>, Binance <amount>`, in plain digits without trailing zeros, and the instant `asOf` |
+| `binance-reconciled:<account id>` | the first comparison that finds the balances equal after a `binance-reconciliation` was raised, once. The title is `Binance balances match: account <id>` |
+
+An alert is raised before it is remembered, so one that fails to go out is tried again at the next
+run.
+
+**Expected differences**, until the dust conversions, the rewards and airdrops and the costs of
+coins deposited from elsewhere are read, or the statement is imported:
+
+- dust converted into BNB, and rewards and airdrops credited to the spot wallet;
+- card spending and cashback from the funding wallet, and assets moved into Simple Earn or staking,
+  which no longer show in the spot wallet;
+- trades on a pair Binance delisted before the sync read them;
+- a deposit credited, or a withdrawal still processing, around `asOf`, until the next run.
+
+The funding wallet's call lists the business assets Binance names (Binance Pay, Binance Card, gift
+cards, stock tokens), and whether it shows the balances of P2P is not stated, so an asset held there
+may differ too.
+
 ### Rebuilding the translations
 
 `rebuildTranslations` translates every stored record again with the stored pairs and the stored
@@ -312,8 +456,9 @@ a change to the translation.
 `interval`. The loops run in a `ProcessContext` that names the account. A failure, a refused key
 and an unreadable storage included, is logged and raised as the system alert
 `process-crashed:binance-sync:<account id>` by `ProcessLoop.restarting`, and the loop starts again
-after `interval`; the other accounts go on. `resource` builds one `BinanceIpBuckets` for every
-account, a client and a sync service for each, and the process.
+after `interval`; the other accounts go on. `resource` builds a client and a sync service for each
+account, one reconciler that they share, and the process. The `BinanceIpBuckets` it is given is the
+one the market client and the market data source are paced by too.
 
 ```scala
 object BinanceSyncProcessImpl {
@@ -321,7 +466,8 @@ object BinanceSyncProcessImpl {
     accounts: List[BinanceAccount], config: BinanceSyncConfig, interval: FiniteDuration,
     recordStorage: BinanceRecordStorage[F], pairStorage: BinancePairStorage[F],
     priceStorage: BinanceMinutePriceStorage[F], instrumentStorage: BrokerInstrumentStorage[F],
-    systemAlerts: SystemAlerts[F], crypto: Crypto[F], backend: SttpBackend[F, Any],
+    operationStorage: AccountOperationStorage[F], systemAlerts: SystemAlerts[F], crypto: Crypto[F],
+    backend: SttpBackend[F, Any], ipBuckets: BinanceIpBuckets[F],
     apiConfig: BinanceApiConfig = BinanceApiConfig()
   )(implicit logs: Logs[I, F], WL: WithLocal[F, ProcessContext]): Resource[I, BinanceSyncProcessImpl[F]]
 }
@@ -436,8 +582,8 @@ stores each record's translations, which every reader reads through `AccountOper
 
 - **History** is whatever Binance's API returns. Trades, deposits and withdrawals from before about
   2022-09 are reported missing, and the trades of a pair that was delisted before the sync read it
-  cannot be read. The sync does not yet compare the recorded holdings with Binance's balances, so
-  nothing tells of a gap.
+  cannot be read. The reconciliation shows the gap as a difference between the recorded and the
+  reported balance (see [Balances](#balances-and-the-reconciliation)).
 - **Operations with no source in the API** are not recorded: card spending and cashback, referral
   rebates, token swaps, renames such as LUNA to LUNC, and the stablecoin conversions of 2022 and
   2023, among others.
@@ -457,15 +603,22 @@ stores each record's translations, which every reader reads through `AccountOper
 - **Lots carry no currency**, so a coin bought in one currency, such as EUR, and sold in another,
   such as USDT, has its cost counted as if it were in the currency of the sale (see
   [`tax.md`](tax.md#trades-between-coins-and-fees-paid-in-a-coin)).
-- **The held coins stay off the watchlists** until a source serves their tickers (see
-  [`market-data.md`](market-data.md#held-instruments-on-the-watchlist)), so their positions are
-  priced only where a price history is stored for the ticker.
+- **A coin priced by another source**: a held coin joins the watchlist as a Binance ticker only while
+  the router serves Binance (see
+  [`market-data.md`](market-data.md#held-instruments-on-the-watchlist)); without it the coin stays
+  off the watchlists, and its position is priced only where a price history is stored for the
+  ticker.
+- **Whether the funding wallet's call covers every balance** is not confirmed: Binance lists the
+  business assets it supports (Pay, Card, gift cards, stock tokens) and does not say whether P2P
+  balances show.
 
 ## System alerts
 
 | Alert | When |
 |---|---|
 | `binance-unvalued:<account id>` | records that no price could value, once each in a process |
+| `binance-reconciliation:<account id>` | the balances Binance reports differ from what the records leave, and the differences changed since the last alert |
+| `binance-reconciled:<account id>` | the balances matched again after a `binance-reconciliation`, once |
 | `process-crashed:binance-sync:<account id>` | the account's loop failed, a refused key included |
 
 See [`alerts.md`](alerts.md#hooks-that-raise-system-alerts).

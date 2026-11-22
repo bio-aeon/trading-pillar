@@ -93,6 +93,37 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "prints the price of a coin below a cent in its significant digits" >> {
+        // 1,000,000 coins at 0.00000823 are worth 8.23, 0.82% of 1000
+        val snapshot = PositionSnapshot(
+          today,
+          rub,
+          Vector(
+            position(
+              "F1",
+              Some("SHIB"),
+              1000000,
+              Some(BigDecimal("0.000008230000000000")),
+              Some(BigDecimal("8.23")),
+              Some(BigDecimal("0.00823"))
+            )
+          ),
+          cash = BigDecimal(991.77),
+          total = BigDecimal(1000),
+          dayChange = BigDecimal(0),
+          unpriced = 0
+        )
+        for {
+          tgGateway <- Fakes.tgGateway()
+          valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =
+            Map(accountId -> IO.pure(snapshot))
+          )
+          handler = new PositionsHandler[IO](tgGateway, valuations, accountId)
+          _ <- handler.handle(chatId, Nil)
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must contain("SHIB 1000000 @ 0.00000823 = 8.23 (0.82%)")
+      }
+
       "marks an unpriced position and falls back to the instrument id when there is no ticker" >> {
         val snapshot = PositionSnapshot(
           today,

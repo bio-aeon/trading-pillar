@@ -5,22 +5,17 @@ import st.btu.trading.pillar.models.binance.*
 
 import java.time.Instant
 
-/** Reads a Binance account's history and the market data that values it, through Binance's REST API
-  * with a key that can read and do nothing else. No call here places an order, moves funds or
-  * changes the account.
+/** Reads a Binance account's history and balances, and the market data that values them, through
+  * Binance's REST API with a key that can read and do nothing else. No call here places an order,
+  * moves funds or changes the account.
   *
   * Every call can fail with a [[BinanceError]]. Records come back as the JSON objects Binance sent,
   * so that they are stored as received; the other answers come back as typed values.
   */
-trait BinanceApi[F[_]] {
+trait BinanceApi[F[_]] extends BinanceMarket[F] {
 
   /** What the API key may do, as Binance reports it for the key. */
   def apiRestrictions: F[BinanceKeyPermissions]
-
-  /** Every spot pair Binance lists, in any trading status, with its base and quote asset. A pair
-    * that Binance has delisted leaves the answer, and its trades can no longer be read.
-    */
-  def exchangeInfo: F[List[BinancePair]]
 
   /** The pairs Binance has announced it will delist. */
   def delistSchedule: F[List[BinanceSymbol]]
@@ -58,10 +53,15 @@ trait BinanceApi[F[_]] {
     */
   def convertTradeFlow(from: Instant, to: Instant): F[List[JsonObject]]
 
-  /** The close of the one-minute bar of `symbol` that starts at `minute`, or `None` when the pair
-    * had no bar in that minute or Binance does not know it. Needs no key.
+  /** The amount of each asset in the account's spot wallet, free and locked together, leaving out
+    * an asset with no balance.
     */
-  def minuteClose(symbol: BinanceSymbol, minute: Instant): F[Option[BigDecimal]]
+  def spotBalances: F[Map[BinanceAsset, BigDecimal]]
+
+  /** The amount of each asset in the account's funding wallet, free, locked, frozen and withdrawing
+    * together, leaving out an asset with no balance.
+    */
+  def fundingBalances: F[Map[BinanceAsset, BigDecimal]]
 }
 
 object BinanceApi {

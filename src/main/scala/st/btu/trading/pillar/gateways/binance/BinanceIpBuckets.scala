@@ -6,7 +6,8 @@ import cats.syntax.traverse.*
 import st.btu.trading.pillar.gateways.CallPacer
 
 /** The pacing of the calls that Binance limits per IP address, which every client calling from the
-  * same address shares: build one and give it to the client of each account.
+  * same address shares: build one and give it to the market client and to the client of each
+  * account.
   */
 final class BinanceIpBuckets[F[_]] private (private[binance] val pacers: Map[Bucket, CallPacer[F]])
 

@@ -22,15 +22,15 @@ object AnalysisFormat {
     "1m return" -> (a => pct(a.return1m)),
     "3m return" -> (a => pct(a.return3m)),
     "1y return" -> (a => pct(a.return1y)),
-    "SMA50" -> (a => dec(a.sma50)),
+    "SMA50" -> (a => price(a.sma50)),
     "Above SMA50" -> (a => bool(a.aboveSma50)),
-    "SMA200" -> (a => dec(a.sma200)),
+    "SMA200" -> (a => price(a.sma200)),
     "Above SMA200" -> (a => bool(a.aboveSma200)),
     "RSI14" -> (a => dec(a.rsi14)),
     "ATR14" -> (a => pct(a.atr14Pct)),
-    "52w high" -> (a => dec(a.high52w)),
+    "52w high" -> (a => price(a.high52w)),
     "Dist. to 52w high" -> (a => pct(a.distanceToHigh52wPct)),
-    "52w low" -> (a => dec(a.low52w)),
+    "52w low" -> (a => price(a.low52w)),
     "Dist. to 52w low" -> (a => pct(a.distanceToLow52wPct)),
     "Dividends (12m)" -> (a => Replies.scaled(a.dividends12m)),
     "Dividend yield" -> (a => pct(a.dividendYieldPct))
@@ -49,10 +49,13 @@ object AnalysisFormat {
     (header :: lines).mkString("\n")
   }
 
-  private def money(price: Option[BigDecimal], currency: Option[Currency]): String =
-    price.fold(NotAvailable)(p =>
-      currency.fold(Replies.scaled(p))(c => s"${Replies.scaled(p)} ${c.value}")
-    )
+  private def money(v: Option[BigDecimal], currency: Option[Currency]): String =
+    v.fold(NotAvailable) { p =>
+      val shown = Replies.price(p)
+      currency.fold(shown)(c => s"$shown ${c.value}")
+    }
+
+  private def price(v: Option[BigDecimal]): String = v.fold(NotAvailable)(Replies.price)
 
   private def dec(v: Option[BigDecimal]): String = v.fold(NotAvailable)(Replies.scaled)
 

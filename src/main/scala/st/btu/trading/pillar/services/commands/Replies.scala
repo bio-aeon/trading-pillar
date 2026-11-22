@@ -4,8 +4,10 @@ import cats.Functor
 import cats.effect.Clock
 import st.btu.trading.pillar.data.UtcClock
 import st.btu.trading.pillar.gateways.TgGateway
+import st.btu.trading.pillar.models.market.Prices
 import st.btu.trading.pillar.models.tg
 
+import java.math.{MathContext, RoundingMode as JRoundingMode}
 import java.time.format.DateTimeFormatter
 import java.time.{LocalDate, ZonedDateTime}
 import scala.math.BigDecimal.RoundingMode
@@ -15,7 +17,8 @@ import scala.math.BigDecimal.RoundingMode
 // handlers use for their own snapshot instant (delegating to data.UtcClock, also used by the
 // background processes), a BigDecimal scaled to 2 decimals for display, that same figure read as
 // a 0-1 fraction and rendered as a percentage, a BigDecimal as its plain decimal digits for a
-// quantity, and the yyyy-MM-dd HH:mm:ss timestamp format a few handlers show a date in.
+// quantity, a price in the digits a coin priced below a cent needs, and the yyyy-MM-dd HH:mm:ss
+// timestamp format a few handlers show a date in.
 private[pillar] object Replies {
 
   val TimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -29,9 +32,19 @@ private[pillar] object Replies {
 
   def scaled(v: BigDecimal): String = v.setScale(2, RoundingMode.HALF_UP).toString
 
+  private val PriceDigits = MathContext(4, JRoundingMode.HALF_UP)
+
+  // A price is `scaled` from 1 up. Below 1 it keeps four significant digits without trailing
+  // zeros, and never an exponent, so that a coin priced at 0.00000823 does not show as 0.00.
+  // Values, cash and totals are not prices and stay `scaled`.
+  def price(v: BigDecimal): String = {
+    val shown = if (v.abs >= 1) v else v.round(PriceDigits)
+    if (shown.abs >= 1) scaled(shown) else Prices.plain(shown)
+  }
+
   // The digits of v without trailing zeros or an exponent: 0.5, 10 and 0.00000012 print as
   // "0.5", "10" and "0.00000012" whatever scale the value carries.
-  def plain(v: BigDecimal): String = v.bigDecimal.stripTrailingZeros.toPlainString
+  def plain(v: BigDecimal): String = Prices.plain(v)
 
   // v is a 0-1 fraction, e.g. pct(0.05) == "5.00%". A figure already expressed in percentage
   // points (Rebalancer's Drift, StockAnalysis's *Pct fields) formats with `scaled` directly

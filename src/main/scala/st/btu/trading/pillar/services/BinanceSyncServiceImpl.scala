@@ -35,6 +35,7 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
   priceStorage: BinanceMinutePriceStorage[F],
   instruments: BrokerInstrumentStorage[F],
   systemAlerts: SystemAlerts[F],
+  reconciler: BinanceReconciler[F],
   memory: BinanceSyncServiceImpl.Memory[F]
 )(implicit F: Sync[F], clock: Clock[F])
     extends BinanceSyncService[F] {
@@ -86,11 +87,15 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
       _ <- info"Syncing the Binance account ${accountId.value}"
       _ <- checkKey
       pairs <- api.exchangeInfo
+      asOf <- clock.realTimeInstant
+      balances <- readBalances
       names <- Ref.of[F, Option[Map[BinanceAsset, String]]](None)
       run = Run(now, pairs.map(pair => pair.symbol -> pair).toMap, names)
+      differing <- reconciler.differingCoins(accountId, balances, run.listed.values, asOf)
       _ <- describeRebuilt(run)
       received <- feeds.flatTraverse(readFeed(run, _))
-      _ <- readTrades(run, received)
+      _ <- readTrades(run, received, differing)
+      _ <- reconciler.reconcile(accountId, balances, run.listed.values, asOf)
     } yield ()
 
   def rebuildTranslations: F[Unit] =
@@ -144,6 +149,12 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
       )
     } yield ()
 
+  private def readBalances: F[BinanceBalances] =
+    for {
+      spot <- api.spotBalances
+      funding <- api.fundingBalances
+    } yield BinanceBalances(spot, funding)
+
   // Reads the source window by window, up to the start of the run, recording each window before the
   // next is read. Gives the coins the records brought into the account.
   private def readFeed(run: Run, feed: Feed): F[List[Received]] =
@@ -188,7 +199,7 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
           .map(key => Received(operation.ref, BinanceAsset(key.id.value)))
     }.flatten
 
-  private def readTrades(run: Run, brought: List[Received]): F[Unit] =
+  private def readTrades(run: Run, brought: List[Received], differing: Set[BinanceAsset]): F[Unit] =
     for {
       known <- records.lastTradeIds(accountId)
       scanDue <- fullScanDue(run.now)
@@ -196,7 +207,7 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
       arrived = brought.filterNot(b => counted(b.ref)).map(_.asset).toSet
       symbols <-
         if (scanDue) F.pure(run.listed.keySet)
-        else announced.map(known.keySet ++ pairsOf(run, arrived) ++ _)
+        else announced.map(known.keySet ++ pairsOf(run, arrived ++ differing) ++ _)
       wanted = symbols.filter(run.listed.contains).toList.sorted
       _ <- info"Reading the trades of account ${accountId.value} on ${wanted.size} pairs"
       _ <- wanted.traverse_(symbol => readPair(run, symbol, known.get(symbol)))
@@ -413,7 +424,8 @@ object BinanceSyncServiceImpl {
     pairs: BinancePairStorage[F],
     prices: BinanceMinutePriceStorage[F],
     instruments: BrokerInstrumentStorage[F],
-    systemAlerts: SystemAlerts[F]
+    systemAlerts: SystemAlerts[F],
+    reconciler: BinanceReconciler[F]
   )(implicit logs: Logs[I, F], clock: Clock[F]): I[BinanceSyncService[F]] =
     for {
       cursors <- Ref.in[I, F, Map[BinanceSource, Instant]](Map.empty)
@@ -434,6 +446,7 @@ object BinanceSyncServiceImpl {
             prices,
             instruments,
             systemAlerts,
+            reconciler,
             Memory(cursors, lastScan, raised, counted, rebuilt)
           )(using log, Sync[F], clock)
         )

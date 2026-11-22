@@ -46,7 +46,7 @@ final class PositionsHandler[F[_]: Monad: Clock](
   private def formatPosition(p: PositionValue): String =
     p.value match {
       case Some(value) =>
-        val price = p.price.fold("?")(Replies.scaled)
+        val price = p.price.fold("?")(Replies.price)
         val weight = p.weight.fold("?")(w => Replies.pct(w))
         s"${label(p)} ${Replies.plain(p.quantity)} @ $price = ${Replies.scaled(value)} ($weight)"
       case None =>

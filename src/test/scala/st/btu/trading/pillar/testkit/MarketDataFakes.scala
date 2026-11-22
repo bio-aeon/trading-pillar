@@ -184,11 +184,12 @@ object MarketDataFakes {
   def marketDataSources(
     yahoo: Option[YahooSymbols[IO]] = None,
     tinkoff: Option[TinkoffBoards[IO]] = None,
+    binance: Option[MarketDataSource[IO]] = None,
     settings: List[TickerSource] = List.empty,
     default: SourceSetting = SourceSetting.Yahoo(None)
   ): IO[MarketDataSources[IO]] =
     tickerSourceStorage(settings).map(storage =>
-      new MarketDataSourcesImpl[IO](yahoo, tinkoff, storage, default)
+      new MarketDataSourcesImpl[IO](yahoo, tinkoff, binance, storage, default)
     )
 
   trait FakeTickerSourceStorage extends TickerSourceStorage[IO]

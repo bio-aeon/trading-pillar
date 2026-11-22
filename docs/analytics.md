@@ -212,6 +212,10 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    bucket that nets to exactly `0` is never flagged (nothing was actually excluded). The
    rate-ticker convention and the "latest close on or before a date" lookup itself live in
    `analytics.FxRates`, shared with `tax.TaxServiceImpl` - see [`tax.md`](tax.md#fx-conversion).
+   A rate ticker has bars only once it is on a watchlist, so the held instruments step puts the
+   rate tickers of the account's currencies there, and the price-history sync reads their bars (see
+   [`market-data.md`](market-data.md#rate-tickers-on-the-watchlist)). A currency whose rate ticker
+   has no bars, because its source cannot serve it, stays unpriced as above.
 8. **Unpriced vs. unmapped**: an instrument that executed operations changed the position of, and
    that `InstrumentDirectory.byKey` does not know, goes in `unmappedInstruments` (checked once per
    `dailySeries` call, independent of any one date) and its position never contributes to `value`.

@@ -480,6 +480,7 @@ class PriceHistorySyncServiceSpec extends Specification with CatsEffect {
           sources = new MarketDataSourcesImpl[IO](
             Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
             None,
+            None,
             brokenSettings,
             SourceSetting.Yahoo(None)
           )

@@ -38,6 +38,7 @@ lazy val root = (project in file("."))
       specs2Core % Test,
       specs2Scalacheck % Test,
       catsEffectTestingSpecs2 % Test,
+      catsEffectTestkit % Test,
       sttpCatsEffect % Test
     )
   )

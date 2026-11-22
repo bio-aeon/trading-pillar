@@ -19,6 +19,7 @@ class MarketDataSourcesSpec extends Specification with CatsEffect {
   private val vod = Ticker("VOD")
   private val cets = ClassCode("CETS")
   private val vodL = YahooSymbol("VOD.L")
+  private val btc = Ticker("BTCUSDC")
 
   private val tradingDay = LocalDate.of(2024, 1, 10)
 
@@ -101,6 +102,14 @@ class MarketDataSourcesSpec extends Specification with CatsEffect {
         } yield (sources.serves(Source.Yahoo), sources.serves(Source.Tinkoff)) must_== (true, true)
       }
 
+      "is true for Binance only while its adapter is wired" >> {
+        for {
+          binance <- MarketDataFakes.marketDataSource(SourceSetting.Binance)
+          wired <- MarketDataFakes.marketDataSources(binance = Some(binance))
+          unwired <- MarketDataFakes.marketDataSources(yahoo = Some(MarketDataFakes.symbolViews))
+        } yield (wired.serves(Source.Binance), unwired.serves(Source.Binance)) must_== (true, false)
+      }
+
       "is false for a source with no adapter wired" >> {
         for {
           onlyYahoo <- MarketDataFakes.marketDataSources(yahoo = Some(MarketDataFakes.symbolViews))
@@ -169,6 +178,19 @@ class MarketDataSourcesSpec extends Specification with CatsEffect {
         } yield resolved.origin must_== SourceSetting.Tinkoff(None)
       }
 
+      "serves a ticker set to Binance with the Binance adapter, whichever the others are" >> {
+        for {
+          binance <- MarketDataFakes.marketDataSource(SourceSetting.Binance)
+          sources <- MarketDataFakes.marketDataSources(
+            yahoo = Some(MarketDataFakes.symbolViews),
+            tinkoff = Some(MarketDataFakes.boardViews),
+            binance = Some(binance),
+            settings = List(TickerSource(btc, SourceSetting.Binance))
+          )
+          resolved <- sources.forTicker(btc)
+        } yield resolved must_== binance
+      }
+
       "serves a ticker with no stored setting according to the default" >> {
         for {
           yahoo <- MarketDataFakes.marketDataSource()
@@ -222,6 +244,16 @@ class MarketDataSourcesSpec extends Specification with CatsEffect {
               source must_== Source.Tinkoff
               error.getMessage must contain(Source.Tinkoff.value)
           }
+        }
+
+        "fails naming the source when the ticker is set to Binance and no Binance adapter is wired" >> {
+          for {
+            sources <- MarketDataFakes.marketDataSources(
+              yahoo = Some(MarketDataFakes.symbolViews),
+              settings = List(TickerSource(btc, SourceSetting.Binance))
+            )
+            result <- sources.forTicker(btc).attempt
+          } yield result must beLeft[Throwable](MarketDataError.SourceNotConfigured(Source.Binance))
         }
 
         "fails naming the source when the default is Yahoo and no Yahoo adapter is wired" >> {

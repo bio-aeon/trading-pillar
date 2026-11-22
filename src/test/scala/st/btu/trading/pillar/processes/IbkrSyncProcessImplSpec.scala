@@ -27,7 +27,7 @@ import st.btu.trading.pillar.testkit.AlertFakes.FakeSystemAlerts
 import st.btu.trading.pillar.testkit.AnalyticsFakes.accountOperation
 import st.btu.trading.pillar.testkit.IbkrFakes.{element, statementXml}
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
-import st.btu.trading.pillar.testkit.{AlertFakes, AnalyticsFakes, IbkrFakes, MarketDataFakes}
+import st.btu.trading.pillar.testkit.*
 import tofu.WithLocal
 import tofu.generate.GenUUID
 import tofu.logging.{Logging, Logs}
@@ -268,6 +268,7 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
     "resource" >> {
       "reads every account through one client, so that their calls are paced together" >> {
         val spacing = 300.millis
+        val interval = 1.hour
         val ibkrAccounts = List(
           IbkrAccount(first, IbkrAccountId("U1111111"), FlexQueryId("q1")),
           IbkrAccount(second, IbkrAccountId("U2222222"), FlexQueryId("q2"))
@@ -277,7 +278,7 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
           "q1" -> statementXml("U1111111", "20250101", "20251231", dividend("c1")),
           "q2" -> statementXml("U2222222", "20250101", "20251231", dividend("c2"))
         )
-        for {
+        VirtualTime.run(for {
           h <- harness
           times <- Ref.of[IO, List[FiniteDuration]](List.empty)
           storage <- IbkrFakes.statementStorage()
@@ -294,17 +295,13 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
             implicit val genUUID: GenUUID[IO] = GenUUID.syncGenUUID[IO]
             implicit val logs: Logs[IO, IO] =
               Logs.const[IO, IO](Logging.Make.plain[IO].forService[IbkrSyncProcess[IO]])
-            def untilBothStored: IO[Unit] =
-              storage.storedRows
-                .map(_.map(_.accountId).toSet == Set(first, second))
-                .ifM(IO.unit, IO.sleep(PollEvery) >> untilBothStored)
             IbkrSyncProcessImpl
               .resource[IO, IO](
                 ibkrAccounts,
                 FlexToken("token"),
                 // From 1 January four years back, which is never after yesterday.
                 IbkrSyncConfig(windowDays = 5000),
-                1.hour,
+                interval,
                 storage,
                 storage,
                 instruments,
@@ -312,19 +309,17 @@ class IbkrSyncProcessImplSpec extends Specification with CatsEffect {
                 backend,
                 FlexWebServiceConfig(minSpacing = spacing)
               )
-              .use(process => IO.race(process.run.compile.drain, untilBothStored))
-              .timeout(Patience)
+              // long enough for the first sync of every account, and not for a second
+              .use(_.run.interruptAfter(interval / 2).compile.drain)
           }
-          calls <- times.get.map(_.sorted)
+          calls <- times.get
           raised <- h.alerts.raised
         } yield {
-          calls.size must_== 4
-          // Apart in time, where a client of its own for each account would send the two requests
-          // together.
-          calls.zip(calls.drop(1)).map { case (earlier, later) => later - earlier }.min must
-            be_>=(spacing / 2)
+          // two calls for each account, a spacing apart: a client of its own for each account
+          // would send the first two together
+          VirtualTime.gaps(calls) must_== List.fill(3)(spacing)
           raised must beEmpty
-        }
+        })
       }
     }
   }

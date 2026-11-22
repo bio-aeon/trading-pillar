@@ -14,10 +14,11 @@ trading-pillar gives you:
 
 - **Telegram bot plumbing** - long-polling updates, a command router, and a small set of built-in
   commands, extensible with your own `CommandHandler`s.
-- **Market data** - a `MarketDataSource` gateway abstraction with a Yahoo Finance implementation
-  (via [yfinance4s](https://github.com/coinductive/yfinance4s)), plus a price-history sync process
-  that backfills and incrementally updates OHLCV bars for a watchlist, to which it adds the
-  instruments each account holds.
+- **Market data** - a `MarketDataSource` gateway abstraction with Yahoo Finance
+  (via [yfinance4s](https://github.com/coinductive/yfinance4s)), Tinkoff Invest and Binance
+  implementations, plus a price-history sync process that backfills and incrementally updates OHLCV
+  bars for a watchlist, to which it adds the instruments each account holds and the rate tickers of
+  their currencies.
 - **A pluggable strategy API** - a `Strategy` trait with a pure `onBar` decision function, a
   `StrategyRegistry` consumers register their own strategies into at startup, and a handful of
   reference strategies shipped as examples/tests only.
@@ -31,7 +32,7 @@ trading-pillar gives you:
   transactions, transfers and corporate actions, with the open positions the recorded positions
   are checked against) and Binance (a spot account's trades, deposits and withdrawals, fiat
   orders, card purchases and Convert orders, read through the REST API with a read-only key whose
-  permissions are checked on every run).
+  permissions are checked on every run, and whose balances the recorded ones are checked against).
 
 None of this is a runnable application by itself. A consumer application wires these pieces
 together, implements the storage traits (see [`docs/storage-contracts.md`](docs/storage-contracts.md))
@@ -44,9 +45,9 @@ strategy is registered.
 |---|---|
 | `models.domain` | `Command`, `Broker`, `AccountOperation` (an account's operation in terms shared by every broker) with `OperationKind`, `OperationState`, `OperationGroup` (the broker's id for an event several operations belong to, such as the legs of a corporate action) and `InstrumentKey`, `TcsPortfolioOperation` (Tinkoff's own record) with `TcsOperationRecord`, opaque types (`AccountId`, `Figi`, ...) |
 | `models` | `Account` |
-| `models.market` | `Ticker`, `YahooSymbol`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board or Yahoo symbol), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
+| `models.market` | `Ticker`, `YahooSymbol`, `Bar`, `Quote`, `InstrumentInfo`, `Source` (Yahoo/Tinkoff/Binance), `SourceSetting`/`TickerSource` (the source a ticker uses, with its Tinkoff board or Yahoo symbol, or Binance, which has neither), `BrokerInstrument`, `WatchlistItem`, `MarketDataError` |
 | `models.tg`, `models.tcs`, `models.ibkr`, `models.binance` | Telegram, Tinkoff, Interactive Brokers (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, ...) and Binance (`BinanceAccount`, `ApiKey`, `SecretKey`, `BinanceRecord`, `BinanceSource`, `BinancePair`, ...) wire/domain types |
-| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (the id a broker gives an instrument to the instrument) with `RoutingInstrumentDirectory` choosing each broker's directory and `StoredInstrumentDirectory` answering from storage alone for a broker with no lookup, such as Binance, `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC), `gateways.ibkr` (`FlexWebService` for Interactive Brokers' Flex Web Service, `IbkrStatementParser`, `IbkrInstrumentDirectory`), `gateways.binance` (`BinanceApi` for Binance's REST API with its signing and per-bucket pacing) |
+| `gateways` | `TgGateway` (Telegram Bot API) and `CapturingTgGateway` (keeps the replies instead of sending them), `MarketDataSource` (per-broker data) with `MarketDataSources`/`MarketDataSourcesImpl` routing a ticker to the source its setting selects, `InstrumentDirectory` (the id a broker gives an instrument to the instrument) with `RoutingInstrumentDirectory` choosing each broker's directory and `StoredInstrumentDirectory` answering from storage alone for a broker with no lookup, such as Binance, `gateways.yahoo` (Yahoo Finance via yfinance4s), `gateways.tcs` (Tinkoff Invest market data and instrument directory, gRPC), `gateways.ibkr` (`FlexWebService` for Interactive Brokers' Flex Web Service, `IbkrStatementParser`, `IbkrInstrumentDirectory`), `gateways.binance` (`BinanceMarket` for the calls of Binance's REST API that need no key and `BinanceApi` for the ones that read an account, with their signing and per-bucket pacing, and `BinanceMarketDataSource`, Binance's `MarketDataSource`) |
 | `gateways.screener` | `Screener`, `YahooScreener`, `PredefinedScreen` (gainers/losers/most-active) - backs `/screen` |
 | `gateways.news` | `NewsSource`, `YahooNewsSource`, `NewsItem` - per-ticker headlines, backs `/news` |
 | `facades` | `TcsFacade` - high-level Tinkoff gRPC API (operations) |
@@ -59,7 +60,7 @@ strategy is registered.
 | `alerts` | `Alert`, `AlertKind`, `AlertRule` (`PriceCrossed`, `StrategyBinding`), `Proximity`, `QuietHours`, `DeliveryPolicy`, `AlertEngine`, `AlertDispatcher`, `LiveStrategyService`, `AlertProcess`, `TelegramAlertChannel`, `FailureTracker` (consecutive-failure counter), `SystemAlerts` (infrastructure alerts, e.g. a crashed process loop or a sync failure) |
 | `paper` | `PaperBroker`/`PaperBrokerImpl`, `PaperAccount`/`PaperPosition`/`PaperOrder`, `PaperBrokerConfig` - simulated order execution for a paper-mode `StrategyBinding`; see [`docs/paper-trading.md`](docs/paper-trading.md) |
 | `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching, carried through splits, mergers, spin-offs and stock dividends), `CorporateActionAllocation` (the share of a spin-off parent's cost a new instrument takes), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
-| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements, reading the legs of each corporate action together), `IbkrReconciler` (compares an Interactive Brokers account's recorded positions with the Open Positions IB reports and raises a system alert while they differ), `BinanceSyncService` (the same for a Binance account's records, with the pure `BinanceTranslation` and the one-minute prices that value trades between coins), `HeldInstrumentsService` (puts the instruments an account holds on its watchlist, with the source setting its broker's pricing rule gives; Binance's coins stay off it) |
+| `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements, reading the legs of each corporate action together), `IbkrReconciler` (compares an Interactive Brokers account's recorded positions with the Open Positions IB reports and raises a system alert while they differ), `BinanceSyncService` (the same for a Binance account's records, with the pure `BinanceTranslation` and the one-minute prices that value trades between coins), `BinanceReconciler` (compares a Binance account's recorded balances with the ones Binance reports and raises a system alert while they differ), `HeldInstrumentsService` (puts the instruments an account holds on its watchlist, with the source setting its broker's pricing rule gives, and the rate tickers of its currencies) |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
 | `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
 | `processes` | `TgUpdatesProcess`, `TcsPortfolioSyncProcess` (one loop per Tinkoff account it is given), `IbkrSyncProcess` (one loop per Interactive Brokers account, each reconciling its positions after a sync), `BinanceSyncProcess` (one loop per Binance account), `PriceHistorySyncProcess` (adds the held instruments to the watchlists, then syncs them), `AnalyticsProcess` (recomputes portfolio valuations, saves portfolio snapshots and dispatches allocation-drift alerts) - FS2 streams a consumer runs under `parJoin` |
@@ -121,12 +122,14 @@ import st.btu.trading.pillar.alerts.{AlertDispatcherImpl, FailureTrackerImpl, Sy
 import st.btu.trading.pillar.gateways.{InstrumentDirectory, MarketDataSourcesImpl}
 import st.btu.trading.pillar.gateways.yahoo.{YahooApi, YahooMarketDataSource}
 import st.btu.trading.pillar.gateways.yahoo.YahooMarketDataSource.YahooConfig
+import st.btu.trading.pillar.models.domain.Currency
 import st.btu.trading.pillar.models.market.SourceSetting
 import st.btu.trading.pillar.processes.PriceHistorySyncProcessImpl
 import st.btu.trading.pillar.services.{
   HeldInstrumentsServiceImpl,
   PriceHistorySyncConfig,
-  PriceHistorySyncServiceImpl
+  PriceHistorySyncServiceImpl,
+  RateTickerConfig
 }
 import st.btu.trading.pillar.storages.*
 
@@ -162,9 +165,11 @@ def wireSync(
       yahooSource <- YahooMarketDataSource.create[IO, F](yahooApi)
       // Routes each ticker to the adapter its stored source setting selects, and a ticker with no
       // setting to Yahoo. Pass the Tinkoff adapter (a TcsMarketDataSource, for MOEX symbols) as
-      // the second argument once it is wired.
+      // the second argument and the Binance one (a BinanceMarketDataSource, for coins) as the
+      // third once they are wired.
       sources = new MarketDataSourcesImpl[F](
         Some(yahooSource),
+        None,
         None,
         tickerSourceStorage,
         SourceSetting.Yahoo(None)
@@ -185,14 +190,16 @@ def wireSync(
       )
       // Puts the instruments each account holds on its watchlist, and gives a ticker a source
       // setting only for a source `sources` serves: no Tinkoff adapter is wired above, so a held
-      // Tinkoff instrument gets no setting of its own.
+      // Tinkoff instrument gets no setting of its own. It also puts the rate ticker of each
+      // currency the accounts use, other than the base currency, on their watchlists.
       heldInstruments <- HeldInstrumentsServiceImpl.create[IO, F](
         accountStorage,
         accountOperationStorage,
         watchlistStorage,
         tickerSourceStorage,
         instrumentDirectory,
-        sources
+        sources,
+        RateTickerConfig(Set(Currency("USD")))
       )
       syncProcess <- PriceHistorySyncProcessImpl.create[IO, F](
         watchlistStorage,
@@ -215,7 +222,9 @@ serves it is a setting of the ticker, kept in `TickerSourceStorage` (e.g. by `/s
 and Yahoo here when none is stored. Every cycle also starts by adding the instruments the accounts
 hold to their watchlists, each priced from the source its broker's rule gives while the router
 serves it (Yahoo for an Interactive Brokers instrument; Tinkoff, on the instrument's own board, for
-a Tinkoff one once a Tinkoff adapter is wired into the router). A sync failure raises a
+a Tinkoff one once a Tinkoff adapter is wired into the router; Binance for a Binance coin once a
+Binance adapter is), and the rate tickers that convert the currencies of their operations into the
+base currency. A sync failure raises a
 `sync-failed:<ticker>` system alert after 3 consecutive failures, and a matching
 `sync-recovered:<ticker>` once it succeeds again.
 
@@ -408,9 +417,10 @@ trading-pillar change the consumer needs to see.
   production. The shapes of IB's corporate action rows come from IB's documentation and from rows
   others published, and some are unconfirmed - see
   [`docs/ibkr.md`](docs/ibkr.md#limits-and-unconfirmed-points).
-- Held instruments joining the watchlists, for Tinkoff and Interactive Brokers: implemented and
-  covered by the test suite, but not yet used in production. Binance's coins stay off the
-  watchlists until a market data source serves their tickers.
+- Held instruments joining the watchlists, for Tinkoff, Interactive Brokers and Binance, with the
+  rate tickers of their currencies: implemented and covered by the test suite, but not yet used in
+  production. A Binance coin joins the watchlist as a Binance ticker only while the router has a
+  Binance adapter.
 - Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategies and
   backtesting (multi-symbol runs, parameter sweeps, walk-forward validation), alerts and system
   alerts, analytics, dividends, paper trading and the tax-estimate report: implemented and covered
@@ -422,7 +432,8 @@ trading-pillar change the consumer needs to see.
   through the HTTP routes in memory; not yet used in production.
 - The records sync for each Binance account it is given, with the translation of every record into
   `AccountOperation`s and the one-minute prices that value trades between coins and fees paid in
-  BNB: implemented and covered by the test suite, but not yet used in production. The REST client,
-  its signing and its pacing have run only against stubbed answers written from Binance's
-  documentation, so a real answer may still differ from them - see
-  [`docs/binance.md`](docs/binance.md#limits-and-unconfirmed-points).
+  BNB, the comparison of the recorded balances with the ones Binance reports, and Binance as a
+  market data source for the coins' prices: implemented and covered by the test suite, but not yet
+  used in production. The REST clients, their signing and their pacing have run only against
+  stubbed answers written from Binance's documentation, so a real answer may still differ from
+  them - see [`docs/binance.md`](docs/binance.md#limits-and-unconfirmed-points).

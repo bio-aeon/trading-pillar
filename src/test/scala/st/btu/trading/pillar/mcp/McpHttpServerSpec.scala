@@ -45,6 +45,7 @@ class McpHttpServerSpec extends Specification with CatsEffect {
       sources = new MarketDataSourcesImpl[IO](
         Some(MarketDataFakes.yahooSymbolsOver(yahoo)),
         None,
+        None,
         settings,
         SourceSetting.Yahoo(None)
       )
@@ -221,7 +222,7 @@ class McpHttpServerSpec extends Specification with CatsEffect {
                               |Source setting: yahoo (none set for this ticker, so the default)
                               |Adapter: wired (yahoo)
                               |Watchlist: not on the watchlist
-                              |Stored bars, latest date: yahoo none, tinkoff none
+                              |Stored bars, latest date: yahoo none, tinkoff none, binance none
                               |Metadata: none stored""".stripMargin.asJson
                 )
               )

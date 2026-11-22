@@ -73,6 +73,19 @@ class LotsHandlerSpec extends Specification with CatsEffect {
           s"0.3 @ 800.00 acquired $today (0 day(s))\n20 @ 5.00 acquired $today (0 day(s))"
       }
 
+      "prints a unit cost below a cent in its significant digits" >> {
+        val coin = Lot(instrumentKey("F1"), 1000000, BigDecimal("0.000008230000000000"), today)
+        for {
+          tgGateway <- Fakes.tgGateway()
+          taxService <- TaxFakes.taxService(openLotsByTicker =
+            Map((accountId, Ticker("SHIB")) -> List(coin))
+          )
+          handler = new LotsHandler[IO](tgGateway, taxService, accountId)
+          _ <- handler.handle(chatId, List("shib"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must_== s"1000000 @ 0.00000823 acquired $today (0 day(s))"
+      }
+
       "replies with 'No open lots for SYM.' when the ticker has none" >> {
         for {
           tgGateway <- Fakes.tgGateway()

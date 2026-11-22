@@ -18,6 +18,8 @@ class CompareHandlerSpec extends Specification with CatsEffect {
   private def analysisWithPrice(ticker: Ticker, price: BigDecimal): StockAnalysis =
     StockAnalysis.empty(ticker).copy(price = Some(price), currency = Some(Currency("USD")))
 
+  private val shib = Ticker("SHIB")
+
   "CompareHandler" >> {
     "handle" >> {
 
@@ -52,6 +54,21 @@ class CompareHandlerSpec extends Specification with CatsEffect {
           // Fields neither side has are still shown, n/a on both sides.
           msg must contain("RSI14: n/a | n/a")
         }
+      }
+
+      "prints a price below a cent in its significant digits beside a share's" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          analysis <- AnalysisFakes.analysisService(
+            Map(
+              shib -> IO.pure(analysisWithPrice(shib, BigDecimal("0.000008230000000000"))),
+              msft -> IO.pure(analysisWithPrice(msft, BigDecimal("300.00")))
+            )
+          )
+          handler = new CompareHandler[IO](tgGateway, analysis)
+          _ <- handler.handle(chatId, List("shib", "msft"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must contain("Price: 0.00000823 USD | 300.00 USD")
       }
     }
   }

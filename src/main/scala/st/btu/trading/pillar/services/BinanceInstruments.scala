@@ -1,6 +1,7 @@
 package st.btu.trading.pillar.services
 
 import cats.data.NonEmptyList
+import st.btu.trading.pillar.gateways.binance.BinanceMarketDataSource
 import st.btu.trading.pillar.models.binance.{BinanceAsset, BinanceSymbol}
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.{BrokerInstrument, Ticker}
@@ -10,9 +11,6 @@ import java.time.ZonedDateTime
 // The coins that operations name, as the broker instruments the directory answers from. Binance
 // has no lookup of a coin by its code, so each coin is described from what the sync knows.
 private[services] object BinanceInstruments {
-
-  // The type every Binance instrument has.
-  private val CoinType = "crypto"
 
   /** The Binance coins that `operations` name. */
   def coinsOf(operations: Iterable[AccountOperation]): Set[BinanceAsset] =
@@ -51,7 +49,7 @@ private[services] object BinanceInstruments {
         Ticker(BinanceSymbol.of(coin, quote).value),
         None,
         names.getOrElse(coin, coin.value),
-        CoinType,
+        BinanceMarketDataSource.CoinType,
         Currency(quote.value),
         updatedAt
       )

@@ -73,14 +73,14 @@ final class PaperHandler[F[_]: Monad](
       case (position, Some(price)) =>
         val value = BigDecimal(position.quantity) * price
         val pnl = (price - position.averageCost) * BigDecimal(position.quantity)
-        s"${position.ticker.value} ${position.quantity} @ ${Replies.scaled(price)} (avg ${Replies
-            .scaled(position.averageCost)}) = ${Replies.scaled(value)}, P&L ${Replies.scaled(pnl)}"
+        s"${position.ticker.value} ${position.quantity} @ ${Replies.price(price)} (avg ${Replies
+            .price(position.averageCost)}) = ${Replies.scaled(value)}, P&L ${Replies.scaled(pnl)}"
       case (position, None) =>
-        s"${position.ticker.value} ${position.quantity} (avg ${Replies.scaled(position.averageCost)}, unpriced)"
+        s"${position.ticker.value} ${position.quantity} (avg ${Replies.price(position.averageCost)}, unpriced)"
     }
 
   private def formatOrder(order: PaperOrder): String = {
-    val price = order.fillPrice.fold("-")(Replies.scaled)
+    val price = order.fillPrice.fold("-")(Replies.price)
     val reason = order.reason.getOrElse("-")
     s"${order.status.value} ${order.side.name} ${order.quantity} @ $price ($reason)"
   }

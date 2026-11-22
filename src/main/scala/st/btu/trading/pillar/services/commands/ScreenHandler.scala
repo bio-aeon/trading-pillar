@@ -42,7 +42,7 @@ final class ScreenHandler[F[_]: Monad](tgGateway: TgGateway[F], screener: Screen
 
   private def formatRow(r: ScreenerRow): String = {
     val name = r.name.getOrElse("?")
-    val price = r.price.fold("?")(Replies.scaled)
+    val price = r.price.fold("?")(Replies.price)
     val change = r.changePct.fold("?")(c => s"${Replies.scaled(c)}%")
     s"${r.ticker.value} $name $price $change"
   }

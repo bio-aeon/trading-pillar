@@ -1,5 +1,6 @@
 package st.btu.trading.pillar.alerts
 
+import st.btu.trading.pillar.models.market.Prices.plain
 import st.btu.trading.pillar.models.market.Quote
 
 /** Pure evaluation of a [[PriceCrossed]] rule against a pair of consecutive quotes. Detecting a
@@ -79,8 +80,8 @@ object AlertEngine {
       symbol = Some(rule.ticker),
       kind = AlertKind.TargetHit,
       title = s"${rule.ticker.value} target hit",
-      body =
-        s"${rule.ticker.value} ${directionWord(rule.direction)} ${rule.threshold} (now ${current.price})",
+      body = s"${rule.ticker.value} ${directionWord(rule.direction)} ${plain(rule.threshold)} " +
+        s"(now ${plain(current.price)})",
       triggerValue = Some(current.price),
       at = current.asOf
     )
@@ -91,8 +92,8 @@ object AlertEngine {
       symbol = Some(rule.ticker),
       kind = AlertKind.PreTarget,
       title = s"${rule.ticker.value} approaching target",
-      body =
-        s"${rule.ticker.value} at ${current.price}, ${distance.abs} away from ${rule.threshold}",
+      body = s"${rule.ticker.value} at ${plain(current.price)}, ${plain(distance.abs)} away " +
+        s"from ${plain(rule.threshold)}",
       triggerValue = Some(current.price),
       at = current.asOf
     )

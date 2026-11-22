@@ -2,6 +2,8 @@ package st.btu.trading.pillar.gateways.binance
 
 import cats.Functor
 import cats.syntax.functor.*
+import sttp.model.Uri
+import sttp.model.Uri.QuerySegment
 import st.btu.trading.pillar.models.binance.SecretKey
 import st.btu.trading.pillar.security.Crypto
 
@@ -36,6 +38,12 @@ private[binance] object BinanceQuery {
     parameters
       .map { case (name, value) => s"${percentEncode(name)}=${percentEncode(value)}" }
       .mkString("&")
+
+  /** `uri` with `query` as its query, sent as it is given: sttp would encode a query it is given in
+    * pieces its own way, and Binance refuses a signature over another encoding.
+    */
+  def withQuery(uri: Uri, query: String): Uri =
+    if (query.isEmpty) uri else uri.copy(querySegments = List(QuerySegment.Plain(query, identity)))
 
   /** The encoded query of `parameters` followed by `&signature=` and the HMAC-SHA256 of the encoded
     * query, in lower-case hexadecimal, made with `secretKey`.

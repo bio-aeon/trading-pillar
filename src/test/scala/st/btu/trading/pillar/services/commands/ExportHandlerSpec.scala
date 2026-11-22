@@ -216,6 +216,44 @@ class ExportHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "writes the valuation figures without trailing zeros, whatever scale they carry" >> {
+        val point = ValuationPoint(
+          LocalDate.of(2024, 1, 15),
+          BigDecimal("1000.500000000000000000"),
+          BigDecimal("900.000000"),
+          BigDecimal("0.000000")
+        )
+        for {
+          pair <- handlerWith(valuations = Vector(point))
+          (handler, tgGateway) = pair
+          _ <- handler.handle(chatId, List("valuations", "2024"))
+          docs <- tgGateway.sentDocuments
+        } yield csvOf(docs.head) must contain("2024-01-15,1000.5,900,0")
+      }
+
+      "writes a dividend amount without trailing zeros, whatever scale it carries" >> {
+        val dividend = DividendEvent(
+          Ticker("AAPL"),
+          LocalDate.of(2024, 6, 1),
+          BigDecimal("0.240000000000000000"),
+          Some(usd),
+          Source.Yahoo
+        )
+        val watchlistItem = WatchlistItem(
+          accountId,
+          Ticker("AAPL"),
+          enabled = true,
+          note = None,
+          createdAt = ZonedDateTime.now(ZoneOffset.UTC)
+        )
+        for {
+          pair <- handlerWith(dividends = List(dividend), watchlist = List(watchlistItem))
+          (handler, tgGateway) = pair
+          _ <- handler.handle(chatId, List("dividends", "2024"))
+          docs <- tgGateway.sentDocuments
+        } yield csvOf(docs.head) must contain("AAPL,2024-06-01,0.24,USD")
+      }
+
       "exports dividends of the year for the account's watchlist tickers only" >> {
         val aaplDividend =
           DividendEvent(Ticker("AAPL"), LocalDate.of(2024, 6, 1), 1.5, Some(usd), Source.Yahoo)

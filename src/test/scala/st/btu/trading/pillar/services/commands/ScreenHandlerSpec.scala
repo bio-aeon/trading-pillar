@@ -58,6 +58,17 @@ class ScreenHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "shows a price below a cent in its significant digits" >> {
+        val coin = row(symbol = "SHIB", price = Some(BigDecimal("0.000008230000000000")))
+        for {
+          tgGateway <- Fakes.tgGateway()
+          screener <- ScreenerFakes.screener(Map(PredefinedScreen.Gainers -> IO.pure(List(coin))))
+          handler = new ScreenHandler[IO](tgGateway, screener)
+          _ <- handler.handle(chatId, List("gainers"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message must_== "SHIB Apple Inc. 0.00000823 2.34%"
+      }
+
       "defaults the count to 10" >> {
         for {
           tgGateway <- Fakes.tgGateway()

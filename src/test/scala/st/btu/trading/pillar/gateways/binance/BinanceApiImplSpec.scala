@@ -1,26 +1,26 @@
 package st.btu.trading.pillar.gateways.binance
 
+import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
-import cats.effect.{IO, Ref}
 import cats.syntax.parallel.*
 import cats.syntax.traverse.*
 import io.circe.{Json, JsonObject}
 import org.specs2.mutable.Specification
 import org.specs2.specification.core.Fragments
-import sttp.client3.testing.SttpBackendStub
-import sttp.client3.impl.cats.implicits.*
-import sttp.client3.{Response, SttpClientException, UriContext, basicRequest}
+import sttp.client3.{SttpClientException, UriContext, basicRequest}
 import sttp.model.StatusCode
 import st.btu.trading.pillar.models.binance.*
 import st.btu.trading.pillar.security.{Bouncy, CryptoImpl}
-import st.btu.trading.pillar.testkit.BinanceFakes.*
-import st.btu.trading.pillar.testkit.LogFakes
+import st.btu.trading.pillar.testkit.BinanceFakes.{Call as _, *}
+import st.btu.trading.pillar.testkit.BinanceHttpFakes.*
+import st.btu.trading.pillar.testkit.{LogFakes, VirtualTime}
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import tofu.logging.{Logging, Logs}
 
 import java.io.IOException
-import java.net.{ConnectException, URLDecoder}
+import java.net.ConnectException
 import java.nio.charset.StandardCharsets
+import java.time.LocalDate
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import scala.concurrent.duration.*
@@ -43,52 +43,6 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
     maxAttempts = 3
   )
 
-  private val ApiHost = "api.binance.com"
-  private val MarketHost = "data-api.binance.vision"
-
-  // What the server was asked, with the time the call arrived and how many calls to the path there
-  // had been, this one included.
-  private final case class Call(
-    host: String,
-    path: String,
-    query: String,
-    key: Option[String],
-    at: FiniteDuration,
-    number: Int
-  ) {
-
-    // The parameters as the server reads them, the signature included.
-    def params: Map[String, String] =
-      query
-        .split("&")
-        .filter(_.nonEmpty)
-        .map { pair =>
-          val Array(name, value) = pair.split("=", 2)
-          URLDecoder.decode(name, StandardCharsets.UTF_8) ->
-            URLDecoder.decode(value, StandardCharsets.UTF_8)
-        }
-        .toMap
-
-    // The query that was signed: all of it up to the signature.
-    def signedQuery: String = query.substring(0, query.lastIndexOf("&signature="))
-
-    def signature: String = query.substring(query.lastIndexOf("&signature=") + "&signature=".length)
-  }
-
-  private sealed trait Reply
-
-  private final case class Responds(body: String, status: StatusCode = StatusCode.Ok) extends Reply
-
-  // The call fails with `failure`, as it does when the HTTP client cannot reach the server.
-  private final case class Breaks(failure: Exception) extends Reply
-
-  private def answer(body: String): Reply = Responds(body)
-
-  private def refusal(code: Int, message: String, status: StatusCode = StatusCode.BadRequest) =
-    Responds(s"""{"code":$code,"msg":"$message"}""", status)
-
-  private def statusOf(code: Int): StatusCode = StatusCode.unsafeApply(code)
-
   // The signature that an independent implementation makes of the query, which is what Binance
   // checks the request against.
   private def hmacOf(query: String): String = {
@@ -107,7 +61,7 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
     def callsTo(path: String): IO[List[Call]] = calls.map(_.filter(_.path == path))
   }
 
-  // Builds a client over a backend that answers each call with what `respond` makes of it, and the
+  // Builds a client over a server that answers each call with what `respond` makes of it, and the
   // call to `/api/v3/time` with the clock of a server that is `offsets` milliseconds ahead of this
   // one, the next offset after each call and the last again after that.
   private def fixture(
@@ -119,38 +73,17 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
   ): IO[Fixture] = {
     implicit val logs: Logs[IO, IO] = Logs.const[IO, IO](logging)
     for {
-      calls <- Ref.of[IO, List[Call]](List.empty)
+      http <- server(offsets, respond)
       ipBuckets <- sharing.fold(BinanceIpBuckets.create[IO, IO])(IO.pure)
-      backend = SttpBackendStub[IO, Any](implicitly).whenAnyRequest.thenRespondF { request =>
-        val path = "/" + request.uri.path.mkString("/")
-        val text = request.uri.toString
-        for {
-          at <- IO.monotonic
-          call <- calls.modify { seen =>
-            val number = seen.count(_.path == path) + 1
-            val made = Call(
-              request.uri.host.getOrElse(""),
-              path,
-              text.split("\\?", 2).lift(1).getOrElse(""),
-              request.header("X-MBX-APIKEY"),
-              at,
-              number
-            )
-            (seen :+ made, made)
-          }
-          reply <-
-            if (path == "/api/v3/time") {
-              val offset = offsets.lift(call.number - 1).getOrElse(offsets.last)
-              IO.realTime.map(now => answer(s"""{"serverTime":${now.toMillis + offset}}"""))
-            } else IO.pure(respond(call))
-          response <- reply match {
-            case Responds(body, status) => IO.pure(Response(body, status))
-            case Breaks(failure) => IO.raiseError[Response[String]](failure)
-          }
-        } yield response
-      }
-      api <- BinanceApiImpl.create[IO, IO](apiKey, secretKey, config, crypto, backend, ipBuckets)
-    } yield Fixture(api, calls.get, ipBuckets)
+      api <- BinanceApiImpl.create[IO, IO](
+        apiKey,
+        secretKey,
+        config,
+        crypto,
+        http.backend,
+        ipBuckets
+      )
+    } yield Fixture(api, http.calls, ipBuckets)
   }
 
   private def array(objects: Seq[JsonObject]): String =
@@ -164,6 +97,8 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
     (1 to count).toList.map(i => deposit(s"d$i", "BTC", "0.1", time))
 
   private val MyTrades = "/api/v3/myTrades"
+  private val SpotAccount = "/api/v3/account"
+  private val TickerPrice = "/api/v3/ticker/price"
   private val Time = "/api/v3/time"
   private val Restrictions = "/sapi/v1/account/apiRestrictions"
   private val Deposits = "/sapi/v1/capital/deposit/hisrec"
@@ -211,16 +146,13 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
       }
 
       "move the timestamp by the offset to Binance's clock" >> {
-        for {
+        // the server is 5 seconds ahead
+        VirtualTime.run(for {
           f <- fixture(offsets = List(5000L))
           _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))
           calls <- f.callsTo(MyTrades)
           now <- IO.realTime.map(_.toMillis)
-        } yield {
-          val stamped = calls.head.params("timestamp").toLong
-          // the server is 5 seconds ahead; the call was made within the last few of this test
-          (stamped - now) must beBetween(4000L, 5500L)
-        }
+        } yield calls.head.params("timestamp").toLong - now must_== 5000L)
       }
 
       "read the offset once, however many calls are made" >> {
@@ -235,7 +167,7 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
 
       "read the offset again when Binance refuses the timestamp, and try again with the new one" >> {
         val outside = "Timestamp for this request is outside of the recvWindow."
-        for {
+        VirtualTime.run(for {
           f <- fixture(
             offsets = List(5000L, 9000L),
             respond = call => if (call.number == 1) refusal(-1021, outside) else answer("[]")
@@ -247,8 +179,8 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
         } yield {
           trades must beEmpty
           paths must_== List(Time, MyTrades, Time, MyTrades)
-          (calls(1).params("timestamp").toLong - now) must beBetween(8000L, 9500L)
-        }
+          calls(1).params("timestamp").toLong - now must_== 9000L
+        })
       }
 
       "refuse the timestamp for good when Binance keeps refusing it after one new reading" >> {
@@ -275,6 +207,28 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
         } yield {
           calls.map(_.key) must_== List(None, None)
           calls.map(_.host) must_== List(ApiHost, MarketHost)
+          calls.exists(_.query.contains("signature")) must beFalse
+        }
+      }
+
+      "reach the market data host for the daily bars and the last price, with no key either" >> {
+        for {
+          f <- fixture(respond =
+            call =>
+              if (call.path == TickerPrice)
+                answer("""{"symbol":"BTCUSDC","price":"43251.01"}""")
+              else answer("[]")
+          )
+          _ <- f.api.dailyBars(
+            symbol("BTCUSDC"),
+            LocalDate.of(2026, 3, 9),
+            LocalDate.of(2026, 3, 10)
+          )
+          _ <- f.api.lastPrice(symbol("BTCUSDC"))
+          calls <- f.calls
+        } yield {
+          calls.map(_.host) must_== List(MarketHost, MarketHost)
+          calls.map(_.key) must_== List(None, None)
           calls.exists(_.query.contains("signature")) must beFalse
         }
       }
@@ -609,6 +563,105 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
       }
     }
 
+    "spotBalances" >> {
+      val body =
+        """{"makerCommission":15,"canTrade":true,"balances":[
+          |{"asset":"BTC","free":"0.50000000","locked":"0.25000000"},
+          |{"asset":"ETH","free":"0.00000000","locked":"0.00000000"},
+          |{"asset":"USDT","free":"100.5","locked":"0"}],"permissions":["SPOT"],"uid":354937868}""".stripMargin
+
+      "gives the free and the locked amount of each asset together, leaving out an asset with none" >> {
+        for {
+          f <- fixture(respond = _ => answer(body))
+          balances <- f.api.spotBalances
+        } yield balances must_== Map(
+          asset("BTC") -> BigDecimal("0.75"),
+          asset("USDT") -> BigDecimal("100.5")
+        )
+      }
+
+      "is a signed read of the spot account that asks to omit the zero balances" >> {
+        for {
+          f <- fixture(respond = _ => answer(body))
+          _ <- f.api.spotBalances
+          calls <- f.callsTo(SpotAccount)
+        } yield {
+          val call = calls.head
+          call.host must_== ApiHost
+          call.method must_== "GET"
+          call.key must beSome("api-key-0123")
+          call.params("omitZeroBalances") must_== "true"
+          call.signature must_== hmacOf(call.signedQuery)
+        }
+      }
+
+      "fails when the answer has no balances" >> {
+        for {
+          f <- fixture(respond = _ => answer("""{"canTrade":true}"""))
+          failure <- f.api.spotBalances.attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+
+      "fails when an amount is no number" >> {
+        for {
+          f <- fixture(respond =
+            _ => answer("""{"balances":[{"asset":"BTC","free":"plenty","locked":"0"}]}""")
+          )
+          failure <- f.api.spotBalances.attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+    }
+
+    "fundingBalances" >> {
+      val body =
+        """[{"asset":"USDT","free":"10","locked":"1","freeze":"0.5","withdrawing":"0.25",
+          |"btcValuation":"0.0001"},
+          |{"asset":"BNB","free":"0","locked":"0","freeze":"0","withdrawing":"0"}]""".stripMargin
+
+      "gives the free, locked, frozen and withdrawing amount of each asset together, leaving out an asset with none" >> {
+        for {
+          f <- fixture(respond = _ => answer(body))
+          balances <- f.api.fundingBalances
+        } yield balances must_== Map(asset("USDT") -> BigDecimal("11.75"))
+      }
+
+      "gives nothing when the wallet holds nothing" >> {
+        for {
+          f <- fixture(respond = _ => answer("[]"))
+          balances <- f.api.fundingBalances
+        } yield balances must beEmpty
+      }
+
+      "is a POST that sends its signed query string as the query, with no body" >> {
+        for {
+          f <- fixture(respond = _ => answer(body))
+          _ <- f.api.fundingBalances
+          calls <- f.callsTo("/sapi/v1/asset/get-funding-asset")
+        } yield {
+          val call = calls.head
+          call.host must_== ApiHost
+          call.method must_== "POST"
+          call.hasBody must beFalse
+          call.key must beSome("api-key-0123")
+          call.params.keySet must contain(allOf("recvWindow", "timestamp", "signature"))
+          call.signature must_== hmacOf(call.signedQuery)
+        }
+      }
+
+      "fails when the answer is not a list" >> {
+        for {
+          f <- fixture(respond = _ => answer("""{"asset":"USDT"}"""))
+          failure <- f.api.fundingBalances.attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+    }
+
     "refusals" >> {
       "carry Binance's code and message" >> {
         for {
@@ -677,8 +730,8 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
       }
 
       "waits longer after 429 than after a server error" >> {
-        val config = fast.copy(retryDelay = 1.milli, rateLimitDelay = 300.millis)
-        for {
+        val config = fast.copy(retryDelay = 20.millis, rateLimitDelay = 300.millis)
+        VirtualTime.run(for {
           f <- fixture(
             config,
             respond = call =>
@@ -690,11 +743,7 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
           )
           _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))
           times <- f.callsTo(MyTrades).map(_.map(_.at))
-          gaps = times.zip(times.tail).map { case (earlier, later) => later - earlier }
-        } yield {
-          gaps.head must be_>=(250.millis)
-          gaps(1) must be_<(250.millis)
-        }
+        } yield VirtualTime.gaps(times) must_== List(config.rateLimitDelay, config.retryDelay))
       }
 
       "server errors" >> {
@@ -879,73 +928,107 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
     }
 
     "pacing" >> {
-      // A call of weight 20 on /api/v3 has 15 s * 20 / (6000 * 0.5) = 100 ms to itself.
+      // A call of weight 20 on /api/v3 has 15 s * 20 / (6000 * 0.5) = 100 ms to itself, and a call
+      // of weight 2 on the market data host 10 ms.
       val spacing = 100.millis
-      val tolerance = 30.millis
+      val marketSpacing = 10.millis
       val paced = fast.copy(limitWindow = 15.seconds)
-
-      def gaps(times: List[FiniteDuration]): List[FiniteDuration] = {
-        val sorted = times.sorted
-        sorted.zip(sorted.drop(1)).map { case (earlier, later) => later - earlier }
-      }
 
       def tradeCalls(f: Fixture): IO[List[FiniteDuration]] =
         f.callsTo(MyTrades).map(_.map(_.at))
 
+      def readsAccount(call: Call): Reply =
+        if (call.path == SpotAccount) answer("""{"balances":[]}""") else answer("[]")
+
       "keeps the calls of one bucket apart by the share of its limit that their weight takes" >> {
-        for {
+        VirtualTime.run(for {
           f <- fixture(paced)
-          _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0)) // warms the code paths up
-          warmedUp <- tradeCalls(f).map(_.size)
+          _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0)) // reads the offset
+          before <- tradeCalls(f).map(_.size)
           _ <- List.fill(3)(f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))).sequence
-          times <- tradeCalls(f).map(_.drop(warmedUp))
-        } yield gaps(times).forall(_ >= spacing - tolerance) must beTrue
+          times <- tradeCalls(f).map(_.drop(before))
+        } yield VirtualTime.gaps(times) must_== List(spacing, spacing))
       }
 
       "gives a call of less weight a shorter wait" >> {
-        // A bar, of weight 2 on the market data host, has 10 ms to itself.
-        for {
+        VirtualTime.run(for {
           f <- fixture(paced)
-          _ <- f.api.minuteClose(symbol("BTCUSDC"), at("2026-03-10T12:34:00Z"))
-          started <- IO.monotonic
           _ <- List
             .fill(5)(f.api.minuteClose(symbol("BTCUSDC"), at("2026-03-10T12:34:00Z")))
             .sequence
-          elapsed <- IO.monotonic.map(_ - started)
-        } yield elapsed must be_<(4 * spacing)
+          bars <- f.callsTo(Klines).map(_.map(_.at))
+        } yield VirtualTime.gaps(bars) must_== List.fill(4)(marketSpacing))
       }
 
       "keeps the calls of different buckets from waiting for one another" >> {
-        for {
+        VirtualTime.run(for {
           f <- fixture(paced)
           _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))
           started <- IO.monotonic
           _ <- f.api.deposits(from, to)
           waited <- IO.monotonic.map(_ - started)
-        } yield waited must be_<(spacing)
+        } yield waited must_== Duration.Zero)
       }
 
       "shares the limits per IP address between the clients of every account" >> {
-        for {
+        VirtualTime.run(for {
           first <- fixture(paced)
           second <- fixture(paced, sharing = Some(first.ipBuckets))
-          // these read the offsets to Binance's clock and warm the code paths up
+          // these read the offsets to Binance's clock
           _ <- first.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))
           _ <- second.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))
           _ <- List(first, second).parTraverse(_.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0)))
           times <- List(first, second).flatTraverse(tradeCalls(_).map(_.drop(1)))
-        } yield gaps(times).forall(_ >= spacing - tolerance) must beTrue
+        } yield VirtualTime.gaps(times) must_== List(spacing))
+      }
+
+      "keeps a read of the spot account apart from the other calls of /api/v3 by its weight of 20" >> {
+        VirtualTime.run(for {
+          f <- fixture(paced, respond = readsAccount)
+          _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0)) // reads the offset
+          _ <- f.api.spotBalances
+          _ <- f.api.myTrades(symbol("BTCUSDT"), BinanceTradeId(0))
+          account <- f.callsTo(SpotAccount).map(_.map(_.at))
+          trades <- tradeCalls(f)
+        } yield trades.last - account.head must_== spacing)
+      }
+
+      "gives the funding wallet a bucket of its own, so that it does not wait for the spot account" >> {
+        VirtualTime.run(for {
+          f <- fixture(paced, respond = readsAccount)
+          _ <- f.api.spotBalances
+          started <- IO.monotonic
+          _ <- f.api.fundingBalances
+          waited <- IO.monotonic.map(_ - started)
+        } yield waited must_== Duration.Zero)
+      }
+
+      "keeps the ticker price and the bars apart by the weight they share the market data bucket by" >> {
+        VirtualTime.run(for {
+          f <- fixture(
+            paced,
+            respond = call =>
+              if (call.path == TickerPrice) answer("""{"symbol":"A","price":"1"}""")
+              else answer("[]")
+          )
+          _ <- f.api.lastPrice(symbol("BTCUSDC"))
+          _ <- f.api.minuteClose(symbol("BTCUSDC"), at("2026-03-10T12:34:00Z"))
+          price <- f.callsTo(TickerPrice).map(_.map(_.at))
+          bars <- f.callsTo(Klines).map(_.map(_.at))
+        } yield bars.head - price.head must_== marketSpacing)
       }
 
       "counts the limits per account for each account on its own" >> {
         // A withdrawal history has 15 s * 18000 / (180000 * 0.9) = 1.7 s to itself.
-        for {
+        VirtualTime.run(for {
           first <- fixture(paced)
           second <- fixture(paced, sharing = Some(first.ipBuckets))
-          started <- IO.monotonic
+          // these read the offsets to Binance's clock
+          _ <- first.api.deposits(from, to)
+          _ <- second.api.deposits(from, to)
           _ <- List(first, second).parTraverse(_.api.withdrawals(from, to))
-          elapsed <- IO.monotonic.map(_ - started)
-        } yield elapsed must be_<(1.second)
+          times <- List(first, second).flatTraverse(_.callsTo(Withdrawals).map(_.map(_.at)))
+        } yield VirtualTime.gaps(times) must_== List(Duration.Zero))
       }
     }
   }

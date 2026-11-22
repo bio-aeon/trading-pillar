@@ -22,13 +22,7 @@ private[mcp] final case class TickerStatus(
 private[mcp] object TickerStatus {
 
   // The sources a ticker can be set to, hence the ones bars can be stored from.
-  val BarSources: List[Source] = Source.values.toList.filter(servesBars)
-
-  private def servesBars(source: Source): Boolean =
-    source match {
-      case Source.Yahoo | Source.Tinkoff => true
-      case Source.Binance => false
-    }
+  val BarSources: List[Source] = Source.values.toList
 
   def render(status: TickerStatus): String =
     List(
@@ -101,7 +95,8 @@ private[mcp] object TickerStatus {
 
   private def settingOrigin(setting: SourceSetting): Option[SourceSetting] =
     setting match {
-      case SourceSetting.Yahoo(_) | SourceSetting.Tinkoff(Some(_)) => Some(setting)
+      case SourceSetting.Yahoo(_) | SourceSetting.Tinkoff(Some(_)) | SourceSetting.Binance =>
+        Some(setting)
       case SourceSetting.Tinkoff(None) => None
     }
 

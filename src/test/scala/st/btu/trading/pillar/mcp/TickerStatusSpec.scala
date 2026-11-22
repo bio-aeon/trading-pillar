@@ -10,6 +10,7 @@ class TickerStatusSpec extends Specification {
 
   private val ticker = Ticker("SBER")
   private val vod = Ticker("VOD")
+  private val btc = Ticker("BTCUSDC")
   private val tqbr = ClassCode("TQBR")
   private val cets = ClassCode("CETS")
   private val vodL = YahooSymbol("VOD.L")
@@ -83,6 +84,13 @@ class TickerStatusSpec extends Specification {
             render(status(SourceSetting.Tinkoff(Some(tqbr)), stored = true)),
             "Source setting"
           ) must_== "Source setting: tinkoff, board TQBR (set for this ticker)"
+        }
+
+        "names a Binance setting by its source alone" >> {
+          line(
+            render(status(SourceSetting.Binance, stored = true, forTicker = btc)),
+            "Source setting"
+          ) must_== "Source setting: binance (set for this ticker)"
         }
 
         "names the Yahoo symbol of a Yahoo setting" >> {
@@ -305,6 +313,19 @@ class TickerStatusSpec extends Specification {
               status(
                 SourceSetting.Tinkoff(None),
                 metadata = Some(metadataFrom(SourceSetting.Tinkoff(Some(tqbr))))
+              )
+            ),
+            "Metadata origin"
+          ) must_== "Metadata origin: matches the source setting"
+        }
+
+        "matches a Binance setting when no adapter is wired, since the setting is the origin" >> {
+          line(
+            render(
+              status(
+                SourceSetting.Binance,
+                metadata = Some(metadataFrom(SourceSetting.Binance, forTicker = btc)),
+                forTicker = btc
               )
             ),
             "Metadata origin"

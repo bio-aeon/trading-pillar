@@ -9,7 +9,8 @@ import st.btu.trading.pillar.models.binance.*
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.{BrokerInstrument, Ticker}
 import st.btu.trading.pillar.storages.BrokerInstrumentStorage
-import st.btu.trading.pillar.testkit.AlertFakes.FakeSystemAlerts
+import st.btu.trading.pillar.analytics.portfolio.Holdings
+import st.btu.trading.pillar.testkit.AlertFakes.{FakeSystemAlerts, RaisedSystemAlert}
 import st.btu.trading.pillar.testkit.AnalyticsFakes.accountOperation
 import st.btu.trading.pillar.testkit.BinanceFakes.*
 import st.btu.trading.pillar.testkit.MarketDataFakes.{FakeBrokerInstrumentStorage, delayForIO}
@@ -87,6 +88,19 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
     // The operations stored for the account, as every reader sees them.
     def shared: IO[Vector[AccountOperation]] =
       records.operations(accountId, Instant.EPOCH, now.plus(Duration.ofDays(365)))
+
+    // From now on Binance reports what the stored operations leave, as it does for an account whose
+    // history is complete: each coin's position, and the cash in each currency.
+    def reportsRecordedBalances: IO[Unit] =
+      shared.flatMap { operations =>
+        val coins = Holdings.of(operations).map { case (key, quantity) =>
+          asset(key.id.value) -> quantity
+        }
+        val cash = AccountHoldings.cashOf(operations).map { case (currency, amount) =>
+          asset(currency.value) -> amount
+        }
+        api.setBalances(coins ++ cash)
+      }
   }
 
   private def fixture(
@@ -108,16 +122,21 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
       alerts <- AlertFakes.systemAlerts()
       create = {
         implicit val clock: Clock[IO] = stepping.clock
-        BinanceSyncServiceImpl.create[IO, IO](
-          account,
-          config,
-          api,
-          records,
-          pairs,
-          prices,
-          loggedInstruments(instruments, events),
-          alerts
-        )
+        BinanceReconciler
+          .create[IO, IO](records, alerts, config.cashAssets)
+          .flatMap(reconciler =>
+            BinanceSyncServiceImpl.create[IO, IO](
+              account,
+              config,
+              api,
+              records,
+              pairs,
+              prices,
+              loggedInstruments(instruments, events),
+              alerts,
+              reconciler
+            )
+          )
       }
       service <- create
     } yield Fixture(
@@ -144,6 +163,10 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
       def upsert(instrument: BrokerInstrument): IO[Unit] =
         events.update(_ :+ "instruments") >> storage.upsert(instrument)
     }
+
+  // The alerts about records no price values, apart from the ones about the balances.
+  private def unvaluedAlerts(alerts: List[RaisedSystemAlert]): List[RaisedSystemAlert] =
+    alerts.filter(_.name.startsWith("binance-unvalued"))
 
   // A buy of 0.2 BTC for 10000 USDT with a commission of 0.01 BNB, and the pair it was made on.
   private val chargedBuy = record(
@@ -190,6 +213,30 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             )
             outcome <- f.service.sync.attempt
           } yield outcome must beRight(())
+        }
+      }
+
+      "the balances" >> {
+        "are read right after the exchange information, the spot wallet first, before any record" >> {
+          for {
+            f <- fixture()
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield calls.take(4) must_==
+            List(Call.Restrictions, Call.ExchangeInfo, Call.SpotBalances, Call.FundingBalances)
+        }
+
+        "that cannot be read fail the run before any record is read" >> {
+          val boom = new RuntimeException("funding unavailable")
+          val script = ApiScript(pairs = listed, failures = { case Call.FundingBalances => boom })
+          for {
+            f <- fixture(script)
+            failure <- f.service.sync.attempt
+            calls <- f.calls
+          } yield {
+            failure must beLeft[Throwable](boom)
+            calls.collect { case window: Call.Window => window } must beEmpty
+          }
         }
       }
 
@@ -355,6 +402,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
           for {
             f <- fixture(script)
             _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
             before <- f.tradeReads.map(_.size)
             _ <- f.nextHour
             _ <- f.service.sync
@@ -368,6 +416,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
           for {
             f <- fixture(script)
             _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
             before <- f.tradeReads.map(_.size)
             _ <- f.api.setHistory(BinanceSource.Deposit, List(dogecoin))
             _ <- f.nextHour
@@ -382,6 +431,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
           for {
             f <- fixture(script)
             _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
             before <- f.tradeReads.map(_.size)
             _ <- f.api.setHistory(BinanceSource.Deposit, List(tether))
             _ <- f.nextHour
@@ -398,6 +448,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             _ <- f.api.setHistory(BinanceSource.Deposit, List(dogecoin))
             _ <- f.nextHour
             _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
             before <- f.tradeReads.map(_.size)
             _ <- f.nextHour
             _ <- f.service.sync
@@ -434,6 +485,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
           for {
             f <- fixture(script)
             _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
             before <- f.tradeReads.map(_.size)
             _ <- f.nextHour
             _ <- f.service.sync
@@ -499,6 +551,76 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             )
             second must_== first
           }
+        }
+      }
+
+      "the coins whose balance differs from the records" >> {
+        val script = ApiScript(pairs = listed, trades = tradesOf("BTCUSDT", 1 to 3))
+
+        // The run after a first one that has read the three trades, with Binance reporting the
+        // coins and cash those leave and `besides`.
+        def laterRun(f: Fixture, besides: Map[BinanceAsset, BigDecimal]): IO[List[(String, Long)]] =
+          for {
+            before <- f.tradeReads.map(_.size)
+            _ <- f.api.setBalances(
+              Map(asset("BTC") -> BigDecimal(3), asset("USDT") -> BigDecimal(-3)) ++ besides
+            )
+            _ <- f.nextHour
+            _ <- f.service.sync
+            reads <- f.tradeReads.map(_.drop(before))
+          } yield reads
+
+        "have their listed pairs read in the run, with the pairs of the trades already read" >> {
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            reads <- laterRun(f, Map(asset("DOGE") -> BigDecimal(10)))
+          } yield reads must_== List("BTCUSDT" -> 4L, "DOGEBTC" -> 0L, "DOGEUSDT" -> 0L)
+        }
+
+        "have their pairs read once while the difference stays the same, and again when it changes" >> {
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            _ <- laterRun(f, Map(asset("DOGE") -> BigDecimal(10)))
+            same <- laterRun(f, Map(asset("DOGE") -> BigDecimal(10)))
+            changed <- laterRun(f, Map(asset("DOGE") -> BigDecimal(12)))
+          } yield {
+            same must_== List("BTCUSDT" -> 4L)
+            changed must_== List("BTCUSDT" -> 4L, "DOGEBTC" -> 0L, "DOGEUSDT" -> 0L)
+          }
+        }
+
+        "have their listed pairs read when the account recorded the coin and Binance does not report it" >> {
+          for {
+            f <- fixture(script)
+            // The first run ends with the balances matching what it recorded.
+            _ <- f.api.setBalances(
+              Map(asset("BTC") -> BigDecimal(3), asset("USDT") -> BigDecimal(-3))
+            )
+            _ <- f.service.sync
+            before <- f.tradeReads.map(_.size)
+            _ <- f.api.setBalances(Map(asset("USDT") -> BigDecimal(-3)))
+            _ <- f.nextHour
+            _ <- f.service.sync
+            reads <- f.tradeReads.map(_.drop(before))
+          } yield reads.map(_._1) must_== List("BTCUSDC", "BTCUSDT", "DOGEBTC", "ETHBTC")
+        }
+
+        "bring no pair of a cash asset into the run" >> {
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            reads <- laterRun(f, Map(asset("USDT") -> BigDecimal(1000)))
+          } yield reads must_== List("BTCUSDT" -> 4L)
+        }
+
+        "bring no pair of a Simple Earn token into the run" >> {
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            reads <- laterRun(f, Map(asset("LDBTC") -> BigDecimal(5)))
+          } yield reads must_== List("BTCUSDT" -> 4L)
         }
       }
 
@@ -642,7 +764,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             _ <- f.service.sync
             calls <- f.calls
             operations <- f.shared
-            raised <- f.alerts.raised
+            raised <- f.alerts.raised.map(unvaluedAlerts)
           } yield {
             // Binance lists no ETHUSDC
             barsRead(calls) must_== List("BTCUSDC", "BTCUSDT", "ETHUSDT")
@@ -668,7 +790,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             _ <- f.service.sync
             _ <- f.nextHour
             _ <- f.service.sync
-            raised <- f.alerts.raised
+            raised <- f.alerts.raised.map(unvaluedAlerts)
           } yield raised.map(_.name) must_== List("binance-unvalued:1")
         }
 
@@ -678,7 +800,7 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             _ <- f.service.sync
             restarted <- f.restart
             _ <- restarted.sync
-            raised <- f.alerts.raised
+            raised <- f.alerts.raised.map(unvaluedAlerts)
           } yield raised.map(_.name) must_== List("binance-unvalued:1", "binance-unvalued:1")
         }
 
@@ -693,6 +815,136 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             text must not(contain("api-key"))
             text must not(contain("secret-key"))
           }
+        }
+      }
+
+      "the alerts about the balances" >> {
+        // A buy of 0.1 BTC for 5000 USDT, paid for with a deposit of as much, which leaves 0.1 BTC
+        // and no cash.
+        val funded = ApiScript(
+          pairs = listed,
+          trades = List(bitcoinBuy),
+          history = Map(
+            BinanceSource.Deposit -> List(deposit("d1", "USDT", "5000", "2026-03-08T00:00:00Z"))
+          ),
+          spot = Map(asset("BTC") -> BigDecimal("0.1"))
+        )
+
+        def reconciliations(f: Fixture): IO[List[RaisedSystemAlert]] =
+          f.alerts.raised.map(_.filter(_.name.startsWith("binance-reconcil")))
+
+        "are none while the balances match what the run recorded" >> {
+          for {
+            f <- fixture(funded)
+            _ <- f.service.sync
+            raised <- reconciliations(f)
+          } yield raised must beEmpty
+        }
+
+        "raise the differences once the run has recorded what it read" >> {
+          for {
+            f <- fixture(funded.copy(spot = Map(asset("BTC") -> BigDecimal("0.09"))))
+            _ <- f.service.sync
+            raised <- reconciliations(f)
+          } yield raised must_== List(
+            RaisedSystemAlert(
+              "binance-reconciliation:1",
+              "Binance balances differ: account 1",
+              "Recorded balances of account 1 differ from the balances Binance reports as of " +
+                "2026-03-10T12:00:00Z:\nBTC: recorded 0.1, Binance 0.09"
+            )
+          )
+        }
+
+        "do not count a deposit that the run read and that Binance already reports" >> {
+          val deposited = ApiScript(
+            pairs = listed,
+            history = Map(
+              BinanceSource.Deposit -> List(deposit("d1", "DOGE", "100", "2026-03-09T08:00:00Z"))
+            ),
+            spot = Map(asset("DOGE") -> BigDecimal(100))
+          )
+          for {
+            f <- fixture(deposited)
+            _ <- f.service.sync
+            raised <- reconciliations(f)
+          } yield raised must beEmpty
+        }
+
+        "count a record that occurred before the instant the balances were read" >> {
+          val before = deposit("d1", "DOGE", "100", "2026-03-10T11:59:59Z")
+          for {
+            f <- fixture(
+              ApiScript(pairs = listed, history = Map(BinanceSource.Deposit -> List(before)))
+            )
+            _ <- f.service.sync
+            raised <- reconciliations(f)
+          } yield raised.map(_.body) must_== List(
+            "Recorded balances of account 1 differ from the balances Binance reports as of " +
+              "2026-03-10T12:00:00Z:\nDOGE: recorded 100, Binance 0"
+          )
+        }
+
+        "leave out a record that occurred at the instant the balances were read, which they may not hold yet" >> {
+          val atAsOf = deposit("d1", "DOGE", "100", "2026-03-10T12:00:00Z")
+          for {
+            f <- fixture(
+              ApiScript(pairs = listed, history = Map(BinanceSource.Deposit -> List(atAsOf)))
+            )
+            _ <- f.service.sync
+            stored <- f.records.storedRecords
+            raised <- reconciliations(f)
+          } yield {
+            stored.size must_== 1
+            raised must beEmpty
+          }
+        }
+
+        "are raised once while they stay the same, and again when they change" >> {
+          for {
+            f <- fixture(funded.copy(spot = Map(asset("BTC") -> BigDecimal("0.09"))))
+            _ <- f.service.sync
+            _ <- f.nextHour
+            _ <- f.service.sync
+            sameTwice <- reconciliations(f).map(_.size)
+            _ <- f.api.setBalances(Map(asset("BTC") -> BigDecimal("0.08")))
+            _ <- f.nextHour
+            _ <- f.service.sync
+            changed <- reconciliations(f)
+          } yield {
+            sameTwice must_== 1
+            changed.map(_.name) must_== List("binance-reconciliation:1", "binance-reconciliation:1")
+            changed.last.body must contain("BTC: recorded 0.1, Binance 0.08")
+          }
+        }
+
+        "are followed by the all-clear, once, when the balances match again" >> {
+          for {
+            f <- fixture(funded.copy(spot = Map(asset("BTC") -> BigDecimal("0.09"))))
+            _ <- f.service.sync
+            _ <- f.api.setBalances(Map(asset("BTC") -> BigDecimal("0.1")))
+            _ <- f.nextHour
+            _ <- f.service.sync
+            _ <- f.nextHour
+            _ <- f.service.sync
+            raised <- reconciliations(f)
+          } yield raised.map(_.name) must_== List(
+            "binance-reconciliation:1",
+            "binance-reconciled:1"
+          )
+        }
+
+        "are raised again by a new process" >> {
+          for {
+            f <- fixture(funded.copy(spot = Map(asset("BTC") -> BigDecimal("0.09"))))
+            _ <- f.service.sync
+            restarted <- f.restart
+            _ <- restarted.sync
+            raised <- reconciliations(f)
+          } yield raised.map(_.name) must_== List(
+            "binance-reconciliation:1",
+            "binance-reconciliation:1"
+          )
         }
       }
 

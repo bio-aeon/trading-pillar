@@ -6,7 +6,8 @@ Guidance for coding agents working in this repository. Documentation for library
 ## What this is
 
 `trading-pillar` is a Scala library of building blocks for trading bots: Telegram bot plumbing and
-command handlers, market-data sources (Yahoo Finance via yfinance4s, Tinkoff Invest via gRPC),
+command handlers, market-data sources (Yahoo Finance via yfinance4s, Tinkoff Invest via gRPC,
+Binance's public REST API),
 price-history sync, a pluggable strategy API with a deterministic backtest engine, an alert
 pipeline with anti-spam guards, portfolio analytics, paper trading and a tax estimate. It defines
 ports such as storage traits and alert channels, and leaves persistence, configuration,
@@ -26,12 +27,15 @@ their cost and dates through them; what the sync could not read for certain it r
 alert. The Binance sync reads a spot account through Binance's REST API with a read-only key, which
 every run checks, and records each trade, deposit, withdrawal, fiat order, card purchase and Convert
 order as Binance sent it with its translation; trades are read pair by pair, and a trade between two
-coins or a fee paid in BNB is valued by the stored close of a one-minute bar. The valuation, the tax
-services and `/export` read those translations, and an instrument is looked up by its
-`InstrumentKey`, the broker and the id that broker gives it, through a directory per broker. The
-price-history sync starts every cycle by putting the instruments each account holds on its
-watchlist, with the source setting its broker's pricing rule gives; Binance's coins stay off it,
-since no source serves their tickers.
+coins or a fee paid in BNB is valued by the stored close of a one-minute bar. Every run also compares
+the balances Binance reports, in the spot and the funding wallet, with the ones the records leave,
+and raises a system alert while they differ. The valuation, the tax services and `/export` read those
+translations, and an instrument is looked up by its `InstrumentKey`, the broker and the id that
+broker gives it, through a directory per broker. The price-history sync starts every cycle by putting
+the instruments each account holds on its watchlist, with the source setting its broker's pricing
+rule gives, and the rate tickers that convert the currencies of its operations; a Binance coin is
+priced from Binance's own daily bars while the router has a Binance adapter, and stays off the
+watchlist otherwise.
 `Source` is a closed set of data sources, so supporting another broker's data means changing the
 library.
 
@@ -68,14 +72,14 @@ Package root `st.btu.trading.pillar`:
 
 | Package | Contents |
 |---|---|
-| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `ibkr` (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, `IbkrStatement`), `binance` (`BinanceAccount`, `ApiKey`, `SecretKey`, `BinanceRecord`, `BinanceSource`, `BinancePair`, `BinanceRecordError`) |
-| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router, the `InstrumentDirectory` port, its `RoutingInstrumentDirectory` router and `StoredInstrumentDirectory` for a broker with no lookup; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `ibkr` (the Flex Web Service client, the statement parser, the instrument directory), `binance` (the REST client with its signing, pacing and errors), `news`, `screener` |
+| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `ibkr` (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, `IbkrStatement`), `binance` (`BinanceAccount`, `ApiKey`, `SecretKey`, `BinanceRecord`, `BinanceSource`, `BinancePair`, `BinanceBalances`, `BinanceDailyBar`, `BinanceRecordError`) |
+| `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router, the `InstrumentDirectory` port, its `RoutingInstrumentDirectory` router and `StoredInstrumentDirectory` for a broker with no lookup; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `ibkr` (the Flex Web Service client, the statement parser, the instrument directory), `binance` (the keyless `BinanceMarket` client and the keyed `BinanceApi` one over a shared transport, with their signing, pacing and errors, and `BinanceMarketDataSource`), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
 | `analytics` | return, performance and risk functions; `portfolio` (valuation, `Holdings`, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
 | `paper`, `tax`, `charts` | paper broker; FIFO tax lots, carried through corporate actions, and the annual estimate; equity-curve PNG |
-| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation` and `IbkrCorporateActions`, `IbkrReconciler` over the pure `IbkrReconciliation`, `BinanceSyncService` with the pure `BinanceTranslation`, `BinancePrices` and `BinanceInstruments`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols`); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
+| `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation` and `IbkrCorporateActions`, `IbkrReconciler` over the pure `IbkrReconciliation`, `BinanceSyncService` with the pure `BinanceTranslation`, `BinancePrices` and `BinanceInstruments`, `BinanceReconciler` over the pure `BinanceReconciliation`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols` and the `RateTickerConfig` of its rate tickers); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers, the latter reconciling positions), the Binance records sync, price-history sync (adding held instruments first), analytics |
 | `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |
 | `storages` | persistence ports that consumers implement |
@@ -114,7 +118,9 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   history includes the current bar. `proximity` receives the live bar, which is not in the history
   yet.
 - **Telegram output** uses legacy Markdown. Send command replies through `Replies.reply`, which
-  sanitizes and caps the text; alert notifications pass through the same sanitizer.
+  sanitizes and caps the text; alert notifications pass through the same sanitizer. A price in a
+  reply goes through `Replies.price`, which keeps the digits of a coin priced below a cent; a
+  value, cash or total through `Replies.scaled`.
 - **Persisted values are contracts.** Consumers store the circe encodings of backtest results, of
   `Proximity` and `QuietHours`, and of `Allocation` and `PortfolioMetrics`, the string values of
   enumeratum enums such as `Source`, `Broker`, `OperationKind`, `OperationState`, `IbkrSection`,
@@ -124,8 +130,9 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   are `private` or `private[pillar]`. Narrowing or removing a public member breaks consumers, so
   propose it rather than doing it as part of another change.
 - **Brokers are read, never driven.** No client places an order, withdraws or transfers. The
-  Binance sync checks its key on every run and refuses one that could do more than read; keep it
-  that way, and keep a key, a signature and a query string out of every log line and error message.
+  Binance sync checks its key on every run and refuses one that could do more than read, the balance
+  calls only read, and the keyless market client holds no key and cannot sign; keep it that way,
+  and keep a key, a signature and a query string out of every log line and error message.
 - **Tinkoff contracts.** Updating the T-Invest contracts is a bump of `Versions.investContracts`. A
   new version can add calls, which the gRPC fakes in `testkit.TcsMarketDataFakes` must stub, and can
   deprecate request fields. Build requests with the replacement fields, since naming a deprecated

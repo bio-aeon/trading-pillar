@@ -124,6 +124,34 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
         } yield bars.map(_.date) must_== List(LocalDate.of(2024, 1, 10))
       }
 
+      "keeps the digits of a price below a cent" >> {
+        val cheap = quote(
+          ZonedDateTime.parse("2024-01-10T14:30:00Z"),
+          open = 0.00000821,
+          high = 0.0000083,
+          low = 0.00000815,
+          close = 0.00000823,
+          adjClose = 0.00000823
+        )
+        for {
+          api <- MarketDataFakes.yahooApi(
+            charts = Map(ticker.value -> IO.pure(Some(YahooChart(List(cheap), "USD")))),
+            metadata = Map(ticker.value -> IO.pure(usMetadata))
+          )
+          source <- buildSource(api)
+          bars <- source.dailyBars(ticker, LocalDate.of(2024, 1, 1), LocalDate.of(2024, 1, 31))
+        } yield bars.map(bar => (bar.open, bar.high, bar.low, bar.close, bar.adjClose)) must_==
+          List(
+            (
+              BigDecimal("0.00000821"),
+              BigDecimal("0.0000083"),
+              BigDecimal("0.00000815"),
+              BigDecimal("0.00000823"),
+              BigDecimal("0.00000823")
+            )
+          )
+      }
+
       "leaves out the bar of a session still in progress" >> {
         val closedDay = quote(ZonedDateTime.parse("2024-01-10T14:30:00Z"))
         val openDay = quote(ZonedDateTime.parse("2024-01-11T14:30:00Z"), inProgress = true)
@@ -175,7 +203,7 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
     }
 
     "dividends" >> {
-      "derives the ex-date in the exchange timezone and scales the amount to 6 decimals" >> {
+      "derives the ex-date in the exchange timezone and reads the amount and currency" >> {
         val exDate = ZonedDateTime.parse("2024-01-10T13:30:00Z")
         for {
           api <- MarketDataFakes.yahooApi(
@@ -187,7 +215,7 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
         } yield {
           events must haveSize(1)
           events.head.exDate must_== LocalDate.of(2024, 1, 10)
-          events.head.amount must_== BigDecimal("0.240000")
+          events.head.amount must_== BigDecimal("0.24")
           events.head.currency must beSome(Currency("USD"))
           events.head.source must_== Source.Yahoo
         }
@@ -232,16 +260,24 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
 
     "latestQuote" >> {
 
-      "quotes in the currency Yahoo reports, with the price at six decimals" >> {
+      "quotes in the currency Yahoo reports" >> {
         for {
           api <- MarketDataFakes.yahooApi(metadata = Map(ticker.value -> IO.pure(usMetadata)))
           source <- buildSource(api)
           quote <- source.latestQuote(ticker)
         } yield quote must beSome[Quote].like { case q =>
           q.price must_== BigDecimal("150")
-          q.price.scale must_== 6
           q.currency must_== Currency("USD")
         }
+      }
+
+      "keeps the digits of a price below a cent" >> {
+        val cheap = usMetadata.copy(regularMarketPrice = Some(0.00000823))
+        for {
+          api <- MarketDataFakes.yahooApi(metadata = Map(ticker.value -> IO.pure(cheap)))
+          source <- buildSource(api)
+          quote <- source.latestQuote(ticker)
+        } yield quote.map(_.price) must beSome(BigDecimal("0.00000823"))
       }
     }
 
@@ -497,15 +533,12 @@ class YahooMarketDataSourceSpec extends Specification with CatsEffect {
             List((BigDecimal("0.3"), Some(Currency("USD"))))
         }
 
-        "keep six decimals after dividing, rounding half up" >> {
+        "keep the digits beyond the sixth decimal after dividing" >> {
           for {
-            api <- londonApi(dividends = List(YahooDividend(tradingTime, 1.23445, None)))
+            api <- londonApi(dividends = List(YahooDividend(tradingTime, 0.00123, None)))
             source <- buildSource(api)
             events <- source.onSymbol(Some(vodL)).dividends(vod, tradingDay, tradingDay)
-          } yield {
-            events.map(_.amount) must_== List(BigDecimal("0.012345"))
-            events.map(_.amount.scale) must_== List(6)
-          }
+          } yield events.map(_.amount) must_== List(BigDecimal("0.0000123"))
         }
       }
     }

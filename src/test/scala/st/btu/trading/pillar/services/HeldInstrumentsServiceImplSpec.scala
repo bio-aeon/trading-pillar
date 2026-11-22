@@ -63,9 +63,17 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
   private def movedAtBinance(
     owner: Account,
     asset: String,
-    quantity: BigDecimal
+    quantity: BigDecimal,
+    currency: String = "USDC"
   ): AccountOperation =
-    accountOperation(owner.id, OperationKind.Buy, 0, earlier, quantity = quantity)
+    accountOperation(
+      owner.id,
+      OperationKind.Buy,
+      0,
+      earlier,
+      quantity = quantity,
+      currency = currency
+    )
       .copy(instrument = Some(InstrumentKey(Broker.Binance, BrokerInstrumentId(asset))))
 
   // `quantity` units of the Tinkoff instrument with this FIGI, bought, or sold when negative.
@@ -79,6 +87,21 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
     accountOperation(owner.id, OperationKind.Buy, 0, earlier, quantity = quantity)
       .copy(instrument = Some(IbkrFakes.instrumentKey(conid)))
 
+  // Cash of `currency` paid into the account, which `state` says how far has got.
+  private def paidIn(
+    owner: Account,
+    currency: String,
+    state: OperationState = OperationState.Executed
+  ): AccountOperation =
+    accountOperation(
+      owner.id,
+      OperationKind.Deposit,
+      100,
+      earlier,
+      currency = currency,
+      state = state
+    )
+
   private def entry(
     owner: Account,
     ticker: String,
@@ -89,6 +112,16 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
 
   private def held(owner: Account, ticker: String): WatchlistItem =
     WatchlistItem(owner.id, Ticker(ticker), enabled = true, Some(note), nowUtc)
+
+  // The entry that the service adds for the rate ticker of a currency.
+  private def rate(owner: Account, ticker: String, currency: String): WatchlistItem =
+    WatchlistItem(
+      owner.id,
+      Ticker(ticker),
+      enabled = true,
+      Some(s"Added for the exchange rate of $currency"),
+      nowUtc
+    )
 
   private def nowUtc: ZonedDateTime = ZonedDateTime.ofInstant(now, ZoneOffset.UTC)
 
@@ -112,6 +145,9 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
   private val plainLogging: Logging[IO] =
     Logging.Make.plain[IO].forService[HeldInstrumentsService[IO]]
 
+  // No base currency, so that no rate ticker is wanted.
+  private val noRates = RateTickerConfig(Set.empty)
+
   private def serviceOver(
     accounts: AccountStorage[IO],
     operations: List[AccountOperation],
@@ -119,7 +155,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
     watchlist: WatchlistStorage[IO],
     settings: TickerSourceStorage[IO],
     sources: MarketDataSources[IO],
-    logging: Logging[IO] = plainLogging
+    logging: Logging[IO] = plainLogging,
+    rates: RateTickerConfig = noRates
   ): IO[HeldInstrumentsService[IO]] = {
     implicit val clock: Clock[IO] = McpFakes.clockAt(now)
     implicit val logs: Logs[IO, IO] = Logs.const[IO, IO](logging)
@@ -131,7 +168,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
         watchlist,
         settings,
         directory,
-        sources
+        sources,
+        rates
       )
     } yield service
   }
@@ -149,7 +187,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
     watchlist: List[WatchlistItem] = Nil,
     settings: List[TickerSource] = Nil,
     router: IO[MarketDataSources[IO]] = servingBoth,
-    logging: Logging[IO] = plainLogging
+    logging: Logging[IO] = plainLogging,
+    rates: RateTickerConfig = noRates
   ): IO[Fixture] =
     for {
       accountStorage <- AnalyticsFakes.accountStorage(accounts)
@@ -163,7 +202,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
         watchlistStorage,
         settingsStorage,
         sources,
-        logging
+        logging,
+        rates
       )
     } yield Fixture(watchlistStorage, settingsStorage, service)
 
@@ -375,7 +415,25 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
       }
 
       "Binance coins" >> {
-        "are left off the watchlist and given no source setting, which is logged with the ticker" >> {
+        "are set to Binance and put on the watchlist while the router serves Binance" >> {
+          for {
+            binanceSource <- MarketDataFakes.marketDataSource(SourceSetting.Binance)
+            f <- fixture(
+              List(binance),
+              List(movedAtBinance(binance, "BTC", 2)),
+              directoryOf(List(bitcoin)),
+              router = MarketDataFakes.marketDataSources(binance = Some(binanceSource))
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+            settings <- f.settings.all
+          } yield {
+            items must_== List(held(binance, "BTCUSDC"))
+            settings must_== List(TickerSource(Ticker("BTCUSDC"), SourceSetting.Binance))
+          }
+        }
+
+        "are left off the watchlist and given no source setting while the router does not serve Binance, which is logged with the ticker" >> {
           for {
             logging <- LogFakes.recordingLogging
             f <- fixture(
@@ -421,6 +479,144 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
             _ <- f.service.addToWatchlists
             items <- f.watchlist.items
           } yield items must_== List(held(tinkoff, "SBER"))
+        }
+      }
+
+      "rate tickers" >> {
+        val dollars = RateTickerConfig(Set(Currency("USD")))
+
+        "are added for each currency the executed operations are in, enabled, with a note naming it" >> {
+          val operations = List(paidIn(tinkoff, "EUR"), paidIn(tinkoff, "USDT"))
+          for {
+            f <- fixture(operations = operations, rates = dollars)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must contain(
+            exactly(rate(tinkoff, "EURUSD=X", "EUR"), rate(tinkoff, "USDTUSD=X", "USDT"))
+          )
+        }
+
+        "are added once for a currency, however many operations are in it" >> {
+          val operations = List(paidIn(tinkoff, "EUR"), paidIn(tinkoff, "EUR"))
+          for {
+            f <- fixture(operations = operations, rates = dollars)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(rate(tinkoff, "EURUSD=X", "EUR"))
+        }
+
+        "are added for the currency a held instrument is priced in, though the operations are in the base currency" >> {
+          for {
+            binanceSource <- MarketDataFakes.marketDataSource(SourceSetting.Binance)
+            f <- fixture(
+              List(binance),
+              List(movedAtBinance(binance, "BTC", 2, currency = "USD")),
+              directoryOf(List(bitcoin)),
+              router = MarketDataFakes.marketDataSources(binance = Some(binanceSource)),
+              rates = dollars
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must contain(
+            exactly(held(binance, "BTCUSDC"), rate(binance, "USDCUSD=X", "USDC"))
+          )
+        }
+
+        "are not added for a base currency" >> {
+          for {
+            f <- fixture(operations = List(paidIn(tinkoff, "USD")), rates = dollars)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must beEmpty
+        }
+
+        "are not added for the currency of an operation that is not executed" >> {
+          val operations = List(
+            paidIn(tinkoff, "EUR", OperationState.Pending),
+            paidIn(tinkoff, "GBP", OperationState.Canceled)
+          )
+          for {
+            f <- fixture(operations = operations, rates = dollars)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must beEmpty
+        }
+
+        "are not added when no base currency is given" >> {
+          for {
+            f <- fixture(operations = List(paidIn(tinkoff, "EUR")))
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must beEmpty
+        }
+
+        "are the ones the configuration names for a currency whose rate is not the conventional pair" >> {
+          val named =
+            RateTickerConfig(Set(Currency("USD")), Map(Currency("USDT") -> Ticker("USDT-USD")))
+          for {
+            f <- fixture(operations = List(paidIn(tinkoff, "USDT")), rates = named)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(rate(tinkoff, "USDT-USD", "USDT"))
+        }
+
+        "are added into each base currency that the currency is not" >> {
+          val both = RateTickerConfig(Set(Currency("USD"), Currency("EUR")))
+          val operations = List(paidIn(tinkoff, "USD"), paidIn(tinkoff, "EUR"))
+          for {
+            f <- fixture(operations = operations, rates = both)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must contain(
+            exactly(rate(tinkoff, "EURUSD=X", "EUR"), rate(tinkoff, "USDEUR=X", "USD"))
+          )
+        }
+
+        "leave an entry already on the watchlist as it is, a disabled one included" >> {
+          val existing =
+            List(entry(tinkoff, "EURUSD=X", enabled = false, note = Some("paused")))
+          for {
+            f <- fixture(
+              operations = List(paidIn(tinkoff, "EUR")),
+              watchlist = existing,
+              rates = dollars
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== existing
+        }
+
+        "are added to the watchlist of the account whose operations are in the currency" >> {
+          val operations = List(paidIn(tinkoff, "EUR"), paidIn(ibkr, "GBP"))
+          for {
+            f <- fixture(List(tinkoff, ibkr), operations, rates = dollars)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must contain(
+            exactly(rate(tinkoff, "EURUSD=X", "EUR"), rate(ibkr, "GBPUSD=X", "GBP"))
+          )
+        }
+
+        "are given no source setting" >> {
+          for {
+            f <- fixture(operations = List(paidIn(tinkoff, "EUR")), rates = dollars)
+            _ <- f.service.addToWatchlists
+            settings <- f.settings.all
+          } yield settings must beEmpty
+        }
+
+        "are logged with the ticker and the currency" >> {
+          for {
+            logging <- LogFakes.recordingLogging
+            f <- fixture(
+              operations = List(paidIn(tinkoff, "EUR")),
+              rates = dollars,
+              logging = logging
+            )
+            _ <- f.service.addToWatchlists
+            entries <- logging.entries
+          } yield entries.exists(entry => entry.contains("EURUSD=X") && entry.contains("EUR")) must
+            beTrue
         }
       }
 

@@ -50,6 +50,8 @@ object MarketDataSources {
   *   the Yahoo adapter, if one is wired, which serves a ticker under the symbol its setting names
   * @param tinkoff
   *   the Tinkoff adapter, if one is wired, which serves a ticker from the board its setting names
+  * @param binance
+  *   the Binance adapter, if one is wired, which serves a ticker as the pair of the same symbol
   * @param settings
   *   the per-ticker settings
   * @param default
@@ -58,6 +60,7 @@ object MarketDataSources {
 final class MarketDataSourcesImpl[F[_]](
   yahoo: Option[YahooSymbols[F]],
   tinkoff: Option[TinkoffBoards[F]],
+  binance: Option[MarketDataSource[F]],
   settings: TickerSourceStorage[F],
   default: SourceSetting
 )(implicit F: MonadThrow[F])
@@ -73,7 +76,7 @@ final class MarketDataSourcesImpl[F[_]](
     source match {
       case Source.Yahoo => yahoo.isDefined
       case Source.Tinkoff => tinkoff.isDefined
-      case Source.Binance => false
+      case Source.Binance => binance.isDefined
     }
 
   private def adapterFor(setting: SourceSetting): F[MarketDataSource[F]] =
@@ -82,6 +85,7 @@ final class MarketDataSourcesImpl[F[_]](
         configured(yahoo.map(_.onSymbol(symbol)), setting.source)
       case SourceSetting.Tinkoff(classCode) =>
         configured(tinkoff.map(_.onBoard(classCode)), setting.source)
+      case SourceSetting.Binance => configured(binance, setting.source)
     }
 
   private def configured(

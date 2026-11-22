@@ -8,7 +8,9 @@ trait BinanceSyncService[F[_]] {
     *
     * A run starts by checking that the API key can read and do nothing else, and fails with a
     * `BinanceKeyError` before any other call when it can do more. It then reads the exchange
-    * information and the sources other than trades, window by window, and then the trades.
+    * information and the balances in the account's spot and funding wallets, the sources other than
+    * trades, window by window, and then the trades, and compares the balances with what the account
+    * recorded.
     *
     * Each source other than trades is read from `BinanceSyncConfig.rereadDays` before where this
     * process last read it, so that a record Binance completes or changes late is stored again.
@@ -17,11 +19,21 @@ trait BinanceSyncService[F[_]] {
     * 30 for Convert, and each ends a millisecond before the next starts.
     *
     * Trades are read pair by pair, each from the id after the last stored for it: the pairs that
-    * have stored trades, the pairs of a coin the sources above gave the account in this run, and
-    * the pairs Binance has announced it will delist, each while Binance still lists it, since a
-    * pair Binance has dropped cannot be read. The first run of a process, and then one every
+    * have stored trades, the pairs of a coin the sources above gave the account in this run, the
+    * pairs of a coin whose balance differs from what the account recorded in a new way, and the
+    * pairs Binance has announced it will delist, each while Binance still lists it, since a pair
+    * Binance has dropped cannot be read. The first run of a process, and then one every
     * `BinanceSyncConfig.pairsRescanInterval`, reads every listed pair, to find the pairs the
     * account has traded for the first time.
+    *
+    * The balances are read just after the exchange information, as of the instant read before them.
+    * A coin whose balance differs from what the operations stored before the run leave as of that
+    * instant, by a difference the last comparison did not find, has its listed pairs read in this
+    * run, so that a coin bought on a pair new to the account appears within one interval and not at
+    * the next read of every pair. A difference that stays the same brings the pairs in once. After
+    * the trades the comparison is made again over what the run recorded, still as of that instant,
+    * and a difference is raised as the system alert `binance-reconciliation:<account id>`, and the
+    * match that follows as `binance-reconciled:<account id>` (see [[BinanceReconciler]]).
     *
     * What no cash prices, such as a trade between two coins or a commission paid in BNB, is valued
     * by the close of a one-minute bar, which is read the first time it is needed and stored. The

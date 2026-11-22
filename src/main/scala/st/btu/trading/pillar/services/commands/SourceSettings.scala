@@ -23,16 +23,17 @@ private[pillar] object SourceSettings {
   }
 
   // The setting a command token asks for, case-insensitively: the source's own name, with no board
-  // or Yahoo symbol yet. Yahoo and Tinkoff are the only sources a ticker can be set to.
+  // or Yahoo symbol yet.
   def parse(token: String): Option[SourceSetting] =
-    Source.withValueOpt(token.toLowerCase(Locale.ROOT)).flatMap {
-      case Source.Yahoo => Some(SourceSetting.Yahoo(None))
-      case Source.Tinkoff => Some(SourceSetting.Tinkoff(None))
-      case Source.Binance => None
+    Source.withValueOpt(token.toLowerCase(Locale.ROOT)).map {
+      case Source.Yahoo => SourceSetting.Yahoo(None)
+      case Source.Tinkoff => SourceSetting.Tinkoff(None)
+      case Source.Binance => SourceSetting.Binance
     }
 
   // The choice made by the words after the symbol in `/source SYM ...`, or None when they are not a
-  // valid one. A board (after tinkoff) or a Yahoo symbol (after yahoo), upper-cased, may follow.
+  // valid one. A board (after tinkoff) or a Yahoo symbol (after yahoo), upper-cased, may follow;
+  // binance takes none.
   def parseChoice(words: List[String]): Option[Choice] =
     words match {
       case word :: Nil if word.equalsIgnoreCase(DefaultChoice) => Some(Choice.Reset)
@@ -51,6 +52,7 @@ private[pillar] object SourceSettings {
         setting match {
           case SourceSetting.Yahoo(_) => Some(SourceSetting.Yahoo(Some(YahooSymbol(code))))
           case SourceSetting.Tinkoff(_) => Some(SourceSetting.Tinkoff(Some(ClassCode(code))))
+          case SourceSetting.Binance => None
         }
       case _ :: _ :: _ => None
     }
@@ -61,5 +63,6 @@ private[pillar] object SourceSettings {
       case SourceSetting.Yahoo(Some(symbol)) => s"${setting.source.value}, symbol ${symbol.value}"
       case SourceSetting.Tinkoff(None) => s"${setting.source.value}, default board"
       case SourceSetting.Tinkoff(Some(board)) => s"${setting.source.value}, board ${board.value}"
+      case SourceSetting.Binance => setting.source.value
     }
 }

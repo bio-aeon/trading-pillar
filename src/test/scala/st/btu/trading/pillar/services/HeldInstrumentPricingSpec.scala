@@ -12,6 +12,7 @@ class HeldInstrumentPricingSpec extends Specification {
   // The sources a router serves, as the rule asks for them.
   private val servesTinkoff: Source => Boolean = Set(Source.Tinkoff)
   private val servesYahoo: Source => Boolean = Set(Source.Yahoo)
+  private val servesBinance: Source => Boolean = Set(Source.Binance)
   private val servesNothing: Source => Boolean = Set.empty
 
   private def instrument(
@@ -85,8 +86,15 @@ class HeldInstrumentPricingSpec extends Specification {
       }
 
       "Binance" >> {
-        "is unwatched, whichever sources the router serves" >> {
-          val coin = instrument(Broker.Binance, "BTCUSDC", None)
+        val coin = instrument(Broker.Binance, "BTCUSDC", None)
+
+        "is Binance while the router serves Binance, whichever else it serves" >> {
+          List(servesBinance, Set(Source.Binance, Source.Yahoo, Source.Tinkoff))
+            .map(HeldInstrumentPricing.of(coin, _)) must_==
+            List.fill(2)(Outcome.Setting(SourceSetting.Binance))
+        }
+
+        "is unwatched while the router does not serve Binance" >> {
           List(servesTinkoff, servesYahoo, servesNothing)
             .map(HeldInstrumentPricing.of(coin, _)) must_== List.fill(3)(Outcome.Unwatched)
         }

@@ -11,7 +11,7 @@ import sttp.client3.impl.cats.implicits.*
 import sttp.client3.testing.SttpBackendStub
 import sttp.model.StatusCode
 import st.btu.trading.pillar.models.ibkr.{FlexQueryId, FlexToken}
-import st.btu.trading.pillar.testkit.LogFakes
+import st.btu.trading.pillar.testkit.{LogFakes, VirtualTime}
 import st.btu.trading.pillar.testkit.MarketDataFakes.delayForIO
 import tofu.logging.{Logging, Logs}
 
@@ -199,8 +199,11 @@ class FlexWebServiceImplSpec extends Specification with CatsEffect {
       }
 
       "waits longer after the rate limit than after other answers that ask to try again" >> {
-        val config = fast.copy(retryDelay = 1.milli, rateLimitDelay = 300.millis)
-        for {
+        val config = fast.copy(retryDelay = 20.millis, rateLimitDelay = 300.millis)
+        // the gaps after the request, after the rate limit, and after the statement was still in
+        // progress
+        val expected = List(config.minSpacing, config.rateLimitDelay, config.retryDelay)
+        VirtualTime.run(for {
           f <- fixture(
             config,
             fetch = List(
@@ -211,12 +214,7 @@ class FlexWebServiceImplSpec extends Specification with CatsEffect {
           )
           _ <- f.statement
           times <- f.calls.map(_.map(_.at))
-          gaps = times.zip(times.tail).map { case (earlier, later) => later - earlier }
-        } yield {
-          // after the request, after the rate limit, and after the statement was still in progress
-          gaps(1) must be_>=(250.millis)
-          gaps(2) must be_<(250.millis)
-        }
+        } yield VirtualTime.gaps(times) must_== expected)
       }
 
       "goes by the error code, whatever the status says" >> {
@@ -343,14 +341,12 @@ class FlexWebServiceImplSpec extends Specification with CatsEffect {
         }
 
         "wait the retry delay before the next attempt" >> {
-          for {
-            f <- fixture(
-              fast.copy(retryDelay = 150.millis),
-              send = List(Breaks(refusedConnection), answer(accepted))
-            )
+          val config = fast.copy(retryDelay = 150.millis)
+          VirtualTime.run(for {
+            f <- fixture(config, send = List(Breaks(refusedConnection), answer(accepted)))
             _ <- f.statement
             times <- f.calls.map(_.map(_.at))
-          } yield times(1) - times.head must be_>=(120.millis)
+          } yield VirtualTime.gaps(times) must_== List(config.retryDelay, config.minSpacing))
         }
 
         "are described by their cause and not by the exception that carries the request" >> {
@@ -523,43 +519,22 @@ class FlexWebServiceImplSpec extends Specification with CatsEffect {
 
     "pacing" >> {
       val spacing = 100.millis
-      // A call can be seen a little after its turn, which shifts it without moving the turn after
-      // it, so a gap is allowed to fall a little short of the spacing.
-      val tolerance = 30.millis
       val paced = fast.copy(minSpacing = spacing)
 
-      def gaps(calls: List[Call]): List[FiniteDuration] = {
-        val times = calls.map(_.at).sorted
-        times.zip(times.drop(1)).map { case (earlier, later) => later - earlier }
-      }
-
-      "keeps the calls of one statement at least the spacing apart" >> {
-        for {
-          f <- fixture(
-            paced,
-            fetch = List.fill(3)(List(answer(inProgress), answer(statement))).flatten
-          )
-          _ <- f.statement // warms the code paths up
-          warmedUp <- f.calls.map(_.size)
+      "keeps the calls of one statement a spacing apart" >> {
+        VirtualTime.run(for {
+          f <- fixture(paced, fetch = List(answer(inProgress), answer(statement)))
           _ <- f.statement
-          calls <- f.calls.map(_.drop(warmedUp))
-        } yield {
-          calls.size must_== 3
-          gaps(calls).filter(_ < spacing - tolerance) must beEmpty
-        }
+          calls <- f.calls
+        } yield VirtualTime.gaps(calls.map(_.at)) must_== List(spacing, spacing))
       }
 
-      "keeps the calls of statements read at the same time apart too" >> {
-        for {
+      "keeps the calls of statements read at the same time a spacing apart too" >> {
+        VirtualTime.run(for {
           f <- fixture(paced)
-          _ <- f.statement
-          warmedUp <- f.calls.map(_.size)
           _ <- List.fill(3)(f.statement).parSequence
-          calls <- f.calls.map(_.drop(warmedUp))
-        } yield {
-          calls.size must_== 6
-          gaps(calls).filter(_ < spacing - tolerance) must beEmpty
-        }
+          calls <- f.calls
+        } yield VirtualTime.gaps(calls.map(_.at)) must_== List.fill(5)(spacing))
       }
     }
   }

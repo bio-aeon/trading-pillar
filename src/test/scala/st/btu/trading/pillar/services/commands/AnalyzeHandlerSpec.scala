@@ -80,6 +80,30 @@ class AnalyzeHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "shows the prices of a coin below a cent in their significant digits" >> {
+        val coin = full.copy(
+          price = Some(BigDecimal("0.000008230000000000")),
+          sma50 = Some(BigDecimal("0.000009100000000000")),
+          sma200 = Some(BigDecimal("0.000010200000000000")),
+          high52w = Some(BigDecimal("0.000015600000000000")),
+          low52w = Some(BigDecimal("0.000003100000000000"))
+        )
+        for {
+          tgGateway <- Fakes.tgGateway()
+          analysis <- AnalysisFakes.analysisService(Map(ticker -> IO.pure(coin)))
+          handler = new AnalyzeHandler[IO](tgGateway, analysis)
+          _ <- handler.handle(chatId, List("aapl"))
+          messages <- tgGateway.sentMessages
+        } yield {
+          val msg = messages.head.message
+          msg must contain("Price: 0.00000823 USD")
+          msg must contain("SMA50: 0.0000091")
+          msg must contain("SMA200: 0.0000102")
+          msg must contain("52w high: 0.0000156")
+          msg must contain("52w low: 0.0000031")
+        }
+      }
+
       "shows n/a for every field of an empty analysis (ticker not found)" >> {
         for {
           tgGateway <- Fakes.tgGateway()

@@ -2,7 +2,7 @@ package st.btu.trading.pillar.gateways.binance
 
 import scala.concurrent.duration.*
 
-/** How [[BinanceApiImpl]] signs, paces and retries its calls.
+/** How the clients of Binance's REST API sign, pace and retry their calls.
   *
   * @param recvWindow
   *   how long after its timestamp Binance still accepts a signed request

@@ -5,7 +5,7 @@ import cats.effect.{Clock, IO, Ref}
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import io.circe.{JsonObject, parser}
-import st.btu.trading.pillar.gateways.binance.{BinanceApi, FiatOrderDirection, FiatPaymentDirection}
+import st.btu.trading.pillar.gateways.binance.*
 import st.btu.trading.pillar.models.binance.*
 import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation}
 import st.btu.trading.pillar.storages.{
@@ -16,7 +16,7 @@ import st.btu.trading.pillar.storages.{
 }
 
 import java.time.format.DateTimeFormatter
-import java.time.{Duration, Instant, ZoneOffset}
+import java.time.{Duration, Instant, LocalDate, ZoneOffset}
 import scala.concurrent.duration.*
 
 object BinanceFakes {
@@ -324,6 +324,8 @@ object BinanceFakes {
     case ExchangeInfo
     case DelistSchedule
     case Coins
+    case SpotBalances
+    case FundingBalances
     case Trades(symbol: BinanceSymbol, fromId: BinanceTradeId)
 
     /** A read of the history of a source other than trades, from `from` to `to`. */
@@ -339,6 +341,10 @@ object BinanceFakes {
     * @param history
     *   the records of each source other than trades, of which a read answers those whose time is
     *   within its window
+    * @param spot
+    *   the balances Binance reports in the spot wallet
+    * @param funding
+    *   the balances Binance reports in the funding wallet
     * @param closes
     *   the bars that exist
     * @param failures
@@ -351,6 +357,8 @@ object BinanceFakes {
     coinNames: Map[BinanceAsset, String] = Map.empty,
     trades: List[JsonObject] = List.empty,
     history: Map[BinanceSource, List[JsonObject]] = Map.empty,
+    spot: Map[BinanceAsset, BigDecimal] = Map.empty,
+    funding: Map[BinanceAsset, BigDecimal] = Map.empty,
     closes: Map[BinanceMinute, BigDecimal] = Map.empty,
     failures: PartialFunction[Call, Throwable] = PartialFunction.empty
   )
@@ -362,12 +370,21 @@ object BinanceFakes {
 
     /** From now on, the records of `source` that a read answers from are `records`. */
     def setHistory(source: BinanceSource, records: List[JsonObject]): IO[Unit]
+
+    /** From now on, the balances that Binance reports are `spot` and `funding`. */
+    def setBalances(
+      spot: Map[BinanceAsset, BigDecimal],
+      funding: Map[BinanceAsset, BigDecimal] = Map.empty
+    ): IO[Unit]
   }
 
   def binanceApi(script: ApiScript = ApiScript()): IO[FakeBinanceApi] =
     for {
       callsRef <- Ref.of[IO, List[Call]](List.empty)
       historyRef <- Ref.of[IO, Map[BinanceSource, List[JsonObject]]](script.history)
+      balancesRef <- Ref.of[IO, (Map[BinanceAsset, BigDecimal], Map[BinanceAsset, BigDecimal])](
+        (script.spot, script.funding)
+      )
     } yield {
       def called(call: Call): IO[Unit] =
         callsRef.update(_ :+ call) >> script.failures.lift(call).fold(IO.unit)(IO.raiseError)
@@ -392,6 +409,12 @@ object BinanceFakes {
 
         def coins: IO[Map[BinanceAsset, String]] =
           called(Call.Coins).as(script.coinNames)
+
+        def spotBalances: IO[Map[BinanceAsset, BigDecimal]] =
+          called(Call.SpotBalances) >> balancesRef.get.map { case (spot, _) => spot }
+
+        def fundingBalances: IO[Map[BinanceAsset, BigDecimal]] =
+          called(Call.FundingBalances) >> balancesRef.get.map { case (_, funding) => funding }
 
         def myTrades(symbol: BinanceSymbol, fromId: BinanceTradeId): IO[List[JsonObject]] =
           called(Call.Trades(symbol, fromId)).as(
@@ -444,12 +467,110 @@ object BinanceFakes {
           called(Call.Minute(bar)).as(script.closes.get(bar))
         }
 
+        def dailyBars(
+          symbol: BinanceSymbol,
+          from: LocalDate,
+          to: LocalDate
+        ): IO[List[BinanceDailyBar]] =
+          IO.raiseError(new UnsupportedOperationException("the sync reads no daily bars"))
+
+        def lastPrice(symbol: BinanceSymbol): IO[Option[BigDecimal]] =
+          IO.raiseError(new UnsupportedOperationException("the sync reads no last price"))
+
         def calls: IO[List[Call]] = callsRef.get
 
         def setHistory(source: BinanceSource, records: List[JsonObject]): IO[Unit] =
           historyRef.update(_.updated(source, records))
+
+        def setBalances(
+          spot: Map[BinanceAsset, BigDecimal],
+          funding: Map[BinanceAsset, BigDecimal]
+        ): IO[Unit] =
+          balancesRef.set((spot, funding))
       }
     }
+
+  /** What a fake `BinanceMarket` was asked, in the order it was asked. */
+  enum MarketCall {
+    case ExchangeInfo
+    case DailyBars(symbol: BinanceSymbol, from: LocalDate, to: LocalDate)
+    case LastPrice(symbol: BinanceSymbol)
+  }
+
+  /** What a fake `BinanceMarket` answers.
+    *
+    * @param pairs
+    *   the pairs `exchangeInfo` lists
+    * @param bars
+    *   the daily bars of each pair, oldest first; a pair that is not here is unknown to Binance
+    * @param prices
+    *   the last price of each pair; a pair that is not here has none
+    * @param failures
+    *   the calls that fail, with what they fail with
+    */
+  final case class MarketScript(
+    pairs: List[BinancePair] = List.empty,
+    bars: Map[BinanceSymbol, List[BinanceDailyBar]] = Map.empty,
+    prices: Map[BinanceSymbol, BigDecimal] = Map.empty,
+    failures: PartialFunction[MarketCall, Throwable] = PartialFunction.empty
+  )
+
+  trait FakeBinanceMarket extends BinanceMarket[IO] {
+
+    /** The calls made, oldest first. */
+    def calls: IO[List[MarketCall]]
+  }
+
+  def binanceMarket(script: MarketScript = MarketScript()): IO[FakeBinanceMarket] =
+    Ref.of[IO, List[MarketCall]](List.empty).map { callsRef =>
+      def called(call: MarketCall): IO[Unit] =
+        callsRef.update(_ :+ call) >> script.failures.lift(call).fold(IO.unit)(IO.raiseError)
+
+      new FakeBinanceMarket {
+        def exchangeInfo: IO[List[BinancePair]] = called(MarketCall.ExchangeInfo).as(script.pairs)
+
+        def minuteClose(symbol: BinanceSymbol, minute: Instant): IO[Option[BigDecimal]] =
+          IO.raiseError(new UnsupportedOperationException("the market data source reads no minute"))
+
+        def dailyBars(symbol: BinanceSymbol, from: LocalDate, to: LocalDate)
+          : IO[List[BinanceDailyBar]] =
+          called(MarketCall.DailyBars(symbol, from, to)) >> script.bars
+            .get(symbol)
+            .fold(IO.raiseError[List[BinanceDailyBar]](unknownSymbol))(bars =>
+              IO.pure(bars.filter(bar => !bar.date.isBefore(from) && !bar.date.isAfter(to)))
+            )
+
+        def lastPrice(symbol: BinanceSymbol): IO[Option[BigDecimal]] =
+          called(MarketCall.LastPrice(symbol)).as(script.prices.get(symbol))
+
+        def calls: IO[List[MarketCall]] = callsRef.get
+      }
+    }
+
+  // How Binance refuses a pair it does not know.
+  private def unknownSymbol: BinanceError =
+    BinanceError.Refused(BinanceError.InvalidSymbol, "Invalid symbol.")
+
+  /** A daily bar that opens on `date` and closes at the end of that day, with the prices given. */
+  def dailyBar(
+    date: String,
+    open: String,
+    high: String,
+    low: String,
+    close: String,
+    volume: String
+  ): BinanceDailyBar = {
+    val day = LocalDate.parse(date)
+    BinanceDailyBar(
+      day,
+      BigDecimal(open),
+      BigDecimal(high),
+      BigDecimal(low),
+      BigDecimal(close),
+      BigDecimal(volume),
+      day.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant.minusMillis(1)
+    )
+  }
 
   /** The pair and the first id of each read of trades. */
   def tradeReads(calls: List[Call]): List[(String, Long)] =

@@ -2,6 +2,8 @@
 
 Package `st.btu.trading.pillar.models.market` (domain), `gateways.MarketDataSource` (contract),
 `gateways.yahoo` (Yahoo Finance implementation), `gateways.tcs` (Tinkoff Invest implementation),
+`gateways.binance` (Binance implementation, over the keyless market client of
+[`binance.md`](binance.md)),
 `gateways.MarketDataSources` (routes a ticker to the implementation its source setting selects,
 and to the Yahoo symbol or Tinkoff board that setting names),
 `gateways.InstrumentDirectory` (resolves the id a broker gives an instrument to the instrument),
@@ -18,19 +20,24 @@ All in `st.btu.trading.pillar.models.market`:
 | Type | Shape | Notes |
 |---|---|---|
 | `Ticker` | `opaque type Ticker = String` | Named `Ticker`, not `Symbol`, to avoid shadowing `scala.Symbol`. |
-| `Source` | enum: `Yahoo`, `Tinkoff`, `Binance` (`enumeratum` `StringEnumEntry`, values `"yahoo"`/`"tinkoff"`/`"binance"`) | `Yahoo` and `Tinkoff` each have a `MarketDataSource` implementation (see below); `Binance` does not yet. |
+| `Source` | enum: `Yahoo`, `Tinkoff`, `Binance` (`enumeratum` `StringEnumEntry`, values `"yahoo"`/`"tinkoff"`/`"binance"`) | Each has a `MarketDataSource` implementation (see below). |
 | `ClassCode` | `opaque type ClassCode = String` | A broker's code for a trading board, e.g. `"TQBR"`. |
 | `YahooSymbol` | `opaque type YahooSymbol = String` | A symbol as Yahoo Finance knows an instrument, e.g. `"VOD.L"`; it can differ from the ticker the instrument goes by elsewhere (`VOD` at the broker). |
-| `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo(symbol: Option[YahooSymbol])`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])` | Where one ticker's data comes from. `Yahoo(None)` looks the ticker up on Yahoo as given and `Yahoo(Some(symbol))` asks Yahoo for `symbol` instead; `Tinkoff(None)` means the Tinkoff adapter's default board. `Binance` has no setting, so a ticker cannot be set to it. |
+| `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo(symbol: Option[YahooSymbol])`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])`, `SourceSetting.Binance` (a case object) | Where one ticker's data comes from. `Yahoo(None)` looks the ticker up on Yahoo as given and `Yahoo(Some(symbol))` asks Yahoo for `symbol` instead; `Tinkoff(None)` means the Tinkoff adapter's default board; `Binance` reads the ticker as the Binance pair of the same symbol, such as `BTCUSDC`, with no board or Yahoo symbol to choose. |
 | `TickerSource` | `TickerSource(ticker, setting: SourceSetting)` | The setting stored for a ticker. A ticker with none uses the router's default setting. |
 | `SourcedTicker` | `SourcedTicker(ticker, source: Source)` | A ticker paired with the source its stored data is read from; the key `DividendStorage.upcoming` takes. |
 | `BrokerInstrument` | `BrokerInstrument(instrument: InstrumentKey, ticker, classCode: Option[ClassCode], name: String, instrumentType: String, currency: Currency, updatedAt)` | A broker's own record of an instrument, found by its `InstrumentKey`: the broker and the id that broker gives it, a FIGI at Tinkoff. `classCode` is the board, for a broker that names one. `currency` is the currency the instrument settles in. |
 | `Bar` | `Bar(ticker, date: LocalDate, open, high, low, close, adjClose, volume: Long, source)` | One daily OHLCV bar. All prices are `BigDecimal`. |
 | `Quote` | `Quote(ticker, price: BigDecimal, currency: Currency, asOf: ZonedDateTime, source)` | A single live/last price. |
-| `InstrumentInfo` | `InstrumentInfo(ticker, origin: SourceSetting, name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `origin` is the setting the metadata was read under, with Tinkoff's board resolved: a Tinkoff adapter always reports `Tinkoff(Some(board))`, a Yahoo one `Yahoo(None)` or `Yahoo(Some(symbol))`. Two origins can describe one ticker differently, in another currency for instance: one source against another, one board against another, one Yahoo symbol against another. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
+| `InstrumentInfo` | `InstrumentInfo(ticker, origin: SourceSetting, name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `origin` is the setting the metadata was read under, with Tinkoff's board resolved: a Tinkoff adapter always reports `Tinkoff(Some(board))`, a Yahoo one `Yahoo(None)` or `Yahoo(Some(symbol))`, a Binance one `Binance`. Two origins can describe one ticker differently, in another currency for instance: one source against another, one board against another, one Yahoo symbol against another. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
 | `WatchlistItem` | `WatchlistItem(accountId, ticker, enabled: Boolean, note: Option[String], createdAt)` | Drives the sync process; managed via the `/watchlist` command or the consumer's own tooling. It has no source of its own: which source serves its ticker is the ticker's `SourceSetting`. |
 | `DividendEvent` | `DividendEvent(ticker, exDate: LocalDate, amount: BigDecimal, currency: Option[Currency], source)` | One dividend ex-date event. `currency` is `None` when the source doesn't report one distinct from the instrument's trading currency. |
 | `MarketDataError` | sealed: `NotFound(ticker)`, `RateLimited(retryAfter: Option[FiniteDuration])`, `Transient(message, cause)`, `SourceNotConfigured(source: Source)`, `Other(message, cause)` | Raised (not returned as `Either`) by every `MarketDataSource` method. `SourceNotConfigured` is raised by the router, not by an adapter: a ticker's source has no adapter wired. |
+
+Every price, whichever adapter read it, is a `BigDecimal` at 18 decimal places (`Prices.Scale`),
+rounded half up, so that a coin priced far below a cent keeps its digits. Exports show a price
+without trailing zeros, however many places it carries; replies show it at two decimals from 1 up
+and at four significant digits below 1 (see [Telegram commands](telegram-commands.md)).
 
 Every `currency` field is a `models.domain.Currency`, whose constructor normalises the code (see
 [`analytics.md`](analytics.md#rules), rule 10). Each adapter builds it from what its source reports,
@@ -104,7 +111,7 @@ calls is the symbol Yahoo is asked for, which is the bot's ticker unless the set
 - **Quote validation**: a quote is dropped (and a single warning logged with the drop count) if
   `open`/`high`/`low`/`close` is `NaN`, infinite or `<= 0`, or `volume < 0`.
 - **Numeric conversion**: `Double -> BigDecimal` via `java.math.BigDecimal.valueOf(d)`, then
-  `setScale(6, RoundingMode.HALF_UP)`.
+  `setScale(18, RoundingMode.HALF_UP)`.
 - **Error mapping** (`YFinanceError -> MarketDataError`):
 
   | `YFinanceError` | `MarketDataError` |
@@ -154,7 +161,7 @@ trait YahooApi[F[_]] {
 `dailyBars` maps `YahooChart`'s quotes to `Bar`s: `exDate` is derived from the UTC `ZonedDateTime`
 in the instrument's *exchange* timezone (from the same cached `YahooMetadata` bars use), `amount`
 is converted `Double -> BigDecimal` the same way as OHLC prices
-(`java.math.BigDecimal.valueOf(d)`, scaled to 6 decimals), and errors are mapped through the same
+(`java.math.BigDecimal.valueOf(d)`, scaled to 18 decimals), and errors are mapped through the same
 `YFinanceError -> MarketDataError` table as `dailyBars`/`metadata`.
 
 ### Yahoo symbols (`YahooSymbols`)
@@ -199,7 +206,7 @@ currency and divides by 100:
   minor unit and then carries the major currency; otherwise it stays without one. A dividend with a
   major currency of its own is left alone.
 
-Amounts keep the six-decimal scale after dividing, rounded half up. Valuation, positions and paper
+Amounts keep the 18-decimal price scale after dividing, rounded half up. Valuation, positions and paper
 trading therefore see the unit the broker's operations use (ISO 4217 has no code for pence), and an
 alert threshold for such a ticker is written in the major currency. The case matters: `GBP` is
 pounds and is not divided. The table is Yahoo's convention and lives in the adapter;
@@ -241,8 +248,9 @@ always populated, and `origin` (here and on `MarketDataSource.origin`) is
 `SourceSetting.Tinkoff(Some(board))` for the board the source or view looks tickers up on.
 
 Prices arrive as Tinkoff's `Quotation` (`units` + `nano`, a fixed-point decimal split across two
-integer fields) and are converted to `BigDecimal` as `units + nano / 1e9`, scaled to 6 decimals
-(`RoundingMode.HALF_UP`) - the same target scale `YahooMarketDataSource` uses.
+integer fields) and are converted to `BigDecimal` as `units + nano / 1e9`, scaled to 18 decimals
+(`RoundingMode.HALF_UP`) - the same target scale `YahooMarketDataSource` uses, which keeps every
+nano.
 
 Errors map from the gRPC `Status` code of a `StatusRuntimeException` (any other throwable becomes
 `MarketDataError.Other`):
@@ -262,7 +270,7 @@ Tinkoff's `Dividend` message has no explicit ex-dividend date field, so **`exDat
 as `last_buy_date + 1 day`** - the exchange convention that the ex-date is the first trading day on
 which a purchase no longer settles in time to land the buyer on the dividend register for that
 payment. This is a documented approximation, not an exact figure from the API. `amount` is
-`dividend_net` (a `MoneyValue`: `units + nano / 1e9`, scaled to 6 decimals, same as prices) and
+`dividend_net` (a `MoneyValue`: `units + nano / 1e9`, scaled to 18 decimals, same as prices) and
 `currency` is `dividend_net`'s own `currency` field. Entries without a `last_buy_date`, or whose
 `dividend_net` amount is zero, are skipped rather than guessed at.
 
@@ -310,6 +318,52 @@ Netty gRPC channel (`useTransportSecurity()`) and builds the
 `InstrumentsServiceFs2Grpc`/`MarketDataServiceFs2Grpc` stubs with the Bearer-auth interceptor; `TcsMarketDataSource.create` is the lower-level constructor
 for callers (tests, or an app that already manages the gRPC stubs) that supply the stubs directly -
 see `TcsMarketDataSourceSpec`.
+
+## Binance implementation (`BinanceMarketDataSource`)
+
+`gateways.binance.BinanceMarketDataSource` is a third `MarketDataSource[F[_]]` (`origin =
+SourceSetting.Binance`), over `BinanceMarket`, the keyless client of
+[`binance.md`](binance.md#the-keyless-client). A ticker set to Binance is the symbol of a spot
+pair, such as `BTCUSDC`, and its prices are quoted in the quote asset of the pair. It is the source
+the [held instruments service](#held-instruments-on-the-watchlist) sets the ticker of a held
+Binance coin to.
+
+- **`dailyBars`** gives the daily bars of the UTC days from `since` to `until`, read 1,000 days to
+  a call. Only days that have ended are returned: a bar whose close time, the last millisecond of
+  its day, is not before the time the bars were asked for is left out, so the bar of a day arrives
+  with the first request after it. `date` is the UTC day. Every price keeps the digits of the
+  decimal string Binance wrote it as, at the price scale, `adjClose` is `close` (a coin has no
+  splits or dividends to adjust for), `volume` is the volume traded in the base asset rounded down
+  to whole units, and `source` is `Binance`. A pair that Binance does not know, such as a delisted
+  one, raises `NotFound`.
+- **`latestQuote`** is the price of the latest trade of the pair, in the quote asset of the pair,
+  as of the time it was read. It is none for a pair Binance does not list, which is not asked for
+  its price, and for a listed pair that has none.
+- **`instrumentInfo`** describes a pair Binance lists: its name is `<base>/<quote>`, its type
+  `crypto`, its currency the quote asset, its exchange `BINANCE`, its time zone `UTC`, and it has
+  no FIGI. It is none for a pair Binance does not list.
+- **`dividends`** are none, and Binance is not asked.
+- **The pairs** come from `exchangeInfo`, read when first needed and again when the last reading is
+  an hour old. The quote and the description of every ticker share them, and the bars need none.
+- **Error mapping** (`BinanceError -> MarketDataError`):
+
+  | `BinanceError` | `MarketDataError` |
+  |---|---|
+  | `Refused` with `-1121`, a pair Binance does not know | `NotFound(ticker)` |
+  | `RetriesExhausted` on 429 | `RateLimited(None)`: Binance's `Retry-After` is not trusted, so there is no hint |
+  | `RetriesExhausted` on a 5xx, `Unreachable` | `Transient(message, cause)` |
+  | any other `Refused`, `Banned`, `UnexpectedResponse`, anything else | `Other(message, cause)` |
+
+Construction takes the `Clock[F]` that decides which bars have ended and when a quote was read:
+
+```scala
+object BinanceMarketDataSource {
+  def create[I[_]: Sync, F[_]: Sync](market: BinanceMarket[F])(implicit clock: Clock[F]): I[BinanceMarketDataSource[F]]
+}
+```
+
+One source serves every Binance ticker, so the router takes it as it is, with no wrapper that
+chooses by setting as Yahoo's and Tinkoff's have.
 
 ## Instrument directory (`InstrumentDirectory`)
 
@@ -422,20 +476,21 @@ trait MarketDataSources[F[_]] {
 }
 ```
 
-`MarketDataSourcesImpl(yahoo: Option[YahooSymbols[F]], tinkoff: Option[TinkoffBoards[F]], settings: TickerSourceStorage[F], default: SourceSetting)`:
+`MarketDataSourcesImpl(yahoo: Option[YahooSymbols[F]], tinkoff: Option[TinkoffBoards[F]], binance: Option[MarketDataSource[F]], settings: TickerSourceStorage[F], default: SourceSetting)`:
 
 - `settingFor` is the setting `TickerSourceStorage.find(ticker)` holds for the ticker, or `default`
   when it holds none (the README quick start uses `SourceSetting.Yahoo(None)`).
 - `forTicker` matches that setting exhaustively: `SourceSetting.Yahoo(symbol)` gives
   `yahoo.onSymbol(symbol)`, so a ticker set to a Yahoo symbol is looked up as that symbol, and
   `SourceSetting.Tinkoff(classCode)` gives `tinkoff.onBoard(classCode)`, so a ticker set to a board
-  is served from that board. When the setting's source has no adapter wired (the option is `None`,
-  e.g. no Tinkoff token is configured), it raises `MarketDataError.SourceNotConfigured(source)`,
-  whose message names the source.
+  is served from that board, and `SourceSetting.Binance` gives the `binance` adapter. When the
+  setting's source has no adapter wired (the option is `None`, e.g. no Tinkoff token is
+  configured), it raises `MarketDataError.SourceNotConfigured(source)`, whose message names the
+  source.
 - `serves(source)` says whether the router has an adapter for the source: Yahoo while `yahoo` is
-  defined, Tinkoff while `tinkoff` is defined, and Binance never, since no adapter serves it. A
-  caller that would write a setting asks it first, because a setting for a source the router cannot
-  serve makes every sync of its ticker fail; the
+  defined, Tinkoff while `tinkoff` is defined and Binance while `binance` is defined. A caller that
+  would write a setting asks it first, because a setting for a source the router cannot serve makes
+  every sync of its ticker fail; the
   [held instruments service](#held-instruments-on-the-watchlist) does.
 
 `forTicker` is for callers that need the adapter itself - `LiveStrategyServiceImpl.evaluate`,
@@ -528,7 +583,8 @@ keyed by `(ticker, source, date)` and nothing deletes them.
 
 A ticker has bars, and so a price, only once it is on a watchlist, so a position nobody put on one
 is unpriced in the valuation. `services.HeldInstrumentsService` puts the instruments every account
-holds, at every broker, on that account's watchlist:
+holds, at every broker, on that account's watchlist, with the [rate tickers](#rate-tickers-on-the-watchlist)
+that convert its currencies:
 
 ```scala
 trait HeldInstrumentsService[F[_]] {
@@ -539,7 +595,7 @@ object HeldInstrumentsServiceImpl {
   def create[I[_]: Functor, F[_]: MonadThrow: Clock](
     accounts: AccountStorage[F], operations: AccountOperationStorage[F],
     watchlist: WatchlistStorage[F], tickerSources: TickerSourceStorage[F],
-    directory: InstrumentDirectory[F], sources: MarketDataSources[F]
+    directory: InstrumentDirectory[F], sources: MarketDataSources[F], rates: RateTickerConfig
   )(implicit logs: Logs[I, F]): I[HeldInstrumentsService[F]]
 }
 ```
@@ -567,6 +623,8 @@ every stored account, in turn:
    of a sold holding stays. Two instruments of one ticker, such as one listed on two boards, add it
    once, and the first of them in key order sets its source. A ticker that has no setting and whose
    rule leaves it unwatched is not added.
+5. **Rate tickers**: the watchlist is read again, and the rate tickers the account's currencies
+   need are added to it (below).
 
 The pricing rule is an exhaustive match on the instrument's `Broker`:
 
@@ -574,13 +632,39 @@ The pricing rule is an exhaustive match on the instrument's `Broker`:
 |---|---|
 | Tinkoff | `SourceSetting.Tinkoff` on the instrument's own board, `BrokerInstrument.classCode`, while the router serves Tinkoff; no setting otherwise, so the ticker keeps the default source |
 | Interactive Brokers | `SourceSetting.Yahoo` under the symbol the [exchange rule](ibkr.md#yahoo-symbols) gives for the IB symbol and the listing exchange, written as `Yahoo(None)` when that symbol is the ticker itself, so that a deployment whose default source is not Yahoo still prices the instrument there; this while the router serves Yahoo, and no setting otherwise. An exchange without a rule, or an instrument that names none, gets no setting, and the service logs the ticker and its exchange |
-| Binance | none: no source serves the tickers of Binance's coins yet, so the outcome of the rule is `Unwatched`. The service writes no setting, leaves the ticker off the watchlist and logs it |
+| Binance | `SourceSetting.Binance` while the router serves Binance, so the coin joins the watchlist under its ticker, its pair such as `BTCUSDC`, and is priced from Binance's daily bars; while it does not, the outcome of the rule is `Unwatched`: the service writes no setting, leaves the ticker off the watchlist and logs it |
 
 A storage that fails fails the call, and the price-history process logs it and goes on. An
 instrument that has no setting after all of this is priced from the router's default source, except
 one the rule leaves unwatched: a ticker that is `Unwatched` and has no setting of its own stays off
 the watchlist, and one that has a setting of its own, such as a Binance coin set with
-`/source BTCUSDC yahoo BTC-USD`, joins the watchlist as any other held ticker does.
+`/source BTCUSDC yahoo BTC-USD`, joins the watchlist as any other held ticker does. A Binance coin
+whose ticker Binance does not list, such as one it has delisted, fails its price sync, which raises
+the failure alert the sync has for any ticker.
+
+### Rate tickers on the watchlist
+
+The valuation and the tax estimate convert an amount in another currency with the close of that
+currency's rate ticker, which is `<currency><base>=X` unless the deployment names another one for the
+currency (see [`analytics.md`](analytics.md#rules) and [`tax.md`](tax.md#fx-conversion)). A rate
+ticker has bars only once it is on a watchlist too, so the step adds them. `RateTickerConfig(baseCurrencies, fxTickers)` gives it
+the base currencies to convert into, such as the valuation's and the tax estimate's, and the rate
+tickers the deployment names:
+
+```scala
+final case class RateTickerConfig(baseCurrencies: Set[Currency], fxTickers: Map[Currency, Ticker] = Map.empty)
+```
+
+For each account the step collects the currencies that its executed operations are in, whatever
+their kind, and the currency each held instrument is priced in, which is the currency of its broker
+record. For each of those currencies and each base currency other than itself, `FxRates.rateTicker`
+gives the ticker. A ticker the account's watchlist lacks, in any state, is added enabled with the
+note `Added for the exchange rate of <currency>`, and logged. An entry that exists is left as it is,
+a disabled one included, and no source setting is written for a rate ticker: it is read from the
+source its own setting names, else from the default source. Two currencies that share a ticker add it
+once. A currency whose rate ticker has no bars, because its source cannot serve it, stays unpriced in
+the valuation and in the tax estimate, and the sync of that ticker fails, which raises the failure
+alert the sync has for any ticker.
 
 Known limits:
 
@@ -746,7 +830,7 @@ constructing any other yfinance4s model. `fromClient` calls `client.screener.scr
 count)` and maps each yfinance4s `ScreenerQuote` to `ScreenerRow`: `ticker` from `symbol`, `name`
 from `longName orElse shortName`, `price` from `regularMarketPrice`, `changePct` from
 `regularMarketChangePercent` (`Double -> BigDecimal` the same way `YahooMarketDataSource` converts
-prices: `java.math.BigDecimal.valueOf`, scaled to 6 decimals).
+prices: `java.math.BigDecimal.valueOf`, scaled to 18 decimals).
 
 `gateways.screener.YahooScreener[F[_]]` implements `Screener[F]` over `YahooScreenerApi[F]`, and is
 the one place trading-pillar's 3 screens map onto yfinance4s's 15:

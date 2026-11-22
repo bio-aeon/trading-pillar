@@ -1,10 +1,13 @@
 package st.btu.trading.pillar.services
 
-/** Keeps the instruments an account holds on its watchlist, so that they have price history. */
+/** Keeps the instruments an account holds on its watchlist, with the rate tickers that convert its
+  * currencies, so that they have price history.
+  */
 trait HeldInstrumentsService[F[_]] {
 
   /** For every stored account, adds the instruments it holds to its watchlist, and gives each held
-    * ticker that has no source setting the one its broker's pricing rule gives.
+    * ticker that has no source setting the one its broker's pricing rule gives. It then adds the
+    * rate tickers of the account's currencies.
     *
     * An account holds an instrument when the position its executed operations leave in it as of now
     * is not zero. Each held instrument is resolved through the instrument directory; one the
@@ -20,7 +23,17 @@ trait HeldInstrumentsService[F[_]] {
     * cannot serve would make every sync of the ticker fail. A stored setting is never changed.
     *
     * A held ticker that has no setting, and whose broker's rule finds no source to serve it, such
-    * as a Binance coin, is left off the watchlist, and the service logs it.
+    * as a Binance coin while the router has no Binance adapter, is left off the watchlist, and the
+    * service logs it.
+    *
+    * The rate tickers are the ones `FxRates.rateTicker` gives for each currency that the account's
+    * executed operations are in, or that a held instrument is priced in, into each base currency
+    * other than itself, so that the bars the valuation and the tax estimate convert with are
+    * synced. One the account's watchlist lacks, enabled or not, is added enabled, with the note
+    * `Added for the exchange rate of <currency>`. An entry already on the watchlist is left as it
+    * is, a disabled one included, and no source setting is written for a rate ticker: it is read
+    * from the source its own setting names, else from the default. A currency whose rate ticker has
+    * no bars stays unpriced in the valuation and the tax estimate.
     *
     * @return
     *   a failed `F` when a storage fails

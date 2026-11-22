@@ -34,8 +34,8 @@ Each tool declares its effect to clients, which show it to the model and to the 
 | `additive` | `bot_backtest` | additive, not idempotent | `command` | Runs a `/backtest` line and so saves a backtest run. |
 | `changing` | `bot_command` | destructive, not idempotent, open world | `command` | Runs any command line, including the ones that change the bot. |
 
-`live_quote`, `bot_query` and `bot_command` are declared open world because they can reach Yahoo
-and Tinkoff, as `/news`, `/screen` and `/analyze` do. `ticker_status` and `bot_backtest` read
+`live_quote`, `bot_query` and `bot_command` are declared open world because they can reach Yahoo,
+Tinkoff and Binance, as `/news`, `/screen` and `/analyze` do. `ticker_status` and `bot_backtest` read
 stored data only.
 
 The tools' names, titles and descriptions are what a client lists in `tools/list`. The server
@@ -54,7 +54,7 @@ SBER
 Source setting: tinkoff, board TQBR (set for this ticker)
 Adapter: none wired for tinkoff, so the sync skips this ticker
 Watchlist: enabled, note "core holding"
-Stored bars, latest date: yahoo 2026-03-02, tinkoff none
+Stored bars, latest date: yahoo 2026-03-02, tinkoff none, binance none
 Metadata: read from yahoo, currency RUB, updated 3 days ago
 Metadata origin: differs from the source setting; once an adapter is wired, the sync re-reads the metadata and refetches the bars
 ```
@@ -66,7 +66,7 @@ VOD
 Source setting: yahoo, symbol VOD.L (set for this ticker)
 Adapter: wired (yahoo, symbol VOD.L)
 Watchlist: not on the watchlist
-Stored bars, latest date: yahoo 2026-10-16, tinkoff none
+Stored bars, latest date: yahoo 2026-10-16, tinkoff none, binance none
 Metadata: read from yahoo, symbol VOD.L, currency GBP, updated 1 hour ago
 Metadata origin: matches the source setting
 ```
@@ -115,7 +115,7 @@ only. `bot_command` runs any line.
 
 | Effect | Lines |
 |---|---|
-| `Changing` | `/watchlist add SYM ...` and `/watchlist rm SYM`; `/source SYM yahoo (SYMBOL)`, `/source SYM tinkoff (BOARD)` and `/source SYM default`; `/alert price SYM ...` with a rule that parses and `/alert delete ID` with a numeric id; `/mute` and `/unmute` with any arguments |
+| `Changing` | `/watchlist add SYM ...` and `/watchlist rm SYM`; `/source SYM yahoo (SYMBOL)`, `/source SYM tinkoff (BOARD)`, `/source SYM binance` and `/source SYM default`; `/alert price SYM ...` with a rule that parses and `/alert delete ID` with a numeric id; `/mute` and `/unmute` with any arguments |
 | `Additive` | `/backtest` with a strategy and a ticker, which saves a run |
 | `ReadOnly` | every other command, among them `/sweep` (computes only), `/export` and `/help`; the read forms `/watchlist`, `/source` and `/source SYM`, `/alert rules`; and any line the handler would answer with its usage text alone, such as `/watchlist add` without a symbol or `/backtest` with one argument |
 

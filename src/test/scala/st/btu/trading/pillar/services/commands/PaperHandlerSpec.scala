@@ -103,6 +103,34 @@ class PaperHandlerSpec extends Specification with CatsEffect {
         }
       }
 
+      "prints the prices of a coin below a cent in their significant digits" >> {
+        val coin = Ticker("SHIB")
+        // 1,000,000 coins bought at 0.000008 and now at 0.00000823 are worth 8.23, 0.23 above cost
+        val priced =
+          PaperPosition(accountId, coin, 1000000L, BigDecimal("0.000008000000000000"), now)
+        val unpriced = PaperPosition(accountId, Ticker("PEPE"), 5L, BigDecimal("0.0000012"), now)
+        val order = filledOrder(1, Side.Buy, 1000000L, BigDecimal("0.000008000000000000"), "dip")
+        for {
+          handlerAndGateway <- buildHandler(
+            account = Some(PaperAccount(accountId, 1000, usd)),
+            positions = List(priced, unpriced),
+            orders = List(order),
+            quotes = Map(
+              coin -> IO
+                .pure(Some(Quote(coin, BigDecimal("0.000008230000000000"), usd, now, Source.Yahoo)))
+            )
+          )
+          (handler, tgGateway) = handlerAndGateway
+          _ <- handler.handle(chatId, Nil)
+          messages <- tgGateway.sentMessages
+        } yield {
+          val msg = messages.head.message
+          msg must contain("SHIB 1000000 @ 0.00000823 (avg 0.000008) = 8.23, P&L 0.23")
+          msg must contain("PEPE 5 (avg 0.0000012, unpriced)")
+          msg must contain("filled buy 1000000 @ 0.000008 (dip)")
+        }
+      }
+
       "marks a position unpriced when no quote is available, and excludes it from equity" >> {
         val position = PaperPosition(accountId, ticker, 10L, 90, now)
         for {

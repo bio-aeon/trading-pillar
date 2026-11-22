@@ -85,7 +85,13 @@ class McpToolsSpec extends Specification with CatsEffect {
       watchlistStorage <- MarketDataFakes.watchlistStorage(watchlist)
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       instrumentStorage <- MarketDataFakes.instrumentStorage(instruments)
-      sources = new MarketDataSourcesImpl[IO](yahoo, tinkoff, settings, SourceSetting.Yahoo(None))
+      sources = new MarketDataSourcesImpl[IO](
+        yahoo,
+        tinkoff,
+        None,
+        settings,
+        SourceSetting.Yahoo(None)
+      )
     } yield McpEnvironment(
       McpPorts(
         sources,
@@ -109,7 +115,7 @@ class McpToolsSpec extends Specification with CatsEffect {
       watchlist <- MarketDataFakes.watchlistStorage()
       priceHistory <- MarketDataFakes.priceHistoryStorage()
       instruments <- MarketDataFakes.instrumentStorage()
-      sources = new MarketDataSourcesImpl[IO](None, None, settings, SourceSetting.Yahoo(None))
+      sources = new MarketDataSourcesImpl[IO](None, None, None, settings, SourceSetting.Yahoo(None))
       handlers = CommandHandlers.standard[IO](
         gateway,
         List(new WatchlistHandler[IO](gateway, watchlist, settings, sources, accountId))
@@ -257,7 +263,7 @@ class McpToolsSpec extends Specification with CatsEffect {
             "Source setting: tinkoff, board TQBR (set for this ticker)",
             "Adapter: none wired for tinkoff, so the sync skips this ticker",
             "Watchlist: enabled, note \"core holding\"",
-            "Stored bars, latest date: yahoo 2026-03-02, tinkoff none",
+            "Stored bars, latest date: yahoo 2026-03-02, tinkoff none, binance none",
             "Metadata: read from yahoo, currency RUB, updated 3 days ago",
             "Metadata origin: differs from the source setting; " +
               "once an adapter is wired, the sync re-reads the metadata and refetches the bars"
@@ -275,7 +281,7 @@ class McpToolsSpec extends Specification with CatsEffect {
             |Source setting: yahoo (none set for this ticker, so the default)
             |Adapter: wired (yahoo)
             |Watchlist: not on the watchlist
-            |Stored bars, latest date: yahoo none, tinkoff none
+            |Stored bars, latest date: yahoo none, tinkoff none, binance none
             |Metadata: none stored""".stripMargin)
       }
 
@@ -295,7 +301,7 @@ class McpToolsSpec extends Specification with CatsEffect {
             |Source setting: tinkoff, default board (set for this ticker)
             |Adapter: wired (tinkoff, board TQBR)
             |Watchlist: not on the watchlist
-            |Stored bars, latest date: yahoo none, tinkoff 2026-10-16
+            |Stored bars, latest date: yahoo none, tinkoff 2026-10-16, binance none
             |Metadata: read from tinkoff, board TQBR, currency RUB, updated 1 hour ago
             |Metadata origin: matches the source setting""".stripMargin)
       }
@@ -321,7 +327,7 @@ class McpToolsSpec extends Specification with CatsEffect {
             |Source setting: yahoo, symbol VOD.L (set for this ticker)
             |Adapter: wired (yahoo, symbol VOD.L)
             |Watchlist: not on the watchlist
-            |Stored bars, latest date: yahoo 2026-10-16, tinkoff none
+            |Stored bars, latest date: yahoo 2026-10-16, tinkoff none, binance none
             |Metadata: read from yahoo, symbol VOD.L, currency GBP, updated 1 hour ago
             |Metadata origin: matches the source setting""".stripMargin)
       }
@@ -438,7 +444,7 @@ class McpToolsSpec extends Specification with CatsEffect {
           tools <- toolsOver(env)
           response <- McpFakes.call(botQuery(tools), "command" -> "/help")
         } yield response must_== answered("""/ping - health check
-            |/watchlist, /watchlist add SYM (yahoo|tinkoff) (note), or /watchlist rm SYM
+            |/watchlist, /watchlist add SYM (yahoo|tinkoff|binance) (note), or /watchlist rm SYM
             |/help - list available commands""".stripMargin)
       }
 

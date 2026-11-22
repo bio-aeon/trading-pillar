@@ -22,4 +22,11 @@ object SourceSetting {
   final case class Tinkoff(classCode: Option[ClassCode]) extends SourceSetting {
     def source: Source = Source.Tinkoff
   }
+
+  /** Binance, which reads the ticker as the symbol of the pair it names, such as `BTCUSDC`. There
+    * is no board or Yahoo symbol to choose.
+    */
+  case object Binance extends SourceSetting {
+    def source: Source = Source.Binance
+  }
 }

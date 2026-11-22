@@ -16,6 +16,7 @@ object Dependencies {
     val grpc = "1.64.0"
     val investContracts = "1.51"
     val specs2 = "4.20.5"
+    val catsEffect = "3.7.1"
     val catsEffectTesting = "1.5.0"
     val yfinance4s = "0.3.0"
   }
@@ -42,4 +43,5 @@ object Dependencies {
   val specs2Core = "org.specs2" %% "specs2-core" % Versions.specs2
   val specs2Scalacheck = "org.specs2" %% "specs2-scalacheck" % Versions.specs2
   val catsEffectTestingSpecs2 = "org.typelevel" %% "cats-effect-testing-specs2" % Versions.catsEffectTesting
+  val catsEffectTestkit = "org.typelevel" %% "cats-effect-testkit" % Versions.catsEffect
 }
