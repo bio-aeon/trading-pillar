@@ -1,16 +1,17 @@
 package st.btu.trading.pillar.tax
 
 import cats.syntax.functor.*
+import cats.syntax.traverse.*
 import st.btu.trading.pillar.models.domain.*
 
 import java.time.LocalDate
 
 /** Builds one year's [[AnnualTaxReport]] from a FIFO ledger plus the operations it was built from.
   * `operations` supplies what the ledger alone cannot: the dividend, coupon and withheld-tax
-  * amounts, which never open or close a lot, and the market value of the shares received as stock
-  * dividends, which is income as well as a new lot. This is an estimate for personal reference, not
-  * tax advice: it does not know about loss carry-forward, IIS deductions, or any rule beyond the
-  * ones implemented here.
+  * amounts, which never open or close a lot, the cash received as rewards, and the market value of
+  * the shares received as stock dividends and of the units received as rewards, which is income as
+  * well as a new lot. This is an estimate for personal reference, not tax advice: it does not know
+  * about loss carry-forward, IIS deductions, or any rule beyond the ones implemented here.
   */
 object TaxReport {
 
@@ -30,6 +31,11 @@ object TaxReport {
   /** Builds `year`'s tax report from `ledger` and the same `operations` it was computed from,
     * converting every monetary figure to `config.baseCurrency`.
     *
+    * A realized gain is converted on the day of its sale: its proceeds less the cost in the
+    * currency of the sale are converted together in that currency, and the cost in every other
+    * currency is converted in its own and taken off. A gain with an amount that cannot be converted
+    * is left out and counted once in `unconverted`.
+    *
     * @param fxRate
     *   approximates a currency's conversion rate on or before a date, e.g. from the latest stored
     *   FX close
@@ -48,12 +54,24 @@ object TaxReport {
 
     val yearGains = ledger.realized.filter(_.sellDate.getYear == year)
 
+    // The cost in the currency of the sale is taken off the proceeds before they are converted, so
+    // that a sale whose lots were all paid in its own currency converts exactly one amount.
+    def convertedGain(rg: RealizedGain): Option[BigDecimal] =
+      for {
+        sale <- convert(
+          rg.proceeds - rg.costBasis.getOrElse(rg.currency, Zero),
+          rg.currency,
+          rg.sellDate
+        )
+        costs <- rg.costBasis.removed(rg.currency).toList.traverse { case (currency, cost) =>
+          convert(cost, currency, rg.sellDate)
+        }
+      } yield sale - costs.sum
+
     val (realizedGains, exemptTotal, gainsUnconverted) =
       yearGains.foldLeft((Zero, Zero, 0)) { case ((realized, exempt, unconverted), rg) =>
-        convert(rg.gain, rg.currency, rg.sellDate) match {
+        convertedGain(rg) match {
           case Some(converted) =>
-            // An FX rate is always positive, so the sign of `converted` always matches the sign
-            // of `rg.gain` - checking either is equivalent.
             val exemptPart =
               if (isLongTerm(rg.holdingDays, config) && converted > Zero) converted else Zero
             (realized + converted, exempt + exemptPart, unconverted)
@@ -73,13 +91,26 @@ object TaxReport {
       op => op.price.fold(Zero)(_ * op.quantity)
     )
     val coupons = sumConverted(yearOps.filter(_.kind == OperationKind.Coupon), convert, _.amount)
+    val unitRewards = sumConverted(
+      yearOps.filter(op =>
+        op.kind == OperationKind.Reward && op.instrument.isDefined && op.price.isDefined
+      ),
+      convert,
+      op => op.price.fold(Zero)(_ * op.quantity)
+    )
+    val cashRewards = sumConverted(
+      yearOps.filter(op => op.kind == OperationKind.Reward && op.instrument.isEmpty),
+      convert,
+      _.amount
+    )
     val withheld =
       sumConverted(yearOps.filter(_.kind == OperationKind.Tax), convert, op => -op.amount)
 
     val estimatedTax = progressiveTax(taxableGains, config)
     val unconverted =
       gainsUnconverted + dividends.unconverted + stockDividends.unconverted +
-        coupons.unconverted + withheld.unconverted
+        coupons.unconverted + unitRewards.unconverted + cashRewards.unconverted +
+        withheld.unconverted
 
     AnnualTaxReport(
       year,
@@ -88,6 +119,7 @@ object TaxReport {
       taxableGains,
       dividends.total + stockDividends.total,
       coupons.total,
+      unitRewards.total + cashRewards.total,
       withheld.total,
       estimatedTax,
       unconverted,

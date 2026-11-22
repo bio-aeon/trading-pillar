@@ -4,7 +4,7 @@ import cats.Applicative
 import cats.effect.{Clock, IO, Ref}
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
-import io.circe.{JsonObject, parser}
+import io.circe.{Json, JsonObject, parser}
 import st.btu.trading.pillar.gateways.binance.*
 import st.btu.trading.pillar.models.binance.*
 import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation}
@@ -144,6 +144,46 @@ object BinanceFakes {
          |"fromAsset":"$from","fromAmount":"$fromAmount","toAsset":"$to","toAmount":"$toAmount",
          |"ratio":"0.1","inverseRatio":"10","createTime":${at(time).toEpochMilli}}""".stripMargin
     )
+
+  /** A distribution or an airdrop, or the debit of one, as `asset/assetDividend` lists it:
+    * `direction` is 1 for a credit and -1 for a debit.
+    */
+  def distribution(
+    id: Long,
+    asset: String,
+    amount: String,
+    time: String,
+    direction: Int = 1
+  ): JsonObject =
+    obj(s"""{"id":$id,"amount":"$amount","asset":"$asset","divTime":${at(time).toEpochMilli},
+         |"enInfo":"$asset distribution","tranId":2968885920,"direction":$direction}""".stripMargin)
+
+  /** One detail of a dust conversion: `amount` of `from` converted into `received` of `target`, net
+    * of `charge`, as `asset/dribblet` lists it. A detail with no target is one from before the
+    * target could be chosen.
+    */
+  def dustDetail(
+    transId: Long,
+    from: String,
+    amount: String,
+    received: String,
+    charge: String,
+    time: String,
+    target: Option[String] = Some("BNB")
+  ): JsonObject = {
+    val targetField = target.fold("")(coin => s""","targetAsset":"$coin"""")
+    obj(s"""{"transId":$transId,"serviceChargeAmount":"$charge","amount":"$amount",
+         |"operateTime":${at(time).toEpochMilli},"transferedAmount":"$received",
+         |"fromAsset":"$from"$targetField}""".stripMargin)
+  }
+
+  /** A conversion of dust with the details given, as `asset/dribblet` lists it. */
+  def dustConversion(transId: Long, time: String, details: JsonObject*): JsonObject = {
+    val detailList = Json.arr(details.map(Json.fromJsonObject)*).noSpaces
+    obj(s"""{"operateTime":${at(time).toEpochMilli},"totalTransferedAmount":"0.001",
+         |"totalServiceChargeAmount":"0.00002","transId":$transId,
+         |"userAssetDribbletDetails":$detailList}""".stripMargin)
+  }
 
   /** An operation as a spec compares it: its ref, kind, instrument id, quantity, price, amount,
     * currency and broker type.
@@ -461,6 +501,12 @@ object BinanceFakes {
 
         def convertTradeFlow(from: Instant, to: Instant): IO[List[JsonObject]] =
           within(BinanceSource.Convert, from, to)
+
+        def assetDividends(from: Instant, to: Instant): IO[List[JsonObject]] =
+          within(BinanceSource.Dividend, from, to)
+
+        def dustLog(from: Instant, to: Instant): IO[List[JsonObject]] =
+          within(BinanceSource.Dust, from, to)
 
         def minuteClose(symbol: BinanceSymbol, minute: Instant): IO[Option[BigDecimal]] = {
           val bar = BinanceMinute(symbol, minute)

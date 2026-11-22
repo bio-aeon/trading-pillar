@@ -335,6 +335,35 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
             (d1, BigDecimal(800), BigDecimal(1000), BigDecimal(0)) // 700 in cash and 5 * 20
           )
         }
+
+        "counts the units and the cash of a reward in the value, without counting them as invested" >> {
+          val d1 = d0.plusDays(1)
+          val ops = List(
+            deposit(d0, 1000),
+            // 5 units of F1 received as a reward, and 30 in cash as another
+            accountOperation(
+              accountId,
+              OperationKind.Reward,
+              0,
+              at(d1),
+              Some("F1"),
+              quantity = 5,
+              price = Some(10)
+            ),
+            accountOperation(accountId, OperationKind.Reward, 30, at(d1))
+          )
+          for {
+            service <- buildService(
+              ops,
+              List(brokerInstrument("F1", aaa)),
+              bars = List(bar(aaa, d1, 12))
+            )
+            series <- service.dailySeries(accountId, d0, d1)
+          } yield series.points.map(p => (p.date, p.value, p.invested, p.cashFlow)) must_== Vector(
+            (d0, BigDecimal(1000), BigDecimal(1000), BigDecimal(1000)),
+            (d1, BigDecimal(1090), BigDecimal(1000), BigDecimal(0)) // 1030 in cash and 5 * 12
+          )
+        }
       }
 
       "instrument mapping" >> {

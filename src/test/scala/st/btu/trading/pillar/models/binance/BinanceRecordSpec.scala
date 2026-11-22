@@ -67,6 +67,54 @@ class BinanceRecordSpec extends Specification {
           .map(_.recordId) must beRight(BinanceRecordId("940708407462087201"))
       }
 
+      "a distribution is named by its id, as the digits Binance sent, and dated by its distribution time" >> {
+        val attributes = distribution(1637366104L, "BHFT", "10", "2026-03-10T08:30:00Z")
+        BinanceRecord
+          .of(accountId, BinanceSource.Dividend, attributes)
+          .map(r => (r.recordId, r.occurredAt)) must beRight(
+          (BinanceRecordId("1637366104"), at("2026-03-10T08:30:00Z"))
+        )
+      }
+
+      "a distribution id that a double would round keeps its digits" >> {
+        val attributes = obj(
+          """{"id":940708407462087201,"asset":"BHFT","amount":"1","divTime":1773146096789,"direction":1}"""
+        )
+        BinanceRecord
+          .of(accountId, BinanceSource.Dividend, attributes)
+          .map(_.recordId) must beRight(BinanceRecordId("940708407462087201"))
+      }
+
+      "a dust conversion is named by its own transaction id, not that of its details, and dated by its operation time" >> {
+        val attributes = dustConversion(
+          45178372831L,
+          "2026-03-10T09:15:00Z",
+          dustDetail(4359321L, "USDT", "0.0009", "0.000441", "0.000009", "2026-03-10T09:15:00Z")
+        )
+        BinanceRecord
+          .of(accountId, BinanceSource.Dust, attributes)
+          .map(r => (r.recordId, r.occurredAt)) must beRight(
+          (BinanceRecordId("45178372831"), at("2026-03-10T09:15:00Z"))
+        )
+      }
+
+      "refuses a distribution without its time, naming the record and the field" >> {
+        val attributes = obj("""{"id":5,"asset":"BHFT"}""")
+        BinanceRecord
+          .of(accountId, BinanceSource.Dividend, attributes) must beLeft[BinanceRecordError](
+          BinanceRecordError
+            .MissingField(BinanceSource.Dividend, Some(BinanceRecordId("5")), "divTime")
+        )
+      }
+
+      "refuses a dust conversion without its transaction id, naming the field" >> {
+        val attributes = obj("""{"operateTime":1773146096789}""")
+        BinanceRecord
+          .of(accountId, BinanceSource.Dust, attributes) must beLeft[BinanceRecordError](
+          BinanceRecordError.MissingField(BinanceSource.Dust, None, "transId")
+        )
+      }
+
       "refuses a record without its id, naming the field" >> {
         val attributes = obj(s"""{"coin":"BTC","insertTime":1}""")
         BinanceRecord
@@ -103,6 +151,9 @@ class BinanceRecordSpec extends Specification {
         recordOf(BinanceSource.Trade, "BTCUSDC/28457").ref must_==
           OperationRef("trade/BTCUSDC/28457")
         recordOf(BinanceSource.FiatBuy, "P1").ref must_== OperationRef("fiat_buy/P1")
+        recordOf(BinanceSource.Dividend, "1637366104").ref must_==
+          OperationRef("dividend/1637366104")
+        recordOf(BinanceSource.Dust, "45178372831").ref must_== OperationRef("dust/45178372831")
       }
     }
 
@@ -123,6 +174,13 @@ class BinanceRecordSpec extends Specification {
       "a ref under the record's own" >> {
         owner.owns(OperationRef("trade/BTCUSDC/28/fee")) must beTrue
         owner.owns(OperationRef("trade/BTCUSDC/28/received")) must beTrue
+      }
+
+      "the refs of the exchanges of the details of a dust conversion" >> {
+        val conversion = recordOf(BinanceSource.Dust, "45178372831")
+        conversion.owns(OperationRef("dust/45178372831/4359321")) must beTrue
+        conversion.owns(OperationRef("dust/45178372831/4359321/received")) must beTrue
+        conversion.owns(OperationRef("dust/451783728310/4359321")) must beFalse
       }
 
       "not the ref of a record whose id only starts with the same digits" >> {

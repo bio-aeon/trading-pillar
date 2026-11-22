@@ -852,6 +852,7 @@ Long-term exempt: 12000.00
 Taxable gains: 42200.00
 Dividend income: 3100.00
 Coupon income: 800.00
+Reward income: 450.00
 Taxes withheld: 403.00
 Estimated tax: 5486.00
 ```
@@ -859,7 +860,9 @@ Estimated tax: 5486.00
 Built from `TaxService.annualReport` (FIFO lots via `TaxLots.fifo`, the estimate via
 `TaxReport.annual` - see [`tax.md`](tax.md)). `year` defaults to the current year (UTC) when
 omitted or not an integer. The `Long-term exempt` line appears only when `TaxConfig.longTermYears`
-is set; without it every gain is taxable. A trailing line, `"N amount(s) could not be converted to
+is set; without it every gain is taxable. `Reward income` is the market value of the year's rewards,
+such as the distributions and airdrops of a Binance account, and like the dividend and coupon
+income it is shown for reference and is not in the estimated tax. A trailing line, `"N amount(s) could not be converted to
 RUB and were excluded."`, appears only when `unconverted > 0`. Single-account app, same as every
 other handler: the handler is constructed with a fixed `AccountId`, not derived from the chat.
 
@@ -871,14 +874,16 @@ Usage: `/lots SYM - open FIFO tax lots for a ticker`
 /lots AAPL
 ```
 ```
-10 @ 140.00 acquired 2022-03-01 (1312 day(s), long-term)
-5 @ 165.00 acquired 2025-06-10 (115 day(s))
+10 @ 140.00 USD acquired 2022-03-01 (1312 day(s), long-term)
+5 @ 165.00 USD acquired 2025-06-10 (115 day(s))
 ```
 
 One line per open lot for that ticker (`TaxService.openLots`, oldest first): quantity (plain digits,
 without trailing zeros or an exponent), unit cost, acquisition date, holding days as of today (UTC)
 and a trailing `, long-term` when `holdingDays >= TaxConfig.longTermYears * 365`, never while
-`longTermYears` is unset. `No open lots for SYM.` when there are none (including an unknown ticker).
+`longTermYears` is unset. The unit cost names the currency it was paid in, `@ 20000.00 EUR`; a cost
+paid in several currencies joins its parts with ` + `, ordered by currency code, as in
+`@ 0.00123 BNB + 20000.00 EUR`; a lot that cost nothing shows `@ 0`. `No open lots for SYM.` when there are none (including an unknown ticker).
 `Usage: ...` when the ticker is missing.
 
 ### `/export`

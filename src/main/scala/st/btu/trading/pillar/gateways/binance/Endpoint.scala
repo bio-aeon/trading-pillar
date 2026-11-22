@@ -24,6 +24,8 @@ private[binance] enum Bucket(val limit: Int, val scope: Scope) {
   case Deposits extends Bucket(SapiIpLimit, Scope.Ip)
   case FiatPayments extends Bucket(SapiIpLimit, Scope.Ip)
   case FundingAsset extends Bucket(SapiIpLimit, Scope.Ip)
+  case AssetDividend extends Bucket(SapiIpLimit, Scope.Ip)
+  case Dribblet extends Bucket(SapiIpLimit, Scope.Ip)
   case Withdrawals extends Bucket(SapiAccountLimit, Scope.Account)
   case FiatOrders extends Bucket(SapiAccountLimit, Scope.Account)
   case ConvertTradeFlow extends Bucket(SapiAccountLimit, Scope.Account)
@@ -96,6 +98,9 @@ private[binance] enum SignedEndpoint(
         Bucket.FundingAsset,
         Method.POST
       )
+  case AssetDividend
+      extends SignedEndpoint(ApiHost, "/sapi/v1/asset/assetDividend", 10, Bucket.AssetDividend)
+  case Dribblet extends SignedEndpoint(ApiHost, "/sapi/v1/asset/dribblet", 1, Bucket.Dribblet)
 
   val uri: Uri = Uri.unsafeParse(host + path)
 }

@@ -4,16 +4,20 @@ import st.btu.trading.pillar.analytics.Proportions
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.strategy.indicators.Indicators.divide
+import st.btu.trading.pillar.tax.Costs.{over, perUnit, plus, times}
 
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 import scala.math.BigDecimal.RoundingMode
 
-/** Pure FIFO cost-basis engine over an account's executed operations. One `Lot` is opened per buy
-  * or security-transfer-in operation that added units; a sell consumes the oldest open lots first,
-  * partially when the sell falls inside a lot, and always produces exactly one `RealizedGain`. A
-  * security transfer out consumes the oldest open lots the same way but realizes nothing: the units
-  * left the account at their cost, and a transfer is not a disposal.
+/** Pure FIFO cost-basis engine over an account's executed operations. One `Lot` is opened per buy,
+  * security-transfer-in, stock dividend or reward operation that added units; a sell consumes the
+  * oldest open lots first, partially when the sell falls inside a lot, and always produces exactly
+  * one `RealizedGain`. A security transfer out consumes the oldest open lots the same way but
+  * realizes nothing: the units left the account at their cost, and a transfer is not a disposal.
+  *
+  * A lot keeps its cost in the currencies it was paid in, and a sale reports the cost of the lots
+  * it consumed in those currencies, for the report to convert on the day of the sale.
   *
   * Corporate actions carry the lots through: a split scales the lots of its instrument, a
   * conversion moves the lots of what was given up to what was received, a spin-off gives the new
@@ -37,11 +41,16 @@ object TaxLots {
     * @param allocations
     *   the share of a spin-off parent's cost that moves to each new instrument; a spin-off with no
     *   allocation for an instrument gives it none of the cost
+    * @param transferCosts
+    *   what the owner paid for the units of a transfer in, by the operation's `ref`: its lot costs
+    *   that, in the currency of the cost, and is acquired on the day the cost gives where it gives
+    *   one; a transfer in with none costs its own price
     */
   def fifo(
     operations: List[AccountOperation],
     tickerOf: InstrumentKey => Option[Ticker],
-    allocations: List[CorporateActionAllocation] = Nil
+    allocations: List[CorporateActionAllocation] = Nil,
+    transferCosts: List[TransferCost] = Nil
   ): LotLedger = {
     // One chronological order for the whole account: the operation's instant, then its ref as a
     // tiebreaker for same-instant operations.
@@ -50,7 +59,13 @@ object TaxLots {
       .flatMap(op => op.instrument.map(OnInstrument(_, op)))
       .sortBy(entry => (entry.operation.occurredAt, entry.operation.ref.value))
 
-    val fold = new Fold(FeePools.of(ordered), tickerOf, allocations)
+    val fold =
+      new Fold(
+        FeePools.of(ordered),
+        tickerOf,
+        allocations,
+        transferCosts.map(cost => cost.ref -> cost).toMap
+      )
     val end = stepsOf(ordered).foldLeft(State.empty)(fold(_, _))
 
     LotLedger(
@@ -135,36 +150,49 @@ object TaxLots {
     val empty: State = State(Map.empty, Nil, Map.empty)
   }
 
-  // The fees and the trades that share a fee: those of one instrument on one day in one currency. A
-  // fee is added to a cost, or taken from proceeds, only in its own currency, since the ledger has
-  // no exchange rates; a fee in a currency that the instrument has no trade in that day belongs to
-  // no trade.
-  private final case class FeePool(instrument: InstrumentKey, date: LocalDate, currency: Currency)
+  // The fees and the trades that share a fee: those of one instrument on one day.
+  private final case class Day(instrument: InstrumentKey, date: LocalDate)
 
-  // Each pool's total fee, pro-rated separately into that same day's buys (added to cost) and sells
-  // (subtracted from proceeds) in that currency. A single day's fee is used in full for each side
-  // independently; this is a documented simplification (docs/tax.md), not a claim that a day never
-  // mixes a buy's and a sell's own separate commissions.
+  // The trades of one day in one currency. A fee goes to the trades in its own currency when there
+  // are any; otherwise it goes to all of the day's trades, whatever their currency.
+  private final case class FeePool(day: Day, currency: Currency)
+
+  // What was traded on one side, buys or sells, in each pool and in each day.
+  private final case class Traded(byPool: Map[FeePool, BigDecimal], byDay: Map[Day, BigDecimal])
+
+  // Each day's fees by currency, pro-rated by quantity separately into that same day's buys (added
+  // to cost) and sells (taken from proceeds, or added to the cost basis when the fee is in another
+  // currency). A single day's fee is used in full for each side independently; this is a
+  // documented simplification (docs/tax.md), not a claim that a day never mixes a buy's and a
+  // sell's own separate commissions.
   private final class FeePools(
-    fees: Map[FeePool, BigDecimal],
-    buyQuantities: Map[FeePool, BigDecimal],
-    sellQuantities: Map[FeePool, BigDecimal]
+    fees: Map[Day, Map[Currency, BigDecimal]],
+    buys: Traded,
+    sells: Traded
   ) {
 
-    def buyShare(entry: OnInstrument): BigDecimal =
-      shareOf(entry, entry.operation.quantity, buyQuantities)
+    // The fee amounts that join the cost of the buy, by currency, in total and not per unit.
+    def buyShares(entry: OnInstrument): Map[Currency, BigDecimal] =
+      sharesOf(entry, entry.operation.quantity, buys)
 
-    def sellShare(entry: OnInstrument): BigDecimal =
-      shareOf(entry, entry.operation.quantity.abs, sellQuantities)
+    // The fee amounts that come off the sale, by currency: the share in the sale's own currency
+    // comes off the proceeds, the others join the cost basis.
+    def sellShares(entry: OnInstrument): Map[Currency, BigDecimal] =
+      sharesOf(entry, entry.operation.quantity.abs, sells)
 
-    private def shareOf(
+    private def sharesOf(
       entry: OnInstrument,
       quantity: BigDecimal,
-      quantities: Map[FeePool, BigDecimal]
-    ): BigDecimal = {
-      val pool = FeePools.poolOf(entry)
-      val poolQuantity = quantities.getOrElse(pool, Zero)
-      if (poolQuantity <= Zero) Zero else fees.getOrElse(pool, Zero) * quantity / poolQuantity
+      traded: Traded
+    ): Map[Currency, BigDecimal] = {
+      val day = FeePools.dayOf(entry)
+      Costs.total(fees.getOrElse(day, Map.empty).toList.flatMap { case (currency, fee) =>
+        val inCurrency = traded.byPool.getOrElse(FeePool(day, currency), Zero)
+        val (among, owes) =
+          if (inCurrency > Zero) (inCurrency, currency == entry.operation.currency)
+          else (traded.byDay.getOrElse(day, Zero), true)
+        Option.when(owes && among > Zero)(Costs.in(currency, fee * quantity / among))
+      })
     }
   }
 
@@ -174,25 +202,34 @@ object TaxLots {
       new FeePools(
         entries
           .filter(_.operation.kind == OperationKind.Fee)
-          .groupMapReduce(poolOf)(_.operation.amount.abs)(_ + _),
-        quantityByPool(entries, OperationKind.Buy),
-        quantityByPool(entries, OperationKind.Sell)
+          .groupBy(dayOf)
+          .view
+          .mapValues(_.groupMapReduce(_.operation.currency)(_.operation.amount.abs)(_ + _))
+          .toMap,
+        tradedOf(entries, OperationKind.Buy),
+        tradedOf(entries, OperationKind.Sell)
       )
 
-    def poolOf(entry: OnInstrument): FeePool =
-      FeePool(entry.instrument, entry.operation.occurredOn, entry.operation.currency)
+    def dayOf(entry: OnInstrument): Day = Day(entry.instrument, entry.operation.occurredOn)
 
-    private def quantityByPool(
-      entries: List[OnInstrument],
-      kind: OperationKind
-    ): Map[FeePool, BigDecimal] =
-      entries
-        .filter(_.operation.kind == kind)
-        .groupMapReduce(poolOf)(_.operation.quantity.abs)(_ + _)
+    private def tradedOf(entries: List[OnInstrument], kind: OperationKind): Traded = {
+      val trades = entries.filter(_.operation.kind == kind)
+      Traded(
+        trades.groupMapReduce(poolOf)(_.operation.quantity.abs)(_ + _),
+        trades.groupMapReduce(dayOf)(_.operation.quantity.abs)(_ + _)
+      )
+    }
+
+    private def poolOf(entry: OnInstrument): FeePool =
+      FeePool(dayOf(entry), entry.operation.currency)
   }
 
   // A part of what a conversion gave up: `units` of one lot, or of the units no lot covered.
-  private final case class Piece(units: BigDecimal, acquiredOn: LocalDate, cost: BigDecimal)
+  private final case class Piece(
+    units: BigDecimal,
+    acquiredOn: LocalDate,
+    cost: Map[Currency, BigDecimal]
+  )
 
   // A leg of a conversion that received units, and its share of the cost of what was given up.
   private final case class Received(leg: OnInstrument, costShare: BigDecimal)
@@ -208,13 +245,14 @@ object TaxLots {
 
   // What one leg that gave up units takes of a conversion: the units of each instrument received,
   // in the order of `Terms.received`, the cash it is paid, and the cash it pays, which adds to the
-  // cost of the units received.
+  // cost of the units received in the currency of the cash.
   private final case class Portion(units: List[BigDecimal], cash: BigDecimal, paid: BigDecimal)
 
   private final class Fold(
     fees: FeePools,
     tickerOf: InstrumentKey => Option[Ticker],
-    allocations: List[CorporateActionAllocation]
+    allocations: List[CorporateActionAllocation],
+    transferCosts: Map[OperationRef, TransferCost]
   ) {
 
     def apply(state: State, step: Step): State =
@@ -229,18 +267,17 @@ object TaxLots {
       val date = op.occurredOn
       op.kind match {
         case OperationKind.Buy =>
-          val feeShare = fees.buyShare(entry)
-          val unitCost =
-            if (op.quantity.signum == 0) Zero else (op.amount.abs + feeShare) / op.quantity
-          state.withLot(Lot(instrument, op.quantity, unitCost, date))
+          val cost = Costs.in(op.currency, op.amount.abs).plus(fees.buyShares(entry))
+          state.withLot(Lot(instrument, op.quantity, cost.perUnit(op.quantity), date))
         case OperationKind.SecurityIn =>
-          state.withLot(Lot(instrument, op.quantity, op.price.getOrElse(Zero), date))
+          state.withLot(transferredIn(entry))
         case OperationKind.Sell =>
           val sold = op.quantity.abs
-          val proceeds = op.amount.abs - fees.sellShare(entry)
+          val shares = fees.sellShares(entry)
+          val proceeds = op.amount.abs - shares.getOrElse(op.currency, Zero)
           val (consumed, remaining) = state.consume(instrument, sold)
           val matchedQty = consumed.iterator.map(_.quantity).sum
-          val costBasis = consumed.iterator.map(c => c.lot.unitCost * c.quantity).sum
+          val costBasis = costOf(consumed).plus(shares.removed(op.currency))
           remaining.withRealized(
             RealizedGain(
               instrument,
@@ -250,7 +287,6 @@ object TaxLots {
               op.currency,
               proceeds,
               costBasis,
-              proceeds - costBasis,
               holdingDaysOf(consumed, date, matchedQty)
             )
           )
@@ -258,15 +294,38 @@ object TaxLots {
           state.consume(instrument, op.quantity.abs)._2
         case OperationKind.Split =>
           split(state, instrument, op.quantity, date)
-        case OperationKind.StockDividend =>
+        case OperationKind.StockDividend | OperationKind.Reward =>
           if (op.quantity.signum < 0) state.consume(instrument, op.quantity.abs)._2
-          else state.withLot(Lot(instrument, op.quantity, op.price.getOrElse(Zero), date))
+          else
+            state.withLot(
+              Lot(instrument, op.quantity, Costs.in(op.currency, op.price.getOrElse(Zero)), date)
+            )
         case OperationKind.Conversion | OperationKind.Spinoff =>
           together(state, date, List(entry))
         case OperationKind.Deposit | OperationKind.Withdrawal | OperationKind.Dividend |
             OperationKind.Coupon | OperationKind.Interest | OperationKind.Fee | OperationKind.Tax |
             OperationKind.Exchange | OperationKind.Other =>
           state
+      }
+    }
+
+    private def transferredIn(entry: OnInstrument): Lot = {
+      val op = entry.operation
+      transferCosts.get(op.ref) match {
+        case Some(entered) =>
+          Lot(
+            entry.instrument,
+            op.quantity,
+            Costs.in(entered.currency, entered.cost).perUnit(op.quantity),
+            entered.acquiredOn.getOrElse(op.occurredOn)
+          )
+        case None =>
+          Lot(
+            entry.instrument,
+            op.quantity,
+            Costs.in(op.currency, op.price.getOrElse(Zero)),
+            op.occurredOn
+          )
       }
     }
 
@@ -284,14 +343,14 @@ object TaxLots {
       val held = lots.iterator.map(_.quantity).sum
       val after = held + quantity
       if (held.signum == 0 && quantity.signum > 0)
-        state.withLot(Lot(instrument, quantity, Zero, date))
+        state.withLot(Lot(instrument, quantity, Costs.Free, date))
       else if (after <= Zero) state.consume(instrument, quantity.abs)._2
       else
         state.withLots(
           instrument,
           lots.zip(Proportions.apportion(after, lots.map(_.quantity))).collect {
             case (lot, units) if units.signum > 0 =>
-              lot.copy(quantity = units, unitCost = divide(lot.unitCost * lot.quantity, units))
+              lot.copy(quantity = units, unitCost = lot.unitCost.times(lot.quantity).over(units))
           }
         )
     }
@@ -359,8 +418,8 @@ object TaxLots {
         from.fold((List.empty[Consumed], state))(leg => state.consume(leg.instrument, units))
       val matched = consumed.iterator.map(_.quantity).sum
       val pieces =
-        consumed.map(c => Piece(c.quantity, c.lot.acquiredOn, c.lot.unitCost * c.quantity)) ++
-          Option.when(units > matched)(Piece(units - matched, terms.date, Zero))
+        consumed.map(c => Piece(c.quantity, c.lot.acquiredOn, c.lot.unitCost.times(c.quantity))) ++
+          Option.when(units > matched)(Piece(units - matched, terms.date, Costs.Free))
       val pieceUnits = pieces.map(_.units)
       val paidByPiece = Proportions.apportion(portion.paid, pieceUnits)
       val lots = for {
@@ -369,8 +428,10 @@ object TaxLots {
           pieces.zip(Proportions.apportion(unitsReceived, pieceUnits)).zip(paidByPiece)
         if quantity.signum > 0
       } yield {
-        val cost = received.costShare * ((BigDecimal(1) - terms.disposed) * piece.cost + paid)
-        Lot(received.leg.instrument, quantity, divide(cost, quantity), piece.acquiredOn)
+        val charged = terms.cashCurrency.fold(Costs.Free)(Costs.in(_, paid))
+        val cost =
+          piece.cost.times(BigDecimal(1) - terms.disposed).plus(charged).times(received.costShare)
+        Lot(received.leg.instrument, quantity, cost.over(quantity), piece.acquiredOn)
       }
       val sale = from
         .filter(_ => terms.disposed.signum > 0)
@@ -385,8 +446,7 @@ object TaxLots {
       consumed: List[Consumed],
       matched: BigDecimal,
       terms: Terms
-    ): RealizedGain = {
-      val costBasis = terms.disposed * consumed.iterator.map(c => c.lot.unitCost * c.quantity).sum
+    ): RealizedGain =
       RealizedGain(
         leg.instrument,
         tickerOf(leg.instrument),
@@ -394,11 +454,9 @@ object TaxLots {
         terms.disposed * matched,
         terms.cashCurrency.getOrElse(leg.operation.currency),
         proceeds,
-        costBasis,
-        proceeds - costBasis,
+        costOf(consumed).times(terms.disposed),
         holdingDaysOf(consumed, terms.date, matched)
       )
-    }
 
     // The new instruments take lots out of each lot of the parent, the parent keeping the rest of
     // the cost; a new instrument's units are apportioned among the parent's lots, so its lots add
@@ -423,16 +481,16 @@ object TaxLots {
               .zip(Proportions.apportion(child.operation.quantity, parentUnits))
               .collect {
                 case (lot, quantity) if quantity.signum > 0 =>
-                  val cost = fraction * lot.quantity * lot.unitCost
-                  Lot(child.instrument, quantity, divide(cost, quantity), lot.acquiredOn)
+                  val cost = lot.unitCost.times(fraction * lot.quantity)
+                  Lot(child.instrument, quantity, cost.over(quantity), lot.acquiredOn)
               }
           }
           val kept = BigDecimal(1) - fractions.sum
-          val reduced = parentLots.map(lot => lot.copy(unitCost = lot.unitCost * kept))
+          val reduced = parentLots.map(lot => lot.copy(unitCost = lot.unitCost.times(kept)))
           lots.foldLeft(afterWithdrawals.withLots(instrument, reduced))(_.withLot(_))
         case None =>
           children.foldLeft(afterWithdrawals) { (current, child) =>
-            current.withLot(Lot(child.instrument, child.operation.quantity, Zero, date))
+            current.withLot(Lot(child.instrument, child.operation.quantity, Costs.Free, date))
           }
       }
     }
@@ -473,6 +531,9 @@ object TaxLots {
     if (values.forall(_.exists(_.signum > 0))) values.flatten
     else legs.map(_.operation.quantity.abs)
   }
+
+  private def costOf(consumed: List[Consumed]): Map[Currency, BigDecimal] =
+    Costs.total(consumed.map(c => c.lot.unitCost.times(c.quantity)))
 
   // Quantity-weighted average of the consumed lots' own holding periods, rounded to the nearest
   // whole day - see RealizedGain's doc comment. `0` when nothing was matched (nothing to average).

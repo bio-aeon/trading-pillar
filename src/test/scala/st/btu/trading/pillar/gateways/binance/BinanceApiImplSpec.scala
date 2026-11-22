@@ -106,6 +106,8 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
   private val FiatOrders = "/sapi/v1/fiat/orders"
   private val FiatPayments = "/sapi/v1/fiat/payments"
   private val Convert = "/sapi/v1/convert/tradeFlow"
+  private val AssetDividend = "/sapi/v1/asset/assetDividend"
+  private val Dribblet = "/sapi/v1/asset/dribblet"
   private val Klines = "/api/v3/klines"
 
   "BinanceApiImpl" >> {
@@ -517,6 +519,212 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
         for {
           f <- fixture(respond = _ => answer(page(List(first), moreData = true)))
           failure <- f.api.convertTradeFlow(from, from).attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+    }
+
+    "assetDividends" >> {
+      def page(rows: List[JsonObject]): String = s"""{"rows":${array(rows)},"total":${rows.size}}"""
+
+      def rowsOf(count: Int, firstId: Long = 1): List[JsonObject] =
+        (0 until count).toList.map(i => distribution(firstId + i, "BHFT", "10", time))
+
+      val start = from.toEpochMilli
+      val end = to.toEpochMilli
+      val middle = start + (end - start) / 2
+
+      def window(call: Call): (Long, Long) =
+        (call.params("startTime").toLong, call.params("endTime").toLong)
+
+      "asks for the window with a limit of 500 rows, and gives the rows as Binance sent them" >> {
+        val sent = rowsOf(2)
+        for {
+          f <- fixture(respond = _ => answer(page(sent)))
+          read <- f.api.assetDividends(from, to)
+          calls <- f.callsTo(AssetDividend)
+        } yield {
+          read must_== sent
+          calls.size must_== 1
+          calls.head.method must_== "GET"
+          window(calls.head) must_== (start, end)
+          calls.head.params("limit") must_== "500"
+          calls.head.key must beSome("api-key-0123")
+        }
+      }
+
+      "gives no rows when the answer leaves them out" >> {
+        for {
+          f <- fixture(respond = _ => answer("""{"total":0}"""))
+          read <- f.api.assetDividends(from, to)
+        } yield read must beEmpty
+      }
+
+      "reads a window that holds 499 rows in one call" >> {
+        for {
+          f <- fixture(respond = _ => answer(page(rowsOf(499))))
+          read <- f.api.assetDividends(from, to)
+          calls <- f.callsTo(AssetDividend)
+        } yield {
+          read.size must_== 499
+          calls.size must_== 1
+        }
+      }
+
+      "reads a window whose answer holds 500 rows again as two halves" >> {
+        val first = rowsOf(2)
+        val second = rowsOf(3, firstId = 10)
+        for {
+          f <- fixture(respond =
+            call =>
+              if (call.number == 1) answer(page(rowsOf(500)))
+              else if (window(call)._1 == start) answer(page(first))
+              else answer(page(second))
+          )
+          read <- f.api.assetDividends(from, to)
+          calls <- f.callsTo(AssetDividend)
+        } yield {
+          read must_== first ++ second
+          calls.map(window) must_== List((start, end), (start, middle), (middle + 1, end))
+        }
+      }
+
+      "reads a half that is still full as two quarters" >> {
+        val quarter = (middle - start) / 2 + start
+        val rows = Map(
+          (start, end) -> rowsOf(500),
+          (start, middle) -> rowsOf(500),
+          (start, quarter) -> rowsOf(1, firstId = 1),
+          (quarter + 1, middle) -> rowsOf(1, firstId = 2),
+          (middle + 1, end) -> rowsOf(1, firstId = 3)
+        )
+        for {
+          f <- fixture(respond = call => answer(page(rows.getOrElse(window(call), Nil))))
+          read <- f.api.assetDividends(from, to)
+          calls <- f.callsTo(AssetDividend)
+        } yield {
+          read must_== rowsOf(1, 1) ++ rowsOf(1, 2) ++ rowsOf(1, 3)
+          calls.map(window) must_== List(
+            (start, end),
+            (start, middle),
+            (start, quarter),
+            (quarter + 1, middle),
+            (middle + 1, end)
+          )
+        }
+      }
+
+      "gives up on a single millisecond whose answer still holds 500 rows" >> {
+        for {
+          f <- fixture(respond = _ => answer(page(rowsOf(500))))
+          failure <- f.api.assetDividends(from, from).attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+
+      "fails when the rows are not a list of objects" >> {
+        for {
+          f <- fixture(respond = _ => answer("""{"rows":[1,2]}"""))
+          failure <- f.api.assetDividends(from, to).attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+
+      "fails when the answer is not an object" >> {
+        for {
+          f <- fixture(respond = _ => answer("[]"))
+          failure <- f.api.assetDividends(from, to).attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+    }
+
+    "dustLog" >> {
+      def page(conversions: List[JsonObject]): String =
+        s"""{"total":${conversions.size},"userAssetDribblets":${array(conversions)}}"""
+
+      def conversionsOf(count: Int, firstId: Long = 1): List[JsonObject] =
+        (0 until count).toList.map { i =>
+          val id = firstId + i
+          dustConversion(id, time, dustDetail(id, "USDT", "0.0009", "0.000441", "0.000009", time))
+        }
+
+      val start = from.toEpochMilli
+      val end = to.toEpochMilli
+      val middle = start + (end - start) / 2
+
+      def window(call: Call): (Long, Long) =
+        (call.params("startTime").toLong, call.params("endTime").toLong)
+
+      "asks for the window and no limit, and gives the conversions as Binance sent them" >> {
+        val sent = conversionsOf(2)
+        for {
+          f <- fixture(respond = _ => answer(page(sent)))
+          read <- f.api.dustLog(from, to)
+          calls <- f.callsTo(Dribblet)
+        } yield {
+          read must_== sent
+          calls.size must_== 1
+          calls.head.method must_== "GET"
+          window(calls.head) must_== (start, end)
+          calls.head.params.contains("limit") must beFalse
+          calls.head.key must beSome("api-key-0123")
+        }
+      }
+
+      "gives no conversions when the answer leaves them out" >> {
+        for {
+          f <- fixture(respond = _ => answer("""{"total":0}"""))
+          read <- f.api.dustLog(from, to)
+        } yield read must beEmpty
+      }
+
+      "reads a window that holds 99 conversions in one call" >> {
+        for {
+          f <- fixture(respond = _ => answer(page(conversionsOf(99))))
+          read <- f.api.dustLog(from, to)
+          calls <- f.callsTo(Dribblet)
+        } yield {
+          read.size must_== 99
+          calls.size must_== 1
+        }
+      }
+
+      "reads a window whose answer holds 100 conversions again as two halves" >> {
+        val first = conversionsOf(2)
+        val second = conversionsOf(3, firstId = 10)
+        for {
+          f <- fixture(respond =
+            call =>
+              if (call.number == 1) answer(page(conversionsOf(100)))
+              else if (window(call)._1 == start) answer(page(first))
+              else answer(page(second))
+          )
+          read <- f.api.dustLog(from, to)
+          calls <- f.callsTo(Dribblet)
+        } yield {
+          read must_== first ++ second
+          calls.map(window) must_== List((start, end), (start, middle), (middle + 1, end))
+        }
+      }
+
+      "gives up on a single millisecond whose answer still holds 100 conversions" >> {
+        for {
+          f <- fixture(respond = _ => answer(page(conversionsOf(100))))
+          failure <- f.api.dustLog(from, from).attempt
+        } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
+          ok
+        }
+      }
+
+      "fails when the conversions are not a list of objects" >> {
+        for {
+          f <- fixture(respond = _ => answer("""{"userAssetDribblets":"none"}"""))
+          failure <- f.api.dustLog(from, to).attempt
         } yield failure must beLeft[Throwable].like { case _: BinanceError.UnexpectedResponse =>
           ok
         }
@@ -1001,6 +1209,36 @@ class BinanceApiImplSpec extends Specification with CatsEffect {
           _ <- f.api.fundingBalances
           waited <- IO.monotonic.map(_ - started)
         } yield waited must_== Duration.Zero)
+      }
+
+      "keeps the distributions apart by their weight of 10, in a bucket of their own" >> {
+        // 15 s * 10 / (12000 * 0.5) = 25 ms
+        VirtualTime.run(for {
+          f <- fixture(paced, respond = _ => answer("""{"total":0}"""))
+          _ <- f.api.assetDividends(from, to) // reads the offset
+          _ <- List.fill(3)(f.api.assetDividends(from, to)).sequence
+          times <- f.callsTo(AssetDividend).map(_.map(_.at).drop(1))
+        } yield VirtualTime.gaps(times) must_== List(25.millis, 25.millis))
+      }
+
+      "gives the dust log a bucket of its own, so that it does not wait for the distributions" >> {
+        VirtualTime.run(for {
+          f <- fixture(paced, respond = _ => answer("""{"total":0}"""))
+          _ <- f.api.assetDividends(from, to)
+          started <- IO.monotonic
+          _ <- f.api.dustLog(from, to)
+          waited <- IO.monotonic.map(_ - started)
+        } yield waited must_== Duration.Zero)
+      }
+
+      "keeps the dust log apart by its weight of 1" >> {
+        // 15 s * 1 / (12000 * 0.5) = 2.5 ms
+        VirtualTime.run(for {
+          f <- fixture(paced, respond = _ => answer("""{"total":0}"""))
+          _ <- f.api.dustLog(from, to) // reads the offset
+          _ <- List.fill(3)(f.api.dustLog(from, to)).sequence
+          times <- f.callsTo(Dribblet).map(_.map(_.at).drop(1))
+        } yield VirtualTime.gaps(times) must_== List(2500.micros, 2500.micros))
       }
 
       "keeps the ticker price and the bars apart by the weight they share the market data bucket by" >> {

@@ -31,6 +31,7 @@ class PersistedOperationValuesSpec extends Specification {
           "conversion",
           "spinoff",
           "stock_dividend",
+          "reward",
           "other"
         )
       )

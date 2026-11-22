@@ -18,12 +18,12 @@ import java.time.{Instant, LocalDate, ZoneOffset}
   *   the instrument the operation concerns, if it concerns one
   * @param quantity
   *   the signed change of the position in executed units: positive for buy, security_in, a
-  *   spin-off's new instrument and a stock dividend, negative for sell and security_out, of either
-  *   sign for a split and for a conversion leg, and zero for every other kind, a spin-off's parent
-  *   marker included
+  *   spin-off's new instrument, a stock dividend and a reward of units, negative for sell and
+  *   security_out, of either sign for a split and for a conversion leg, and zero for every other
+  *   kind, a spin-off's parent marker included
   * @param price
-  *   the price per unit in `currency`, where the broker gives one; for a conversion leg and a stock
-  *   dividend, the market value per unit
+  *   the price per unit in `currency`, where the broker gives one; for a conversion leg, a stock
+  *   dividend and a reward of units, the market value per unit
   * @param amount
   *   the signed change of cash in `currency`; a tax refund is positive
   * @param brokerType

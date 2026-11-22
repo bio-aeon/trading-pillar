@@ -19,6 +19,11 @@ private[services] object BinanceNote {
 
     /** No price values the network fee of a withdrawal, so the coin leaves at its cost. */
     case NetworkFeeUnvalued(asset: BinanceAsset, quantity: BigDecimal)
+
+    /** No price values a coin credited as a distribution, so it is received at no cost and counts
+      * for no income.
+      */
+    case DistributionUnvalued(asset: BinanceAsset, quantity: BigDecimal)
   }
 
   def describe(note: BinanceNote): String = {
@@ -32,6 +37,9 @@ private[services] object BinanceNote {
       case Reason.NetworkFeeUnvalued(asset, quantity) =>
         s"$ref: no price values the network fee of ${quantity.bigDecimal.toPlainString} " +
           s"${asset.value}, which leaves the account at its cost"
+      case Reason.DistributionUnvalued(asset, quantity) =>
+        s"$ref: no price values the distribution of ${quantity.bigDecimal.toPlainString} " +
+          s"${asset.value}, which is received at no cost and counts for no income"
     }
   }
 }

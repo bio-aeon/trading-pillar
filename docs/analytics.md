@@ -176,10 +176,10 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    of their signed `quantity`, per `InstrumentKey` (the broker and the id that broker gives the
    instrument), with a position that nets to zero left out. `quantity` is already in executed
    units, positive for a `buy` and a `security_in`, negative for a `sell` and a `security_out`,
-   of either sign for a `split` and for a `conversion` leg, positive for a `stock_dividend` and for
-   the new instrument of a `spinoff` and zero for every other kind, a spin-off's marker of its parent
-   included, so a partly filled buy adds only the units that were filled, and a fractional share or
-   coin counts as the fraction it is.
+   of either sign for a `split` and for a `conversion` leg, positive for a `stock_dividend`, for a
+   `reward` of units and for the new instrument of a `spinoff` and zero for every other kind, a
+   spin-off's marker of its parent included, so a partly filled buy adds only the units that were
+   filled, and a fractional share or coin counts as the fraction it is.
 4. **Cash** is the running sum of `amount` over *every* executed operation (commissions, taxes,
    dividends, buys/sells, deposits/withdrawals, the legs of currency exchanges - all of them), kept
    as one running total per operation `currency`, not just the base currency. A currency exchange
@@ -191,7 +191,9 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    that date's own sum, both per currency. An `exchange` is not an external flow: it is cash that
    stays in the account. Nor are the corporate action kinds, `split`, `conversion`, `spinoff` and
    `stock_dividend`: they change what the account holds, and the cash a `conversion` pays or charges
-   is cash like any other, and nothing is paid in from outside.
+   is cash like any other, and nothing is paid in from outside. Nor is a `reward`: the units or the
+   cash received as income outside a trade, such as a distribution or an airdrop, raise the value of
+   the account as a dividend does, so they are a return and not a flow.
 6. **Value**: `cash + Σ quantity × last known close on or before the date`. Bars for every ticker
    with a nonzero position are fetched once per `dailySeries` call, over
    `[from - priceLookback, to]` - `priceLookback` (default 10 days) is how far before `from` a

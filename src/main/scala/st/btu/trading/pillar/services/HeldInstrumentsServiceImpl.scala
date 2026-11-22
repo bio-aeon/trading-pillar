@@ -16,12 +16,8 @@ import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.services.HeldInstrumentPricing.Outcome
 import st.btu.trading.pillar.services.commands.SourceSettings
-import st.btu.trading.pillar.storages.{
-  AccountOperationStorage,
-  AccountStorage,
-  TickerSourceStorage,
-  WatchlistStorage
-}
+import st.btu.trading.pillar.storages.*
+import st.btu.trading.pillar.tax.TransferCost
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
 
@@ -30,6 +26,7 @@ import java.time.ZonedDateTime
 final class HeldInstrumentsServiceImpl[F[_]: Logging] private (
   accounts: AccountStorage[F],
   operations: AccountOperationStorage[F],
+  transferCosts: TransferCostStorage[F],
   watchlist: WatchlistStorage[F],
   tickerSources: TickerSourceStorage[F],
   directory: InstrumentDirectory[F],
@@ -56,10 +53,11 @@ final class HeldInstrumentsServiceImpl[F[_]: Logging] private (
         .sorted
         .traverse(lookUp(account.id, _))
         .map(_.flatten)
+      costs <- transferCosts.byAccount(account.id)
       listed <- watchlist.byAccount(account.id).map(_.map(_.ticker).toSet)
       // Two instruments can share a ticker, such as one listed on two boards: the first stands.
       _ <- instruments.distinctBy(_.ticker).traverse_(watch(account.id, listed, now, _))
-      _ <- addRateTickers(account.id, currenciesOf(history, instruments), now)
+      _ <- addRateTickers(account.id, currenciesOf(history, instruments, costs), now)
     } yield ()
 
   // A failed lookup is logged and gives no instrument, so that it does not stop the others.
@@ -108,10 +106,11 @@ final class HeldInstrumentsServiceImpl[F[_]: Logging] private (
 
   private def currenciesOf(
     history: Iterable[AccountOperation],
-    instruments: List[BrokerInstrument]
+    instruments: List[BrokerInstrument],
+    costs: List[TransferCost]
   ): Set[Currency] =
     history.filter(_.state == OperationState.Executed).map(_.currency).toSet ++
-      instruments.map(_.currency)
+      instruments.map(_.currency) ++ costs.map(_.currency)
 
   // The watchlist is read again, since the held instruments have just been added to it.
   private def addRateTickers(
@@ -156,11 +155,12 @@ object HeldInstrumentsServiceImpl {
     * from their executed operations in `operations`, resolves them through `directory`, and writes
     * to `watchlist` and `tickerSources`. It gives a ticker a source setting only for a source that
     * `sources` serves. It also puts on each watchlist the rate tickers that `rates` describes the
-    * account's currencies need.
+    * account's currencies need, among them the currencies of the costs in `transferCosts`.
     */
   def create[I[_]: Functor, F[_]: MonadThrow: Clock](
     accounts: AccountStorage[F],
     operations: AccountOperationStorage[F],
+    transferCosts: TransferCostStorage[F],
     watchlist: WatchlistStorage[F],
     tickerSources: TickerSourceStorage[F],
     directory: InstrumentDirectory[F],
@@ -173,6 +173,7 @@ object HeldInstrumentsServiceImpl {
         new HeldInstrumentsServiceImpl[F](
           accounts,
           operations,
+          transferCosts,
           watchlist,
           tickerSources,
           directory,

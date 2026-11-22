@@ -15,8 +15,10 @@ trait BinanceSyncService[F[_]] {
     * Each source other than trades is read from `BinanceSyncConfig.rereadDays` before where this
     * process last read it, so that a record Binance completes or changes late is stored again.
     * After a restart that is `rereadDays` before the latest record stored for the source, and with
-    * none stored it is the start of `BinanceSyncConfig.historyStart`. The windows are 89 days long,
-    * 30 for Convert, and each ends a millisecond before the next starts.
+    * none stored it is the start of `BinanceSyncConfig.historyStart`, and never before 1 December
+    * 2020 for the dust log, which keeps nothing older. The windows are 89 days long, 30 for
+    * Convert, 180 for distributions and 90 for dust, and each ends a millisecond before the next
+    * starts.
     *
     * Trades are read pair by pair, each from the id after the last stored for it: the pairs that
     * have stored trades, the pairs of a coin the sources above gave the account in this run, the
@@ -35,10 +37,10 @@ trait BinanceSyncService[F[_]] {
     * and a difference is raised as the system alert `binance-reconciliation:<account id>`, and the
     * match that follows as `binance-reconciled:<account id>` (see [[BinanceReconciler]]).
     *
-    * What no cash prices, such as a trade between two coins or a commission paid in BNB, is valued
-    * by the close of a one-minute bar, which is read the first time it is needed and stored. The
-    * records that no bar could value are raised as the system alert `binance-unvalued:<account
-    * id>`, once for each in this process.
+    * What no cash prices, such as a trade between two coins, a commission paid in BNB or a coin
+    * credited as a distribution, is valued by the close of a one-minute bar, which is read the
+    * first time it is needed and stored. The records that no bar could value are raised as the
+    * system alert `binance-unvalued:<account id>`, once for each in this process.
     *
     * @return
     *   a failed `F` when the key can do more than read, when Binance cannot be read, or when a

@@ -27,13 +27,14 @@ trait HeldInstrumentsService[F[_]] {
     * service logs it.
     *
     * The rate tickers are the ones `FxRates.rateTicker` gives for each currency that the account's
-    * executed operations are in, or that a held instrument is priced in, into each base currency
-    * other than itself, so that the bars the valuation and the tax estimate convert with are
-    * synced. One the account's watchlist lacks, enabled or not, is added enabled, with the note
-    * `Added for the exchange rate of <currency>`. An entry already on the watchlist is left as it
-    * is, a disabled one included, and no source setting is written for a rate ticker: it is read
-    * from the source its own setting names, else from the default. A currency whose rate ticker has
-    * no bars stays unpriced in the valuation and the tax estimate.
+    * executed operations are in, that a held instrument is priced in, or that a cost entered for a
+    * transfer in is paid in, into each base currency other than itself, so that the bars the
+    * valuation and the tax estimate convert with are synced. One the account's watchlist lacks,
+    * enabled or not, is added enabled, with the note `Added for the exchange rate of <currency>`.
+    * An entry already on the watchlist is left as it is, a disabled one included, and no source
+    * setting is written for a rate ticker: it is read from the source its own setting names, else
+    * from the default. A currency whose rate ticker has no bars stays unpriced in the valuation and
+    * the tax estimate.
     *
     * @return
     *   a failed `F` when a storage fails

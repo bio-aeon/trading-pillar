@@ -31,8 +31,9 @@ trading-pillar gives you:
   (the statements of an Activity Flex Query, read through the Flex Web Service: trades, cash
   transactions, transfers and corporate actions, with the open positions the recorded positions
   are checked against) and Binance (a spot account's trades, deposits and withdrawals, fiat
-  orders, card purchases and Convert orders, read through the REST API with a read-only key whose
-  permissions are checked on every run, and whose balances the recorded ones are checked against).
+  orders, card purchases, Convert orders, dust conversions and distributions, read through the REST
+  API with a read-only key whose permissions are checked on every run, and whose balances the
+  recorded ones are checked against).
 
 None of this is a runnable application by itself. A consumer application wires these pieces
 together, implements the storage traits (see [`docs/storage-contracts.md`](docs/storage-contracts.md))
@@ -59,7 +60,7 @@ strategy is registered.
 | `analytics.portfolio` | `Holdings` (an account's position in each instrument, folded from its operations), `PositionValue`/`PositionSnapshot`, `Allocation` (breakdown by instrument type/currency/exchange), `AllocationTarget`, `Rebalancer` (drift and buy/sell suggestions), `PortfolioValuationService`, `Period` and `PortfolioMetrics` (a valuation series' returns and risk over 1m/3m/6m/1y/all), `PortfolioSnapshot` (an account's holdings, allocation and per-period metrics as of a date) - backs `/allocation`, `/drift`, `/rebalance`, `/portfolio`, `/performance` |
 | `alerts` | `Alert`, `AlertKind`, `AlertRule` (`PriceCrossed`, `StrategyBinding`), `Proximity`, `QuietHours`, `DeliveryPolicy`, `AlertEngine`, `AlertDispatcher`, `LiveStrategyService`, `AlertProcess`, `TelegramAlertChannel`, `FailureTracker` (consecutive-failure counter), `SystemAlerts` (infrastructure alerts, e.g. a crashed process loop or a sync failure) |
 | `paper` | `PaperBroker`/`PaperBrokerImpl`, `PaperAccount`/`PaperPosition`/`PaperOrder`, `PaperBrokerConfig` - simulated order execution for a paper-mode `StrategyBinding`; see [`docs/paper-trading.md`](docs/paper-trading.md) |
-| `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching, carried through splits, mergers, spin-offs and stock dividends), `CorporateActionAllocation` (the share of a spin-off parent's cost a new instrument takes), `TaxReport` (annual gain/loss estimate), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
+| `tax` | `TaxService`/`TaxServiceImpl`, `TaxLots` (FIFO lot matching, with each lot's cost kept in the currencies it was paid in, carried through splits, mergers, spin-offs and stock dividends), `CorporateActionAllocation` (the share of a spin-off parent's cost a new instrument takes), `TransferCost` (what the owner paid for the units of a transfer in), `TaxReport` (annual gain/loss estimate, each cost converted on the day of the sale, with the income of dividends, coupons and rewards), `Lot`, `RealizedGain`, `AnnualTaxReport`, `TaxConfig`; see [`docs/tax.md`](docs/tax.md) |
 | `services` | `CommandHandleService`, `PriceHistorySyncService`, `TcsPortfolioService` (brings one account's stored Tinkoff operations up to date), `TcsOperationTranslation` (Tinkoff operation to `AccountOperation`), `IbkrSyncService` (the same for an Interactive Brokers account's statements, reading the legs of each corporate action together), `IbkrReconciler` (compares an Interactive Brokers account's recorded positions with the Open Positions IB reports and raises a system alert while they differ), `BinanceSyncService` (the same for a Binance account's records, with the pure `BinanceTranslation` and the one-minute prices that value trades between coins), `BinanceReconciler` (compares a Binance account's recorded balances with the ones Binance reports and raises a system alert while they differ), `HeldInstrumentsService` (puts the instruments an account holds on its watchlist, with the source setting its broker's pricing rule gives, and the rate tickers of its currencies) |
 | `services.analysis` | `AnalysisService`/`AnalysisServiceImpl`, `StockAnalysis` - a per-ticker technical snapshot (SMA/RSI/52-week range/dividend yield); backs `/analyze` and `/compare` |
 | `services.commands` | `CommandParser`, `CommandHandler`, `CommandHandlers.standard` (the built-in assembly), `CommandEffect` (whether a command line reads, adds or changes), `CommandRunner` (runs a line and returns the replies), and the command handlers, in the order `/help` lists them: ping built in, then watchlist/source/strategies/backtest/sweep/alerts/alert/mute/unmute/dividends/performance/portfolio/positions/allocation/drift/rebalance/paper/news/screen/tax/lots/export/analyze/compare/menu as `extraHandlers`, then help (see [`docs/telegram-commands.md`](docs/telegram-commands.md)) |
@@ -142,6 +143,7 @@ def wireSync(
   alertHistoryStorage: AlertHistoryStorage[F],
   accountStorage: AccountStorage[F],
   accountOperationStorage: AccountOperationStorage[F],
+  transferCostStorage: TransferCostStorage[F], // the costs the owner entered for transfers in
   instrumentDirectory: InstrumentDirectory[F] // e.g. a RoutingInstrumentDirectory
 ): IO[Unit] = {
   val yahooConfig = YahooConfig(
@@ -191,10 +193,12 @@ def wireSync(
       // Puts the instruments each account holds on its watchlist, and gives a ticker a source
       // setting only for a source `sources` serves: no Tinkoff adapter is wired above, so a held
       // Tinkoff instrument gets no setting of its own. It also puts the rate ticker of each
-      // currency the accounts use, other than the base currency, on their watchlists.
+      // currency the accounts use, other than the base currency, on their watchlists, the
+      // currencies of the costs entered for transfers in included.
       heldInstruments <- HeldInstrumentsServiceImpl.create[IO, F](
         accountStorage,
         accountOperationStorage,
+        transferCostStorage,
         watchlistStorage,
         tickerSourceStorage,
         instrumentDirectory,
@@ -421,6 +425,9 @@ trading-pillar change the consumer needs to see.
   rate tickers of their currencies: implemented and covered by the test suite, but not yet used in
   production. A Binance coin joins the watchlist as a Binance ticker only while the router has a
   Binance adapter.
+- Tax lots that keep the currency of their cost, with each cost converted on the day of the sale, the
+  costs the owner enters for the units of a transfer in, and the income of rewards: implemented and
+  covered by the test suite, but not yet used in production.
 - Market data (Yahoo and Tinkoff, routed per ticker by `MarketDataSources`), strategies and
   backtesting (multi-symbol runs, parameter sweeps, walk-forward validation), alerts and system
   alerts, analytics, dividends, paper trading and the tax-estimate report: implemented and covered
@@ -431,9 +438,11 @@ trading-pillar change the consumer needs to see.
 - The MCP server for AI agents: implemented and covered by the test suite, which sends its requests
   through the HTTP routes in memory; not yet used in production.
 - The records sync for each Binance account it is given, with the translation of every record into
-  `AccountOperation`s and the one-minute prices that value trades between coins and fees paid in
-  BNB, the comparison of the recorded balances with the ones Binance reports, and Binance as a
-  market data source for the coins' prices: implemented and covered by the test suite, but not yet
-  used in production. The REST clients, their signing and their pacing have run only against
-  stubbed answers written from Binance's documentation, so a real answer may still differ from
-  them - see [`docs/binance.md`](docs/binance.md#limits-and-unconfirmed-points).
+  `AccountOperation`s, among them the dust conversions and the distributions and airdrops that
+  count as reward income, and the one-minute prices that value trades between coins, fees paid in
+  BNB and the coins credited, the comparison of the recorded balances with the ones Binance
+  reports, and Binance as a market data source for the coins' prices: implemented and covered by
+  the test suite, but not yet used in production. The REST clients, their signing and their
+  pacing have run only against stubbed answers written from Binance's documentation, so a real
+  answer may still differ from them - see
+  [`docs/binance.md`](docs/binance.md#limits-and-unconfirmed-points).

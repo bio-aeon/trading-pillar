@@ -35,6 +35,8 @@ private[binance] object BinanceResponses {
     val Name = "name"
     val ConvertList = "list"
     val MoreData = "moreData"
+    val Rows = "rows"
+    val UserAssetDribblets = "userAssetDribblets"
     val Balances = "balances"
     val Asset = "asset"
     val Free = "free"
@@ -166,6 +168,18 @@ private[binance] object BinanceResponses {
       orders <- body(Field.ConvertList).filterNot(_.isNull).fold(NoRecords)(objects)
     } yield ConvertPage(orders, body(Field.MoreData).flatMap(_.asBoolean).getOrElse(false))
 
+  /** The rows of an answer of the asset dividend log, an object whose `rows` is left out when there
+    * is none.
+    */
+  def distributions(json: Json): Reading[List[JsonObject]] =
+    listedIn(json, "the distribution answer", Field.Rows)
+
+  /** The conversions of an answer of the dust log, an object whose `userAssetDribblets` is left out
+    * when there is none.
+    */
+  def dustConversions(json: Json): Reading[List[JsonObject]] =
+    listedIn(json, "the dust answer", Field.UserAssetDribblets)
+
   /** The close of the bar an answer of `klines` holds, or none when it holds no bar. */
   def close(json: Json): Reading[Option[BigDecimal]] =
     for {
@@ -205,6 +219,9 @@ private[binance] object BinanceResponses {
         balanceOf(_, List(Field.Free, Field.Locked, Field.Freeze, Field.Withdrawing))
       )
     } yield held(assets)
+
+  private def listedIn(json: Json, of: String, name: String): Reading[List[JsonObject]] =
+    objectOf(json, of).flatMap(_(name).filterNot(_.isNull).fold(NoRecords)(objects))
 
   private def isPermissionFlag(name: String): Boolean =
     PermissionFlagPrefixes.exists(name.startsWith) && !ReadingFlags(name)

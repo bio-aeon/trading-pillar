@@ -12,7 +12,8 @@ import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.storages.{
   AccountOperationStorage,
   CorporateActionAllocationStorage,
-  PriceHistoryStorage
+  PriceHistoryStorage,
+  TransferCostStorage
 }
 
 import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
@@ -24,6 +25,7 @@ import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 final class TaxServiceImpl[F[_]: Monad: Clock] private (
   operations: AccountOperationStorage[F],
   allocations: CorporateActionAllocationStorage[F],
+  transferCosts: TransferCostStorage[F],
   directory: InstrumentDirectory[F],
   sources: MarketDataSources[F],
   priceHistory: PriceHistoryStorage[F],
@@ -33,8 +35,9 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   def annualReport(accountId: AccountId, year: Int): F[AnnualTaxReport] =
     for {
       ops <- loadOperations(accountId)
-      (ledger, _) <- buildLedger(accountId, ops)
-      fxRate <- fxRateFn(ops)
+      costs <- transferCosts.byAccount(accountId)
+      (ledger, _) <- buildLedger(accountId, ops, costs)
+      fxRate <- fxRateFn(ops, costs)
     } yield TaxReport.annual(year, ledger, ops, fxRate, config)
 
   // Resolves the ticker back to its instruments through the same tickerByInstrument mapping
@@ -44,7 +47,8 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]] =
     for {
       ops <- loadOperations(accountId)
-      (ledger, tickerByInstrument) <- buildLedger(accountId, ops)
+      costs <- transferCosts.byAccount(accountId)
+      (ledger, tickerByInstrument) <- buildLedger(accountId, ops, costs)
     } yield tickerByInstrument.toList
       .collect { case (instrument, t) if t == ticker => instrument }
       .sorted
@@ -67,7 +71,8 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
   // same mapping.
   private def buildLedger(
     accountId: AccountId,
-    ops: List[AccountOperation]
+    ops: List[AccountOperation],
+    costs: List[TransferCost]
   ): F[(LotLedger, Map[InstrumentKey, Ticker])] =
     for {
       pairs <- ops.iterator
@@ -78,20 +83,22 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
       stored <- allocations.byAccount(accountId)
     } yield {
       val tickerByInstrument = pairs.collect { case (key, Some(ticker)) => key -> ticker }.toMap
-      (TaxLots.fifo(ops, tickerByInstrument.get, stored), tickerByInstrument)
+      (TaxLots.fifo(ops, tickerByInstrument.get, stored, costs), tickerByInstrument)
     }
 
-  // One PriceHistoryStorage.bars call per non-base currency actually used by `ops`, on the source
-  // its rate ticker is configured to use and covering the same OperationHistoryYears window
-  // loadOperations reads from - then a plain, F-free lookup function TaxReport.annual can call as
-  // many times as it needs.
+  // One PriceHistoryStorage.bars call per non-base currency actually used by `ops` or by a
+  // transfer cost, on the source its rate ticker is configured to use and covering the same
+  // OperationHistoryYears window loadOperations reads from - then a plain, F-free lookup function
+  // TaxReport.annual can call as many times as it needs.
   private def fxRateFn(
-    ops: List[AccountOperation]
+    ops: List[AccountOperation],
+    costs: List[TransferCost]
   ): F[(Currency, LocalDate) => Option[BigDecimal]] =
     Clock[F].realTimeInstant.flatMap { instant =>
       val today = LocalDate.ofInstant(instant, ZoneOffset.UTC)
       val earliest = today.minusYears(OperationHistoryYears.toLong)
-      val currencies = ops.iterator.map(_.currency).toSet - config.baseCurrency
+      val used = ops.iterator.map(_.currency).toSet ++ costs.map(_.currency)
+      val currencies = used - config.baseCurrency
       currencies.toVector
         .traverse { ccy =>
           FxRates
@@ -117,16 +124,26 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
 object TaxServiceImpl {
 
   /** Wires a [[TaxService]] over the operations in `operations` that maps instruments through
-    * `directory`, reads exchange rates from `priceHistory` as `sources` configures them, and splits
-    * the cost of a spin-off's parent as `allocations` says.
+    * `directory`, reads exchange rates from `priceHistory` as `sources` configures them, splits the
+    * cost of a spin-off's parent as `allocations` says, and costs the units of a transfer in as
+    * `transferCosts` says.
     */
   def create[F[_]: Monad: Clock](
     operations: AccountOperationStorage[F],
     allocations: CorporateActionAllocationStorage[F],
+    transferCosts: TransferCostStorage[F],
     directory: InstrumentDirectory[F],
     sources: MarketDataSources[F],
     priceHistory: PriceHistoryStorage[F],
     config: TaxConfig
   ): TaxService[F] =
-    new TaxServiceImpl[F](operations, allocations, directory, sources, priceHistory, config)
+    new TaxServiceImpl[F](
+      operations,
+      allocations,
+      transferCosts,
+      directory,
+      sources,
+      priceHistory,
+      config
+    )
 }

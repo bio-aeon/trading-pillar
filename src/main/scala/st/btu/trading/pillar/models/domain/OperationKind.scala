@@ -73,6 +73,13 @@ object OperationKind extends StringEnum[OperationKind] {
     */
   case object StockDividend extends OperationKind("stock_dividend")
 
+  /** Units of an instrument, or cash, received as income outside a trade, such as a distribution or
+    * an airdrop. With an instrument, `quantity` is the units received, positive, `price` is their
+    * market value per unit where it is known, and `amount` is zero; without one, `amount` is the
+    * cash received.
+    */
+  case object Reward extends OperationKind("reward")
+
   /** Anything else, including what a broker names but the bot does not classify; it carries no
     * change of position.
     */

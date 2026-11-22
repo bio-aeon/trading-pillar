@@ -85,7 +85,8 @@ object TcsOperationTranslation {
       case OperationKind.Deposit | OperationKind.Withdrawal | OperationKind.Dividend |
           OperationKind.Coupon | OperationKind.Interest | OperationKind.Fee | OperationKind.Tax |
           OperationKind.Exchange | OperationKind.Split | OperationKind.Conversion |
-          OperationKind.Spinoff | OperationKind.StockDividend | OperationKind.Other =>
+          OperationKind.Spinoff | OperationKind.StockDividend | OperationKind.Reward |
+          OperationKind.Other =>
         BigDecimal(0)
     }
 }

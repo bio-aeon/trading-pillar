@@ -53,6 +53,19 @@ trait BinanceApi[F[_]] extends BinanceMarket[F] {
     */
   def convertTradeFlow(from: Instant, to: Instant): F[List[JsonObject]]
 
+  /** The distributions and airdrops credited to the account, and the debits of them, dated from
+    * `from` to `to`, both included. The window must not be longer than 180 days. A window with more
+    * rows than one answer holds is read as two halves.
+    */
+  def assetDividends(from: Instant, to: Instant): F[List[JsonObject]]
+
+  /** The account's conversions of dust, the small balances it converted into another coin, made
+    * from `from` to `to`, both included, each with the details of what it converted. Binance keeps
+    * no conversion from before 1 December 2020. A window with more conversions than one answer
+    * holds is read as two halves.
+    */
+  def dustLog(from: Instant, to: Instant): F[List[JsonObject]]
+
   /** The amount of each asset in the account's spot wallet, free and locked together, leaving out
     * an asset with no balance.
     */

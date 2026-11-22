@@ -1,6 +1,8 @@
 package st.btu.trading.pillar.services
 
 import cats.data.NonEmptyList
+import cats.syntax.traverse.*
+import io.circe.JsonObject
 import st.btu.trading.pillar.models.binance.*
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.services.BinancePrices.*
@@ -68,6 +70,8 @@ private[services] object BinanceTranslation {
         fiatOrder(record, context, book, FiatOrderKind.Withdrawal)
       case BinanceSource.FiatBuy => fiatBuy(record, context, book)
       case BinanceSource.FiatSell => fiatSell(record, context, book)
+      case BinanceSource.Dividend => distribution(record, context, book)
+      case BinanceSource.Dust => dust(record, context, book)
     }
 
   private val Zero = BigDecimal(0)
@@ -79,13 +83,22 @@ private[services] object BinanceTranslation {
 
   private val CashBalance = "cash balance"
 
+  // The coin dust is converted into when a detail of the log names none: before the owner could
+  // choose another coin, the log held conversions into BNB alone.
+  private val DustTarget = BinanceAsset("BNB")
+
+  private val DistributionType = "Distribution"
+  private val DustType = "Dust"
+
   // The fields of the records that the translation reads, as Binance names them.
   private object Field {
     val Amount = "amount"
+    val Asset = "asset"
     val Coin = "coin"
     val Commission = "commission"
     val CommissionAsset = "commissionAsset"
     val CryptoCurrency = "cryptoCurrency"
+    val Direction = "direction"
     val FiatCurrency = "fiatCurrency"
     val FromAmount = "fromAmount"
     val FromAsset = "fromAsset"
@@ -102,8 +115,19 @@ private[services] object BinanceTranslation {
     val Symbol = "symbol"
     val ToAmount = "toAmount"
     val ToAsset = "toAsset"
+    val TargetAsset = "targetAsset"
     val TotalFee = "totalFee"
     val TransactionFee = "transactionFee"
+    val TransferedAmount = "transferedAmount"
+    val TransId = "transId"
+    val UserAssetDribbletDetails = "userAssetDribbletDetails"
+  }
+
+  // Which way a distribution moved a coin, as Binance's `direction` says: 1 credits the account and
+  // -1 debits it.
+  private enum Direction(val code: String) {
+    case Credit extends Direction("1")
+    case Debit extends Direction("-1")
   }
 
   // How a record's status field maps to the state of its operations; a status that is not listed is
@@ -194,10 +218,15 @@ private[services] object BinanceTranslation {
     context: Context,
     book: PriceBook,
     state: OperationState,
-    brokerType: String
+    brokerType: String,
+    detail: Option[String] = None
   ) {
 
     def withBrokerType(named: String): Frame = copy(brokerType = named)
+
+    // The frame of one detail of a record that holds several exchanges, whose operations are told
+    // apart by the detail's key.
+    def ofDetail(key: String): Frame = copy(detail = Some(key))
 
     // The bar of `asset` against `quote` that holds the record's time.
     def candidate(asset: BinanceAsset, quote: BinanceAsset): Candidate =
@@ -258,9 +287,12 @@ private[services] object BinanceTranslation {
     ): AccountOperation =
       operation(ref, kind, Some(coin), quantity, None, Zero, context.firstQuote, group)
 
-    def own: OperationRef = record.ref
+    def own: OperationRef = detail.fold(record.ref)(record.refWith)
 
-    def received: OperationRef = record.refWith(ReceivedSuffix)
+    def received: OperationRef =
+      detail.fold(record.refWith(ReceivedSuffix))(key =>
+        record.refWith(s"$key${BinanceRecord.RefSeparator}$ReceivedSuffix")
+      )
   }
 
   // What an exchange of one asset for another gives up and receives.
@@ -715,4 +747,132 @@ private[services] object BinanceTranslation {
       result(Looked.pure(Built(sale ++ fiatFee(frame, fee, charged, fiat), Nil)))
     }
   }
+
+  // A distribution or an airdrop. A coin credited is a reward of its units, valued at the close of
+  // the bar that holds the time; cash credited is a reward of the cash itself. A debit takes the
+  // units of a coin out at their cost, and charges cash as a fee that names no instrument.
+  private def distribution(
+    record: BinanceRecord,
+    context: Context,
+    book: PriceBook
+  ): Either[BinanceRecordError, Result] = {
+    val fields = record.fields
+    for {
+      coin <- fields.asset(Field.Asset)
+      amount <- fields.requiredDecimal(Field.Amount)
+      direction <- directionOf(record, fields)
+    } yield {
+      val frame = Frame(record, context, book, OperationState.Executed, DistributionType)
+      result(distributed(frame, coin, amount.abs, direction))
+    }
+  }
+
+  private def directionOf(
+    record: BinanceRecord,
+    fields: BinanceFields
+  ): Either[BinanceRecordError, Direction] =
+    fields.required(Field.Direction).flatMap { code =>
+      Direction.values
+        .find(_.code == code)
+        .toRight(
+          BinanceRecordError
+            .InvalidField(record.source, Some(record.recordId), Field.Direction, code)
+        )
+    }
+
+  private def distributed(
+    frame: Frame,
+    coin: BinanceAsset,
+    amount: BigDecimal,
+    direction: Direction
+  ): Looked[Built] =
+    (direction, frame.context.isCash(coin)) match {
+      case (Direction.Credit, true) =>
+        Looked.pure(Built.of(frame.cash(frame.own, OperationKind.Reward, None, amount, coin)))
+      case (Direction.Credit, false) =>
+        frame.book.first(frame.candidates(coin, frame.context.priceQuotes.toList)).map {
+          case Some(Found(candidate, close)) =>
+            Built.of(
+              frame.operation(
+                frame.own,
+                OperationKind.Reward,
+                Some(coin),
+                amount,
+                Some(close),
+                Zero,
+                candidate.quote
+              )
+            )
+          case None =>
+            Built(
+              List(frame.units(frame.own, OperationKind.Reward, coin, amount)),
+              List(BinanceNote(frame.own, BinanceNote.Reason.DistributionUnvalued(coin, amount)))
+            )
+        }
+      case (Direction.Debit, true) =>
+        Looked.pure(Built.of(frame.cash(frame.own, OperationKind.Fee, None, -amount, coin)))
+      case (Direction.Debit, false) =>
+        Looked.pure(Built.of(frame.units(frame.own, OperationKind.SecurityOut, coin, -amount)))
+    }
+
+  // One conversion of dust: `from` is what a detail gave up and `target` what it received, net of
+  // the service charge.
+  private final case class DustDetail(id: String, from: Amount, target: Amount)
+
+  // The details of a conversion each make an exchange of their own, so that what one gives up is
+  // never shared with what another receives.
+  private def dust(
+    record: BinanceRecord,
+    context: Context,
+    book: PriceBook
+  ): Either[BinanceRecordError, Result] =
+    for {
+      objects <- record.fields.objects(Field.UserAssetDribbletDetails)
+      details <- objects.traverse(dustDetail(record, _))
+    } yield {
+      val frame = Frame(record, context, book, OperationState.Executed, DustType)
+      val operations = keyed(details).flatMap { case (key, detail) =>
+        dustOperations(frame.ofDetail(key), detail.from, detail.target)
+      }
+      result(Looked.pure(Built(operations, Nil)))
+    }
+
+  private def dustDetail(
+    record: BinanceRecord,
+    detail: JsonObject
+  ): Either[BinanceRecordError, DustDetail] = {
+    val fields = new BinanceFields(record.source, Some(record.recordId), detail)
+    for {
+      id <- fields.required(Field.TransId)
+      from <- fields.asset(Field.FromAsset)
+      amount <- fields.requiredDecimal(Field.Amount)
+      received <- fields.requiredDecimal(Field.TransferedAmount)
+    } yield {
+      val target = fields.text(Field.TargetAsset).fold(DustTarget)(BinanceAsset(_))
+      DustDetail(id, Amount(from, amount), Amount(target, received))
+    }
+  }
+
+  // What tells a detail's operations from those of the others: its own `transId`, with the asset it
+  // gave up added where several details of the conversion carry the same one.
+  private def keyed(details: List[DustDetail]): List[(String, DustDetail)] = {
+    val shared = details.groupBy(_.id).collect { case (id, same) if same.size > 1 => id }.toSet
+    details.map { detail =>
+      val key = if (shared(detail.id)) s"${detail.id}-${detail.from.asset.value}" else detail.id
+      key -> detail
+    }
+  }
+
+  private def dustOperations(frame: Frame, gave: Amount, got: Amount): List[AccountOperation] =
+    (frame.context.isCash(gave.asset), frame.context.isCash(got.asset)) match {
+      case (true, true) => exchangeLegs(frame, gave, got).operations
+      case (true, false) => buyLegs(frame, gave, got, got.quantity, None).operations
+      case (false, true) => sellLegs(frame, gave, got, None).operations
+      case (false, false) =>
+        val group = Some(OperationGroup(frame.own.value))
+        List(
+          frame.units(frame.own, OperationKind.Conversion, gave.asset, -gave.quantity, group),
+          frame.units(frame.received, OperationKind.Conversion, got.asset, got.quantity, group)
+        )
+    }
 }

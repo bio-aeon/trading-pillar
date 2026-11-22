@@ -17,10 +17,10 @@ import tofu.syntax.logging.*
 import java.time.Instant
 
 /** Compares the balances recorded for Binance accounts with the balances Binance reports, and
-  * raises a system alert while they differ. A difference means a gap in what the API gives: dust
-  * and rewards the sync does not read, card spending from the funding wallet, Simple Earn
-  * subscriptions, trades on a pair that was delisted before they were read, or a deposit or a
-  * withdrawal still in progress.
+  * raises a system alert while they differ. A difference means a gap in what the API gives: card
+  * spending from the funding wallet, Simple Earn subscriptions and their rewards, trades on a pair
+  * that was delisted before they were read, history from before what the distribution and dust
+  * endpoints keep, or a deposit or a withdrawal still in progress.
   *
   * The balance of an asset is its amount in the spot and the funding wallet together. It is
   * compared with the position the account's executed operations leave in a coin, or with the cash

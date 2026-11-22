@@ -1,8 +1,9 @@
 # Tax lots and reports
 
 Package `st.btu.trading.pillar.tax`. Turns an account's executed `AccountOperation`s, its
-operations in terms shared by every broker, into FIFO cost-basis lots, carried through splits,
-mergers, spin-offs and stock dividends, and a per-year tax estimate.
+operations in terms shared by every broker, into FIFO cost-basis lots that keep the currency of
+their cost, carried through splits, mergers, spin-offs and stock dividends, and a per-year tax
+estimate that converts each cost on the day of the sale.
 
 **This is an estimate for personal reference, not tax advice.** It knows about exactly the rules
 listed below - progressive rate, an optional long-term exemption, broker-withheld tax - and nothing
@@ -13,16 +14,18 @@ conversion it uses is a documented approximation, not the official rate for any 
 ## `TaxLots.fifo` - building the ledger
 
 ```scala
-final case class Lot(instrument: InstrumentKey, quantity: BigDecimal, unitCost: BigDecimal, acquiredOn: LocalDate)
+final case class Lot(instrument: InstrumentKey, quantity: BigDecimal, unitCost: Map[Currency, BigDecimal],
+                     acquiredOn: LocalDate)
 final case class RealizedGain(instrument: InstrumentKey, ticker: Option[Ticker], sellDate: LocalDate,
                               quantity: BigDecimal, currency: Currency, proceeds: BigDecimal,
-                              costBasis: BigDecimal, gain: BigDecimal, holdingDays: Long)
+                              costBasis: Map[Currency, BigDecimal], holdingDays: Long)
 final case class LotLedger(open: Map[InstrumentKey, List[Lot]], realized: List[RealizedGain],
                            unmatched: Map[InstrumentKey, BigDecimal])
 
 object TaxLots {
   def fifo(operations: List[AccountOperation], tickerOf: InstrumentKey => Option[Ticker],
-           allocations: List[CorporateActionAllocation] = Nil): LotLedger
+           allocations: List[CorporateActionAllocation] = Nil,
+           transferCosts: List[TransferCost] = Nil): LotLedger
 }
 ```
 
@@ -31,9 +34,10 @@ considered; everything else in `operations` is ignored, such as the legs of a cu
 (`exchange`), which name none. An `InstrumentKey` is the broker and the id
 that broker gives the instrument, so lots of instruments at different brokers never mix. `tickerOf`
 is a plain function so `TaxLots` itself never touches an `InstrumentDirectory` - the caller
-(`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. `allocations` is
-plain data for the same reason: see ["Spin-offs"](#spin-offs). Quantities are decimals, since an
-instrument can trade in fractions of a unit.
+(`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. `allocations` and
+`transferCosts` are plain data for the same reason: see ["Spin-offs"](#spin-offs) and
+["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost). Quantities are decimals,
+since an instrument can trade in fractions of a unit.
 
 The ledger is one chronological fold over the operations of every instrument of the account, since
 a conversion or a spin-off moves lots from one instrument to another. Its state is the open lots of
@@ -41,13 +45,27 @@ each instrument, the realized gains and the unmatched quantities. An operation i
 kind, and the operations of one group of a conversion or a spin-off are applied together (see
 ["Corporate actions"](#corporate-actions)). The fee pools below stay per instrument.
 
+### Lots in the currencies of their cost
+
+A lot keeps its cost in the currency it was paid in. `Lot.unitCost` is a map from currency to the
+cost of one unit in it, with no zero amount, so a lot that cost nothing has an empty map. A coin
+bought for 2000 euros, 0.1 of it, is a lot of `Map(EUR -> 20000)`, and stays one when it is sold for
+tether. The ledger has no exchange rates, so it does not add costs of different currencies: a sale
+reports the cost of the lots it consumed in each of their currencies, and `TaxReport` converts each
+amount on the day of the sale (see ["How a gain is converted"](#how-a-gain-is-converted)).
+
+A lot bought and sold in one currency has the gain `proceeds` less `costBasis` in that currency,
+which `TaxReport` converts as one amount. A lot's cost has several currencies only through a fee
+paid in another currency than the purchase, or a conversion that charged cash in another currency;
+a sale's cost basis has several when it consumes lots paid in different currencies.
+
 ### Opening a lot
 
 | Operation kind | Lot's `unitCost` |
 |---|---|
-| `buy` | `\|amount\| / quantity`, **plus** that day's pro-rated fee share for this instrument (see below) |
-| `security_in` | the operation's own `price`, or zero when the broker gives none - a transfer-in has no `amount` to derive a cost from |
-| `stock_dividend` | the operation's own `price`, the market value per unit, or zero when the broker gives none - see ["Stock dividends"](#stock-dividends) |
+| `buy` | `\|amount\| / quantity` in the operation's currency, **plus** that day's pro-rated fee shares for this instrument, each in the currency of its fee (see below) |
+| `security_in` | the cost entered for it, divided by its units, in the currency of that cost; else the operation's own `price` in the operation's currency, or nothing when the broker gives none - see ["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost) |
+| `stock_dividend`, `reward` | the operation's own `price`, the market value per unit, in the operation's currency, or nothing when it gives none - see ["Stock dividends"](#stock-dividends) and ["Rewards"](#rewards) |
 
 A lot's `quantity` is the operation's `quantity`, which is the **executed** units. A buy that was
 only partly filled opens a lot of the units that were filled, costed over those units: its `amount`
@@ -61,24 +79,32 @@ even when they land on the same date.
 An instrument's lots are kept oldest first by `acquiredOn`, which a purchase keeps by itself. A lot
 that a corporate action carries over keeps the date of the lot it comes from, and so goes before
 the lots of its instrument that were opened later, as when a merger brings shares into an
-instrument that is already held.
+instrument that is already held. So does the lot of a transfer in whose entered cost gives an
+earlier day.
 
 ### Fee pro-ration
 
 A day's total of the instrument's `fee` operations **in each currency**, by `|amount|` (there can be
-more than one fee operation on a day; they're summed), is pro-rated **twice, independently**:
+more than one fee operation on a day; they're summed), is pro-rated **twice, independently**, once
+over that day's buys of the instrument and once over its sells, by quantity:
 
-- across that day's buys of that instrument **in the same currency**, by each one's own share of
-  the day's total *buy* quantity in that currency - added to each buy's `unitCost` numerator before
-  dividing by its own quantity;
-- across that day's sells of that instrument in the same currency, by each one's own share of the
-  day's total *sell* quantity in that currency - subtracted from each sell's `proceeds`.
+- a fee in a currency that the instrument had buys in that day goes to those buys **in that
+  currency** alone, each taking its own share of the day's *buy* quantity in the currency. The share
+  joins the buy's cost in that currency, added to the numerator before dividing by the buy's own
+  quantity;
+- a fee in a currency that the instrument had no buy in that day is shared among **all** of that
+  day's buys of the instrument, in whatever currency they were paid, by each one's share of the
+  day's total buy quantity, and joins the lot's unit cost in the currency of the fee;
+- a fee in a currency that the instrument had sells in that day goes to those sells in that currency
+  alone, by their share of the day's *sell* quantity in it, and is subtracted from each sale's
+  `proceeds`;
+- a fee in a currency that the instrument had no sell in that day is shared among all of that day's
+  sells of the instrument by quantity and joins each sale's `costBasis` in the currency of the fee,
+  since it cannot come off proceeds in another currency.
 
-A fee is shared only among the trades in its own currency, since `TaxLots` has no exchange rates to
-add a fee to a cost in another currency. A fee in a currency that the instrument had no buy, or no
-sell, in that day goes into no trade's cost: a commission charged in dollars on a trade in Taiwan
-dollars, which Interactive Brokers does, stays out of the lot's cost in Taiwan dollars, and so the
-estimate leaves it out.
+A commission in dollars on a trade in Taiwan dollars, which Interactive Brokers charges, is thus part
+of the lot's cost in dollars, and the estimate converts it with the rest. A day with no buy, or no
+sell, of the instrument gives its fees to no trade on that side.
 
 This is a deliberate simplification: a day that has both buys and sells of the same instrument has
 its one fee total used in full on *each* side rather than split once across both. In practice a
@@ -100,13 +126,16 @@ that only partially covers the remainder. Exactly one `RealizedGain` is produced
 operation, always (and one per leg of a conversion that gave up units and was paid cash, see
 ["Conversions"](#conversions)):
 
-- `currency` is the currency of the sell operation, which `proceeds`, `costBasis` and `gain` are
-  in;
-- `proceeds = |amount| - that day's pro-rated fee share` (see above), regardless of how much of the
-  sell was actually matched against open lots;
+- `currency` is the currency of the sell operation, which `proceeds` is in;
+- `proceeds = |amount| - that day's pro-rated fee share in that currency` (see above), regardless of
+  how much of the sell was actually matched against open lots;
 - `quantity`/`costBasis` reflect only the lots actually consumed - see "selling more than held"
   below;
-- `gain = proceeds - costBasis`;
+- `costBasis` is the cost of the consumed units in each currency their lots were paid in, with no
+  zero amount, plus the sale's share of any fee in a currency that the instrument had no sell in
+  that day. It is empty for a sale matched against no lot, and for lots that cost nothing. The
+  ledger has no exchange rates, so it holds no `gain`: `TaxReport` takes the proceeds and every
+  cost to the base currency (see ["How a gain is converted"](#how-a-gain-is-converted));
 - `holdingDays` is the **quantity-weighted average** of the consumed lots' own holding periods
   (`ChronoUnit.DAYS.between(lot.acquiredOn, sellDate)`), rounded to the nearest whole day. A sell
   fully covered by one lot (the common case) has only one value to average, so this only matters
@@ -123,7 +152,9 @@ disposal. It produces no `RealizedGain`, and a later sale is matched against the
 The units beyond the open lots are added to `LotLedger.unmatched`, as for a sale. A transfer between
 two accounts of one owner would ideally carry the lots, with their cost and dates, to the receiving
 account; the library has no link across accounts to do that, so the receiving account's
-`security_in` opens a lot at the transfer's price, or at no cost when it has none.
+`security_in` opens a lot at the cost the owner entered for it, else at the transfer's price, or at
+no cost when it has none (see
+["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost)).
 
 **Selling more than held**: if a sell's quantity, or the quantity of a transfer out, exceeds every
 open lot for that instrument, whatever lots exist are fully consumed (down to zero open lots) and
@@ -132,8 +163,9 @@ sell or transfer for that instrument - absent, not zero, for an instrument that 
 oversold). Nothing is raised or logged
 (`TaxLots.fifo` is pure); the `RealizedGain` for that sell still carries the full `proceeds` but
 only the matched `quantity`/`costBasis` - so an entirely unmatched sell (no lots at all, e.g. an
-instrument bought before the loaded operations window) reports `gain == proceeds`, the most
-conservative number available without a cost basis to subtract.
+instrument bought before the loaded operations window) reports the whole proceeds against an empty
+cost basis, which makes its gain the whole proceeds, the most conservative number available without
+a cost basis to subtract.
 
 ### Corporate actions
 
@@ -163,10 +195,11 @@ lots add up to the units held exactly, and a sale of all of them leaves no remai
 
 #### Stock dividends
 
-A `stock_dividend` opens a lot of its `quantity` at its `price`, the market value per unit, or at no
-cost when it has none, on the day of the dividend. The value is income too, and `TaxReport` counts it
-(see [`dividendIncome`](#field-definitions)). No cash changes. A stock dividend of a negative
-quantity, which no adapter gives, takes the units out of the lots like a transfer out.
+A `stock_dividend` opens a lot of its `quantity` at its `price`, the market value per unit, in the
+operation's currency, or at no cost when it has none, on the day of the dividend. The value is income
+too, and `TaxReport` counts it (see [`dividendIncome`](#field-definitions)). No cash changes. A stock
+dividend of a negative quantity, which no adapter gives, takes the units out of the lots like a
+transfer out.
 
 #### Conversions
 
@@ -184,24 +217,27 @@ without a price counting zero.
 
 - When `C` is positive, as in a merger paid in cash and stock, the fraction `f = C / (C + V)` of the
   consumed lots is disposed of. That is one `RealizedGain` for the out-leg's instrument on the
-  day of the action, with its share of `C` as proceeds, `f` times the consumed cost as cost basis, `f`
-  times the consumed units as `quantity`, and the holding days averaged as for a sale, in the currency
-  of the cash. The rest of the cost, `1 - f`, goes to the in-legs.
+  day of the action, with its share of `C` as proceeds in the currency of the cash, `f` times the
+  consumed cost as cost basis in the currencies the lots were paid in, `f` times the consumed units
+  as `quantity`, and the holding days averaged as for a sale. The rest of the cost, `1 - f`, goes to
+  the in-legs.
 - When `C` is not positive, `f` is zero, and the cash paid, `-C`, as in a rights subscription, adds
-  to the cost of the in-legs.
+  to the cost of the in-legs in the currency of the cash, next to the cost of the lots in theirs.
 - Each in-leg gets one lot for each piece of lot that was consumed: its units times the piece's
   share of the out-leg's units, the acquisition date of the piece, and its share of the piece's
-  cost, `(1 - f)` times it plus the cash paid in proportion. The in-legs share the cost by their
-  value, or by their units when a leg has no price or `V` is zero. The in-leg units that stand for
-  unmatched units of the out-leg form one lot on the day of the action, which costs their share of the
-  cash paid.
+  cost, `(1 - f)` times it in each of its currencies plus the cash paid in proportion, in the
+  currency of the cash. The in-legs share the cost by their value, or by their units when a leg has
+  no price or `V` is zero. The in-leg units that stand for unmatched units of the out-leg form one
+  lot on the day of the action, which costs their share of the cash paid.
 - Every share of units and of cash is apportioned, the last taking what the others leave once
   rounded, so the lots of an in-leg add up to its units exactly.
 
 A 1-for-25 reverse split onto a new instrument over two lots, 250 units at 2 and 250 at 6, gives the
 new instrument two lots of 10 units, at 50 and at 150, with the dates of the old ones. A merger of 100
 shares costing 1000 into 50 shares of 40 each and 500 in cash has `f` of 500 / (500 + 2000), a fifth:
-a gain of 500 less 200 on 20 units, and a lot of 50 units costing 800.
+a gain of 500 less 200 on 20 units, and a lot of 50 units costing 800. If the shares cost 1000 euros
+and the merger pays in dollars, the sale is of 20 units for 500 dollars against a cost basis of 200
+euros, and the 50 units cost 800 euros.
 
 A group with no leg that gave up units opens a lot for each in-leg on the day of the action, which
 costs its share of the cash paid.
@@ -213,9 +249,10 @@ leg of zero quantity names the parent. The parent keeps its units.
 
 - Each open lot of the parent gives each new instrument one lot: the new instrument's units times
   the lot's share of the parent's units held, the acquisition date of the parent's lot, and the
-  fraction `a` of the parent lot's cost. The parent lot keeps what the fractions of all the new
-  instruments leave of its cost, `1 - (a1 + a2 + ...)`. The last parent lot's share takes the units
-  the others leave once rounded, so a new instrument's lots add up to its units exactly.
+  fraction `a` of the parent lot's cost, in each currency it was paid in. The parent lot keeps what
+  the fractions of all the new instruments leave of its cost, `1 - (a1 + a2 + ...)`. The last
+  parent lot's share takes the units the others leave once rounded, so a new instrument's lots add
+  up to its units exactly.
 - A broker reports no value for a spin-off, so `a` is the **allocation** stored for the group and the
   new instrument, a `CorporateActionAllocation`, and zero without one: by default the new instrument
   takes none of the cost. An allocation is meant to be edited from the figures the issuer
@@ -235,10 +272,48 @@ passes them to `TaxLots.fifo`, for `annualReport` and for `openLots` alike.
 
 **What `LotLedger.realized` holds**: one entry per `sell` and one per conversion out-leg that was
 paid cash. A split, a stock dividend, a spin-off and a conversion with no cash realize nothing, and
-the gain on the shares of a stock dividend shows up when they are sold.
+the gain on the shares of a stock dividend shows up when they are sold. A conversion into an
+instrument quoted in another currency keeps the cost in the currency it was paid in, so the lots of
+the new instrument cost in the old currency until they are sold and converted.
 
-**Known limit**: lots carry no currency, so a conversion into an instrument quoted in another currency
-keeps the cost in the old one.
+### Transfers in with an entered cost
+
+A `security_in` brings units into the account with no cost of its own: a coin deposited from another
+wallet, shares transferred from another broker. The owner can say what they cost:
+
+```scala
+final case class TransferCost(ref: OperationRef, cost: BigDecimal, currency: Currency,
+                              acquiredOn: Option[LocalDate])
+```
+
+`ref` is the `ref` of the executed `security_in` the cost is for, `cost` the total paid for all of
+its units, in `currency`, and `acquiredOn` the day the units were acquired where that is not the day
+of the transfer. A `security_in` with an entered cost opens its lot at `cost / quantity` in the
+currency of the cost, acquired on `acquiredOn` where it is given and on the operation's day
+otherwise, and a lot acquired before the others of its instrument goes before them, as the lot a
+corporate action carries over does. A zero cost makes a lot that costs nothing and still takes the
+day. Without an entered cost, the lot costs the operation's `price` in its currency, or nothing when
+it has none. A cost whose `ref` names no executed `security_in` of an instrument is ignored, so a
+cost entered for an operation that was canceled or that carries no instrument changes nothing. The
+cost applies at every broker, since a transfer in is the same operation at each.
+
+`TaxServiceImpl` reads the account's costs from
+[`TransferCostStorage`](storage-contracts.md#transfercoststoragef_) and passes them to `TaxLots.fifo`,
+for `annualReport` and for `openLots` alike. The currency of a cost needs a rate on the day of a sale
+like any other, so the service loads the bars of the currencies of the costs too, and the held
+instruments service puts their rate tickers on the watchlist (see
+[`market-data.md`](market-data.md#rate-tickers-on-the-watchlist)).
+
+### Rewards
+
+A `reward` is units of an instrument, or cash, received as income outside a trade, such as a
+distribution or an airdrop. With an instrument, the ledger opens a lot of its `quantity` at its
+`price`, the market value per unit, in the operation's currency, or at no cost when it has none, on
+the day of the reward, as it does for a stock dividend. The value is income, which `TaxReport` counts
+as [`rewardIncome`](#field-definitions). A reward of a negative quantity, which no adapter gives,
+takes the units out of the lots like a transfer out. A reward of cash names no instrument, so it
+opens no lot, and its amount is income. Neither the Tinkoff nor the Interactive Brokers translation
+gives a reward.
 
 ### Trades between coins and fees paid in a coin
 
@@ -263,12 +338,16 @@ above, with no rule of its own:
   coin received is a smaller quantity bought for the same amount, so the coin costs more per unit.
   A commission that no price values is a `security_out`, which consumes lots with no gain.
 - A coin deposited from elsewhere is a `security_in` with no price, so its lot costs nothing and a
-  sale of it counts the whole proceeds as gain.
-
-**Known limit**: lots carry no currency, so a coin bought in one currency, such as EUR, and sold in
-another, such as USDT, has its cost counted as if it were in the currency of the sale. The same goes
-for a conversion into an instrument quoted in another currency, and for a coin that was bought
-with one stablecoin and sold for another.
+  sale of it counts the whole proceeds as gain, until the owner enters what it cost (see
+  ["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost)).
+- A coin bought in one currency, such as EUR, and sold in another, such as USDT, keeps its cost in
+  euros through the sale, which the report converts on the day of the sale; the same goes for a coin
+  bought with one stablecoin and sold for another.
+- Small balances converted into BNB, the dust, are a `conversion` of the coin given up into BNB,
+  which carries the cost and dates of the coin and realizes nothing; dust in a stablecoin is a `buy`
+  of BNB for it.
+- A distribution or an airdrop of a coin is a `reward`, which opens a lot at the market value of
+  the day (see ["Rewards"](#rewards)).
 
 ### Determinism
 
@@ -289,8 +368,8 @@ final case class TaxConfig(baseCurrency: Currency = Currency("RUB"), progressive
                            longTermYears: Option[Int] = Some(3), fxTickers: Map[Currency, Ticker] = Map.empty)
 final case class AnnualTaxReport(year: Int, realizedGains: BigDecimal, exemptGains: Option[BigDecimal],
                                  taxableGains: BigDecimal, dividendIncome: BigDecimal, couponIncome: BigDecimal,
-                                 taxesWithheld: BigDecimal, estimatedTax: BigDecimal, unconverted: Int,
-                                 currency: Currency)
+                                 rewardIncome: BigDecimal, taxesWithheld: BigDecimal, estimatedTax: BigDecimal,
+                                 unconverted: Int, currency: Currency)
 
 object TaxReport {
   def annual(year: Int, ledger: LotLedger, operations: List[AccountOperation],
@@ -304,16 +383,34 @@ lot is long-term. The default, 3 years, follows the Russian rule for tax residen
 defaults.
 
 Pure. `operations` must be the same (or a superset of the) operations `ledger` was built from -
-`TaxReport.annual` uses it for what `ledger` alone cannot provide: the **dividend and coupon
-income, and the withheld tax**. These operation kinds never open or close a lot, so they never
-appear in `ledger` at all; they are scanned directly from `operations`, the executed ones of the
-year. So is the market value of a `stock_dividend`, which also opened a lot.
+`TaxReport.annual` uses it for what `ledger` alone cannot provide: the **dividend, coupon and
+reward income, and the withheld tax**. Dividends, coupons and taxes never open or close a lot, so
+they never appear in `ledger` at all, and the income of a `stock_dividend` or a `reward` appears
+there only as the cost of the lot it opened. All of them are scanned directly from `operations`,
+the executed ones of the year.
 
-**Each gain's currency.** A realized gain is converted in the currency of its own sale,
-`RealizedGain.currency`, and not in the currency of the other operations that name its instrument.
-A fee, a tax or a dividend on the instrument can be in another currency than its trades (a
-commission charged in dollars on a trade in Taiwan dollars, say), and none of them changes the
-currency a gain is in.
+### How a gain is converted
+
+A realized gain is converted on the day of its sale, `RealizedGain.sellDate`, from the amounts of
+its `RealizedGain`, and not from the other operations that name its instrument. Its proceeds are in
+the currency of the sale, `RealizedGain.currency`, and its cost basis has an amount for each
+currency its lots were paid in:
+
+- the proceeds less the cost in the currency of the sale are converted together, with the sale's
+  rate; with no cost in that currency this is the proceeds alone;
+- every cost in another currency is converted in its own, with that currency's rate, and taken off.
+
+A coin bought for 2000 euros, 0.1 of it, and sold for 2400 tether, with euros at 100 and tether at 90
+in the base currency on the day of the sale, is a gain of 2400 x 90 - 2000 x 100 = 16000. A sale
+whose lots were all paid in its own currency converts one amount and gives the figure it would from
+`proceeds - costBasis` in that currency. A cost of nothing needs no rate. A gain with an amount that
+has no rate is left out of every sum and counted once in `unconverted`. The long-term exemption is
+judged on the converted gain: a long-term sale that is a loss once its amounts are converted is not
+exempt, whatever its proceeds and costs look like in their own currencies.
+
+The currency of a fee, a tax or a dividend on the instrument does not change the currency a gain is
+in: a commission charged in dollars on a trade in Taiwan dollars joins the cost basis in dollars,
+and the proceeds stay in Taiwan dollars.
 
 ### FX conversion
 
@@ -325,8 +422,8 @@ ticker: `config.fxTickers(currency)` when it names one, otherwise the convention
 documents in [`analytics.md`](analytics.md#rules) - both share the lookup through
 `analytics.FxRates`). The rate ticker's bars are read from the source that ticker is configured to
 use, never from another source. The bars are there once the rate ticker is on a watchlist, which the
-held instruments step arranges for the currencies of the account's operations (see
-[`market-data.md`](market-data.md#rate-tickers-on-the-watchlist)). When `fxRate` returns `None` for
+held instruments step arranges for the currencies of the account's operations and of its entered
+transfer costs (see [`market-data.md`](market-data.md#rate-tickers-on-the-watchlist)). When `fxRate` returns `None` for
 some amount (no bar on or before that date for that currency, as for a currency whose rate ticker
 has no bars at all), that one amount is dropped from every sum it would have contributed
 to and `unconverted` is incremented once for it - never twice, even for a realized gain that would
@@ -339,13 +436,13 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
 
 ### Field definitions
 
-1. **`realizedGains`**: every `RealizedGain` whose `sellDate.getYear == year`, converted and summed -
-   gains and losses alike.
+1. **`realizedGains`**: every `RealizedGain` whose `sellDate.getYear == year`, converted as
+   described in ["How a gain is converted"](#how-a-gain-is-converted) and summed - gains and
+   losses alike.
 2. **`exemptGains`**: the subset of the above that is both long-term (`TaxReport.isLongTerm`:
    `holdingDays >= longTermYears * 365`) **and** itself positive after conversion - a long-held
    *loss* is not "exempt", it simply remains counted in `realizedGains` and reduces the taxable
-   total below. (An FX rate is always positive, so checking the converted gain's sign or the
-   original's is equivalent.) `None` when `longTermYears` is.
+   total below. `None` when `longTermYears` is.
 3. **`taxableGains`**: `max(0, realizedGains - exemptGains.getOrElse(0))`.
 4. **`dividendIncome`** / **`couponIncome`**: the `amount` of the year's `dividend` / `coupon`
    operations, converted and summed as-is (positive, following the same "amount is a signed
@@ -353,7 +450,11 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
    `dividendIncome` also counts each `stock_dividend` of the year that has a `price`, at `price`
    times `quantity`, converted in the operation's currency on its date; one with no price counts
    nothing, and is not an unconverted amount.
-5. **`taxesWithheld`**: **minus** the sum of the `amount` of the year's `tax` operations, converted.
+5. **`rewardIncome`**: the year's executed `reward`s, each converted in its own currency on its
+   date: one with an instrument at `price` times `quantity` (counting nothing, and no unconverted
+   amount, when it has no price), one without an instrument at its `amount`. Like the other income,
+   it is shown for reference and is not in `estimatedTax`.
+6. **`taxesWithheld`**: **minus** the sum of the `amount` of the year's `tax` operations, converted.
    Withholding is a negative `amount`, an outflow, so the figure reads as "how much was withheld",
    and a refund or a correction in the account's favour, a positive `amount`, **lowers** it: it is
    negative if the refunds of the year exceed what was withheld in it. The `tax` kind is every
@@ -363,16 +464,18 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
    `_TAX_REPO_PROGRESSIVE`, `_TAX_REPO_HOLD`, `_TAX_REPO_REFUND`, `_TAX_REPO_HOLD_PROGRESSIVE`,
    `_TAX_REPO_REFUND_PROGRESSIVE`) and `_TAX_CORRECTION_COUPON`, the correction of tax withheld on
    coupons.
-6. **`estimatedTax`**: `config.lowerRate` applied to `taxableGains` up to `config.progressiveThreshold`,
+7. **`estimatedTax`**: `config.lowerRate` applied to `taxableGains` up to `config.progressiveThreshold`,
    `config.upperRate` above it - `taxableGains <= threshold ? taxableGains * lowerRate : threshold *
    lowerRate + (taxableGains - threshold) * upperRate`. **Decision**: this estimates tax on
-   `taxableGains` (realized capital gains, net of any long-term exemption) **only** - dividend/coupon
-   income is shown for reference and is not folded into this estimate, since its own withholding is
-   already reported separately in `taxesWithheld` (the broker withholds dividend/coupon tax at
-   source; re-estimating it here would double-count against a figure the report already shows).
-7. **`unconverted`**: total count of individual amounts (realized gains - counted once per gain even
-   though a long-term one is also checked for `exemptGains`, see above - dividends, coupons, tax
-   operations, stock dividends) dropped from every sum for lack of an `fxRate`.
+   `taxableGains` (realized capital gains, net of any long-term exemption) **only** - dividend, coupon
+   and reward income is shown for reference and is not folded into this estimate, since the
+   withholding on dividends and coupons is already reported separately in `taxesWithheld` (the
+   broker withholds dividend/coupon tax at source; re-estimating it here would double-count against
+   a figure the report already shows).
+8. **`unconverted`**: total count of individual amounts (realized gains - counted once per gain even
+   though it has several amounts to convert and a long-term one is also checked for `exemptGains`,
+   see above - dividends, coupons, rewards, tax operations, stock dividends) dropped from every sum
+   for lack of an `fxRate`.
 
 ## `TaxService[F]` / `TaxServiceImpl`
 
@@ -385,6 +488,7 @@ trait TaxService[F[_]] {
 object TaxServiceImpl {
   def create[F[_]: Monad: Clock](operations: AccountOperationStorage[F],
                                  allocations: CorporateActionAllocationStorage[F],
+                                 transferCosts: TransferCostStorage[F],
                                  directory: InstrumentDirectory[F], sources: MarketDataSources[F],
                                  priceHistory: PriceHistoryStorage[F], config: TaxConfig): TaxService[F]
 }
@@ -396,8 +500,9 @@ trailing 20-year window ending "now" (`Clock[F]`), regardless of the report year
 requested, so a lot opened long before a requested year is still on hand to be matched against a
 sale inside it. `config` is exposed on the trait itself (not threaded through every method) so a
 caller like `LotsHandler` can judge its own lots with `TaxReport.isLongTerm` without a dedicated
-method. Both also read the account's [spin-off allocations](#spin-offs) from `allocations`, and build
-the ledger with them.
+method. Both also read the account's [spin-off allocations](#spin-offs) from `allocations` and its
+[entered transfer costs](#transfers-in-with-an-entered-cost) from `transferCosts`, and build the
+ledger with them.
 
 Every instrument in the loaded operations is mapped to a ticker through
 `InstrumentDirectory.byKey`, once per distinct instrument per call; an instrument the directory
@@ -407,8 +512,8 @@ maps to it, concatenated in instrument order and then stably sorted by acquisiti
 result is oldest first with same-day lots in instrument order.
 
 FX bars are loaded once per `annualReport` call, one `PriceHistoryStorage.bars` call per non-base
-currency actually present in the loaded operations (over the same 20-year window), for that
-currency's rate ticker on the source the ticker is configured to use - see
+currency actually present in the loaded operations or in the account's transfer costs (over the same
+20-year window), for that currency's rate ticker on the source the ticker is configured to use - see
 ["FX conversion"](#fx-conversion). `TaxConfig.fxTickers` and
 [`ValuationConfig.fxTickers`](analytics.md#portfolio-valuation) name a rate ticker for a currency
 whose rate is not the conventional pair.

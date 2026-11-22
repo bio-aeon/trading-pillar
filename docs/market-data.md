@@ -594,8 +594,9 @@ trait HeldInstrumentsService[F[_]] {
 object HeldInstrumentsServiceImpl {
   def create[I[_]: Functor, F[_]: MonadThrow: Clock](
     accounts: AccountStorage[F], operations: AccountOperationStorage[F],
-    watchlist: WatchlistStorage[F], tickerSources: TickerSourceStorage[F],
-    directory: InstrumentDirectory[F], sources: MarketDataSources[F], rates: RateTickerConfig
+    transferCosts: TransferCostStorage[F], watchlist: WatchlistStorage[F],
+    tickerSources: TickerSourceStorage[F], directory: InstrumentDirectory[F],
+    sources: MarketDataSources[F], rates: RateTickerConfig
   )(implicit logs: Logs[I, F]): I[HeldInstrumentsService[F]]
 }
 ```
@@ -656,9 +657,11 @@ final case class RateTickerConfig(baseCurrencies: Set[Currency], fxTickers: Map[
 ```
 
 For each account the step collects the currencies that its executed operations are in, whatever
-their kind, and the currency each held instrument is priced in, which is the currency of its broker
-record. For each of those currencies and each base currency other than itself, `FxRates.rateTicker`
-gives the ticker. A ticker the account's watchlist lacks, in any state, is added enabled with the
+their kind, the currency each held instrument is priced in, which is the currency of its broker
+record, and the currency of each cost entered for a transfer in (see
+[`tax.md`](tax.md#transfers-in-with-an-entered-cost)), read from `TransferCostStorage`, since a gain
+converts that cost on the day of the sale. For each of those currencies and each base currency other
+than itself, `FxRates.rateTicker` gives the ticker. A ticker the account's watchlist lacks, in any state, is added enabled with the
 note `Added for the exchange rate of <currency>`, and logged. An entry that exists is left as it is,
 a disabled one included, and no source setting is written for a rate ticker: it is read from the
 source its own setting names, else from the default source. Two currencies that share a ticker add it

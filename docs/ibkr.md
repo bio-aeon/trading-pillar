@@ -565,8 +565,10 @@ object IbkrReconciler {
   cash of a transfer (`cashTransfer`) is `other`, since nothing in a row says what it is for. Such a
   cash amount is not counted as invested capital.
 - **A commission in another currency than its trade's** is recorded as a fee in its own currency.
-  The tax lots share a fee only among the trades in its currency, so such a commission is in no
-  lot's cost and the estimate leaves it out.
+  The tax lots share it among the day's trades of the instrument by quantity when none of them was
+  in its currency, and it joins the lot's cost, or the sale's cost basis, in its own currency, which
+  the tax estimate converts on the day of the sale (see
+  [`tax.md`](tax.md#fee-pro-ration)).
 - **Corporate actions** are read from the shapes IB's rows were seen to have, and some are not
   confirmed against a real statement:
   - the shape of a forward split on an unchanged contract;
@@ -578,8 +580,9 @@ object IbkrReconciler {
 
   The reconciliation catches a position that an action gets wrong. A temporary instrument that an
   action leaves, such as `CORPACT` or a `.TEN` instrument, counts as unmapped in the valuation while
-  the directory does not know it, until a later action converts it. Lots carry no currency, so a
-  conversion into an instrument quoted in another currency keeps the cost in the old one.
+  the directory does not know it, until a later action converts it. A conversion into an instrument
+  quoted in another currency keeps the cost in the currency of the old one, which the tax estimate
+  converts on the day of the sale.
 - **History** is limited to what IB keeps available through Flex, 1 January four calendar years
   back. What IB answers for dates before the account existed is not documented, so `historyStart`
   lets an owner start on the day the account opened.

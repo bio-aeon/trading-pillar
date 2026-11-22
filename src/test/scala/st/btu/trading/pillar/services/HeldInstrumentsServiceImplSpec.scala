@@ -8,6 +8,7 @@ import st.btu.trading.pillar.models.Account
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.storages.{AccountStorage, TickerSourceStorage, WatchlistStorage}
+import st.btu.trading.pillar.tax.TransferCost
 import st.btu.trading.pillar.testkit.AnalyticsFakes.accountOperation
 import st.btu.trading.pillar.testkit.MarketDataFakes.{
   FakeTickerSourceStorage,
@@ -156,15 +157,18 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
     settings: TickerSourceStorage[IO],
     sources: MarketDataSources[IO],
     logging: Logging[IO] = plainLogging,
-    rates: RateTickerConfig = noRates
+    rates: RateTickerConfig = noRates,
+    transferCosts: Map[AccountId, List[TransferCost]] = Map.empty
   ): IO[HeldInstrumentsService[IO]] = {
     implicit val clock: Clock[IO] = McpFakes.clockAt(now)
     implicit val logs: Logs[IO, IO] = Logs.const[IO, IO](logging)
     for {
       operationStorage <- AnalyticsFakes.accountOperationStorage(operations)
+      costStorage <- TaxFakes.transferCostStorage(transferCosts)
       service <- HeldInstrumentsServiceImpl.create[IO, IO](
         accounts,
         operationStorage,
+        costStorage,
         watchlist,
         settings,
         directory,
@@ -188,7 +192,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
     settings: List[TickerSource] = Nil,
     router: IO[MarketDataSources[IO]] = servingBoth,
     logging: Logging[IO] = plainLogging,
-    rates: RateTickerConfig = noRates
+    rates: RateTickerConfig = noRates,
+    transferCosts: Map[AccountId, List[TransferCost]] = Map.empty
   ): IO[Fixture] =
     for {
       accountStorage <- AnalyticsFakes.accountStorage(accounts)
@@ -203,7 +208,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
         settingsStorage,
         sources,
         logging,
-        rates
+        rates,
+        transferCosts
       )
     } yield Fixture(watchlistStorage, settingsStorage, service)
 
@@ -520,6 +526,58 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
           } yield items must contain(
             exactly(held(binance, "BTCUSDC"), rate(binance, "USDCUSD=X", "USDC"))
           )
+        }
+
+        "are added for the currency of a cost entered for a transfer in, though no operation is in it" >> {
+          val costs = Map(
+            tinkoff.id -> List(
+              TransferCost(OperationRef("transfer-1"), 6000, Currency("EUR"), None)
+            )
+          )
+          for {
+            f <- fixture(rates = dollars, transferCosts = costs)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(rate(tinkoff, "EURUSD=X", "EUR"))
+        }
+
+        "are added once when a cost and an operation are in the same currency" >> {
+          val costs = Map(
+            tinkoff.id -> List(
+              TransferCost(OperationRef("transfer-1"), 6000, Currency("EUR"), None)
+            )
+          )
+          for {
+            f <- fixture(
+              operations = List(paidIn(tinkoff, "EUR")),
+              rates = dollars,
+              transferCosts = costs
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(rate(tinkoff, "EURUSD=X", "EUR"))
+        }
+
+        "are added to the watchlist of the account whose cost is in the currency" >> {
+          val costs = Map(
+            ibkr.id -> List(TransferCost(OperationRef("transfer-1"), 80, Currency("GBP"), None))
+          )
+          for {
+            f <- fixture(List(tinkoff, ibkr), rates = dollars, transferCosts = costs)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(rate(ibkr, "GBPUSD=X", "GBP"))
+        }
+
+        "are not added for the currency of a cost that is a base currency" >> {
+          val costs = Map(
+            tinkoff.id -> List(TransferCost(OperationRef("transfer-1"), 80, Currency("USD"), None))
+          )
+          for {
+            f <- fixture(rates = dollars, transferCosts = costs)
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must beEmpty
         }
 
         "are not added for a base currency" >> {

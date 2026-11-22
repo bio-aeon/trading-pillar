@@ -45,6 +45,7 @@ final class TaxHandler[F[_]: Monad: Clock](
       s"Taxable gains: ${Replies.scaled(r.taxableGains)}",
       s"Dividend income: ${Replies.scaled(r.dividendIncome)}",
       s"Coupon income: ${Replies.scaled(r.couponIncome)}",
+      s"Reward income: ${Replies.scaled(r.rewardIncome)}",
       s"Taxes withheld: ${Replies.scaled(r.taxesWithheld)}",
       s"Estimated tax: ${Replies.scaled(r.estimatedTax)}"
     )

@@ -14,10 +14,11 @@ class TaxReportSpec extends Specification {
   private val usd = Currency("USD")
   private val eur = Currency("EUR")
   private val twd = Currency("TWD")
+  private val usdt = Currency("USDT")
 
   private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
-  // A realized gain in roubles unless told otherwise.
+  // A realized gain in roubles unless told otherwise, from a sale that cost nothing.
   private def rg(
     instrument: String,
     sellDate: LocalDate,
@@ -33,8 +34,27 @@ class TaxReportSpec extends Specification {
       quantity,
       currency,
       gain,
-      0,
-      gain,
+      Map.empty,
+      holdingDays
+    )
+
+  // The sale of a coin for `proceeds` in `currency`, of lots that cost `costBasis` in the currencies
+  // named.
+  private def sale(
+    sellDate: LocalDate,
+    currency: Currency,
+    proceeds: BigDecimal,
+    costBasis: Map[Currency, BigDecimal],
+    holdingDays: Long = 10
+  ): RealizedGain =
+    RealizedGain(
+      instrumentKey("COIN"),
+      None,
+      sellDate,
+      BigDecimal("0.1"),
+      currency,
+      proceeds,
+      costBasis,
       holdingDays
     )
 
@@ -179,6 +199,115 @@ class TaxReportSpec extends Specification {
         report.unconverted must_== 0
       }
 
+      "a gain on lots paid in other currencies than the sale" >> {
+        val year = 2025
+        val saleDay = LocalDate.of(year, 3, 1)
+
+        // Euros at 100 roubles and tether at 90, as of the day of the sale.
+        val rates: (Currency, LocalDate) => Option[BigDecimal] =
+          (ccy, date) =>
+            if (date == saleDay) Map(eur -> BigDecimal(100), usdt -> BigDecimal(90)).get(ccy)
+            else None
+
+        "converts the proceeds and each cost in its own currency at the rate of the day of the sale" >> {
+          // 0.1 of a coin bought for 2000 euros and sold for 2400 tether: 2400 * 90 - 2000 * 100.
+          val gain = sale(saleDay, usdt, 2400, Map(eur -> BigDecimal(2000)))
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(16000)
+          report.unconverted must_== 0
+        }
+
+        "takes the cost in the currency of the sale off the proceeds before converting them" >> {
+          // 2400 tether for lots that cost 1000 tether and 500 euros: (2400 - 1000) * 90 - 500 * 100.
+          val gain =
+            sale(saleDay, usdt, 2400, Map(usdt -> BigDecimal(1000), eur -> BigDecimal(500)))
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(76000)
+        }
+
+        "is a loss when the cost converts to more than the proceeds" >> {
+          // 2000 tether for 0.1 of a coin bought for 2000 euros: 2000 * 90 - 2000 * 100.
+          val gain = sale(saleDay, usdt, 2000, Map(eur -> BigDecimal(2000)))
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(-20000)
+          report.taxableGains must_== BigDecimal(0)
+        }
+
+        "counts a gain with a cost that cannot be converted once, and leaves it out" >> {
+          val convertible = sale(saleDay, usdt, 2400, Map(eur -> BigDecimal(2000)))
+          // The cost in pounds has no rate, and the gain is a long-term one.
+          val unconvertible =
+            sale(saleDay, usdt, 100, Map(Currency("GBP") -> BigDecimal(50)), holdingDays = 2000)
+          val ledger = LotLedger(Map.empty, List(convertible, unconvertible), Map.empty)
+
+          val report = TaxReport.annual(year, ledger, Nil, rates)
+
+          report.realizedGains must_== BigDecimal(16000)
+          report.exemptGains must_== Some(BigDecimal(0))
+          report.unconverted must_== 1
+        }
+
+        "counts a gain whose proceeds cannot be converted once, whatever its costs" >> {
+          val gain = sale(saleDay, Currency("GBP"), 100, Map(eur -> BigDecimal(50)))
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(0)
+          report.unconverted must_== 1
+        }
+
+        "is judged long-term on the converted gain, so one that turns into a loss is not exempt" >> {
+          // 2100 tether for a coin bought for 2000 euros is a gain of 100 in no single currency, but
+          // 2100 * 90 - 2000 * 100 is a loss.
+          val gain = sale(saleDay, usdt, 2100, Map(eur -> BigDecimal(2000)), holdingDays = 2000)
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(-11000)
+          report.exemptGains must_== Some(BigDecimal(0))
+        }
+
+        "is exempt when long-term and positive once converted" >> {
+          val gain = sale(saleDay, usdt, 2400, Map(eur -> BigDecimal(2000)), holdingDays = 2000)
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.exemptGains must_== Some(BigDecimal(16000))
+          report.taxableGains must_== BigDecimal(0)
+        }
+
+        "needs no rate for a cost of nothing" >> {
+          val gain = sale(saleDay, usdt, 100, Map.empty)
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(9000)
+          report.unconverted must_== 0
+        }
+
+        "converts a sale in the base currency exactly, and its costs in their own" >> {
+          val gain = sale(saleDay, rub, 300000, Map(eur -> BigDecimal(2000)))
+
+          val report =
+            TaxReport.annual(year, LotLedger(Map.empty, List(gain), Map.empty), Nil, rates)
+
+          report.realizedGains must_== BigDecimal(100000) // 300000 - 2000 * 100
+        }
+      }
+
       "income and tax of the year" >> {
 
         val year = 2025
@@ -238,6 +367,90 @@ class TaxReportSpec extends Specification {
 
           report.dividendIncome must_== BigDecimal(0)
           report.unconverted must_== 0
+        }
+
+        "reward income" >> {
+          def reward(
+            date: LocalDate,
+            quantity: BigDecimal,
+            price: Option[BigDecimal],
+            currency: String = "USD",
+            state: OperationState = OperationState.Executed
+          ) =
+            op(OperationKind.Reward, 0, date, Some("COIN"), currency, state, quantity, price)
+
+          val fxRate: (Currency, LocalDate) => Option[BigDecimal] =
+            (ccy, _) => if (ccy == usd) Some(BigDecimal(90)) else None
+
+          "counts the units received at their price per unit, converted on the day" >> {
+            // 5 units valued at 30 dollars each, at 90 roubles to the dollar.
+            val ops = List(reward(LocalDate.of(year, 6, 1), 5, Some(30)))
+
+            val report = TaxReport.annual(year, LotLedger.empty, ops, fxRate)
+
+            report.rewardIncome must_== BigDecimal(13500)
+            report.unconverted must_== 0
+          }
+
+          "counts the cash received with no instrument as it is, converted" >> {
+            val cash = op(OperationKind.Reward, 20, LocalDate.of(year, 6, 1), currency = "USD")
+
+            val report = TaxReport.annual(year, LotLedger.empty, List(cash), fxRate)
+
+            report.rewardIncome must_== BigDecimal(1800)
+          }
+
+          "adds up units and cash" >> {
+            val ops = List(
+              reward(LocalDate.of(year, 6, 1), 5, Some(30)),
+              op(OperationKind.Reward, 20, LocalDate.of(year, 7, 1), currency = "USD")
+            )
+
+            TaxReport.annual(year, LotLedger.empty, ops, fxRate).rewardIncome must_==
+              BigDecimal(15300)
+          }
+
+          "counts nothing for units with no price, and no unconverted amount" >> {
+            val ops = List(reward(LocalDate.of(year, 6, 1), 5, None, currency = "EUR"))
+
+            val report = TaxReport.annual(year, LotLedger.empty, ops, noRate)
+
+            report.rewardIncome must_== BigDecimal(0)
+            report.unconverted must_== 0
+          }
+
+          "counts an amount that cannot be converted once, and leaves it out" >> {
+            val ops = List(
+              reward(LocalDate.of(year, 6, 1), 5, Some(30)),
+              reward(LocalDate.of(year, 6, 2), 5, Some(30), currency = "EUR"),
+              op(OperationKind.Reward, 20, LocalDate.of(year, 7, 1), currency = "EUR")
+            )
+
+            val report = TaxReport.annual(year, LotLedger.empty, ops, fxRate)
+
+            report.rewardIncome must_== BigDecimal(13500)
+            report.unconverted must_== 2
+          }
+
+          "is the income of the requested year only, from executed rewards only" >> {
+            val ops = List(
+              reward(LocalDate.of(year, 6, 1), 1, Some(10)),
+              reward(LocalDate.of(year - 1, 12, 31), 1, Some(999)),
+              reward(LocalDate.of(year, 6, 2), 1, Some(999), state = OperationState.Canceled)
+            )
+
+            TaxReport.annual(year, LotLedger.empty, ops, fxRate).rewardIncome must_==
+              BigDecimal(900)
+          }
+
+          "is left out of the estimated tax, which covers realized gains only" >> {
+            val ops = List(reward(LocalDate.of(year, 6, 1), 5, Some(30)))
+
+            val report = TaxReport.annual(year, LotLedger.empty, ops, fxRate)
+
+            report.estimatedTax must_== BigDecimal(0)
+            report.taxableGains must_== BigDecimal(0)
+          }
         }
 
         "lowers the tax withheld by a refund" >> {

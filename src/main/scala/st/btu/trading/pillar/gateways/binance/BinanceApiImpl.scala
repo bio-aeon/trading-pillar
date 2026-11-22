@@ -109,7 +109,35 @@ final class BinanceApiImpl[F[_]: Logging] private (
 
   def convertTradeFlow(from: Instant, to: Instant): F[List[JsonObject]] =
     info"Reading the Binance Convert orders from $from to $to" >>
-      convertWindow(from.toEpochMilli, to.toEpochMilli)
+      halved(
+        SignedEndpoint.ConvertTradeFlow,
+        List(Parameter.Limit -> HistoryPageSize.toString),
+        "Convert orders",
+        from,
+        to
+      )(json => BinanceResponses.convertPage(json).map(page => Answer(page.orders, page.moreData)))
+
+  def assetDividends(from: Instant, to: Instant): F[List[JsonObject]] =
+    info"Reading the Binance distributions from $from to $to" >>
+      halved(
+        SignedEndpoint.AssetDividend,
+        List(Parameter.Limit -> DistributionsPageSize.toString),
+        "distributions",
+        from,
+        to
+      )(json =>
+        BinanceResponses
+          .distributions(json)
+          .map(rows => Answer(rows, rows.size >= DistributionsPageSize))
+      )
+
+  def dustLog(from: Instant, to: Instant): F[List[JsonObject]] =
+    info"Reading the Binance dust conversions from $from to $to" >>
+      halved(SignedEndpoint.Dribblet, Nil, "dust conversions", from, to)(json =>
+        BinanceResponses
+          .dustConversions(json)
+          .map(rows => Answer(rows, rows.size >= DustLogPageSize))
+      )
 
   def spotBalances: F[Map[BinanceAsset, BigDecimal]] =
     call(SignedEndpoint.SpotAccount, List(Parameter.OmitZeroBalances -> "true"))
@@ -166,29 +194,38 @@ final class BinanceApiImpl[F[_]: Logging] private (
     from(1, Vector.empty)
   }
 
-  // A window that holds more orders than one answer is read as two halves.
-  private def convertWindow(startMillis: Long, endMillis: Long): F[List[JsonObject]] =
-    call(
-      SignedEndpoint.ConvertTradeFlow,
-      List(
-        Parameter.StartTime -> startMillis.toString,
-        Parameter.EndTime -> endMillis.toString,
-        Parameter.Limit -> HistoryPageSize.toString
-      )
-    ).flatMap(BinanceResponses.convertPage(_).liftTo[F]).flatMap { page =>
-      if (!page.moreData) F.pure(page.orders)
-      else if (endMillis <= startMillis)
-        F.raiseError(
-          BinanceError.UnexpectedResponse("one millisecond of Convert orders exceeds an answer")
-        )
-      else {
-        val middle = startMillis + (endMillis - startMillis) / 2
-        for {
-          first <- convertWindow(startMillis, middle)
-          second <- convertWindow(middle + 1, endMillis)
-        } yield first ++ second
+  // Reads the window from `from` to `to`, and again as two halves while an answer is full. A single
+  // millisecond that is still full cannot be read in parts, and fails.
+  private def halved(
+    endpoint: SignedEndpoint,
+    parameters: List[(String, String)],
+    what: String,
+    from: Instant,
+    to: Instant
+  )(read: Json => Either[BinanceError, Answer]): F[List[JsonObject]] = {
+    def between(startMillis: Long, endMillis: Long): F[List[JsonObject]] =
+      call(
+        endpoint,
+        List(
+          Parameter.StartTime -> startMillis.toString,
+          Parameter.EndTime -> endMillis.toString
+        ) ++ parameters
+      ).flatMap(read(_).liftTo[F]).flatMap { answer =>
+        if (!answer.full) F.pure(answer.rows)
+        else if (endMillis <= startMillis)
+          F.raiseError(
+            BinanceError.UnexpectedResponse(s"one millisecond of $what exceeds an answer")
+          )
+        else {
+          val middle = startMillis + (endMillis - startMillis) / 2
+          for {
+            first <- between(startMillis, middle)
+            second <- between(middle + 1, endMillis)
+          } yield first ++ second
+        }
       }
-    }
+    between(from.toEpochMilli, to.toEpochMilli)
+  }
 }
 
 object BinanceApiImpl {
@@ -196,8 +233,17 @@ object BinanceApiImpl {
   // How many rows one answer of a history paged by offset, and of Convert, holds at most.
   private val HistoryPageSize = 1000
 
+  // How many rows one answer of the distributions holds at most, which is the `limit` asked for, and
+  // how many conversions one answer of the dust log holds at most.
+  private val DistributionsPageSize = 500
+  private val DustLogPageSize = 100
+
   // How many rows one answer of a fiat history holds at most.
   private val FiatPageSize = 500
+
+  // One answer of a history read by window: its rows, and whether it holds as many as an answer
+  // can, so that the window may have more.
+  private final case class Answer(rows: List[JsonObject], full: Boolean)
 
   /** Wires a [[BinanceApi]] that reads with the key `apiKey` and signs with `secretKey` through
     * `backend`, paced by `config`. The limits per IP address are counted in `ipBuckets`, which the

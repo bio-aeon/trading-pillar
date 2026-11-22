@@ -6,6 +6,7 @@ import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.*
 import st.btu.trading.pillar.testkit.MarketDataFakes.{brokerInstrument, instrumentKey}
+import st.btu.trading.pillar.testkit.TaxFakes.lot
 import st.btu.trading.pillar.testkit.{AnalyticsFakes, MarketDataFakes, TaxFakes}
 
 import java.time.{Instant, LocalDate, ZoneOffset}
@@ -15,6 +16,7 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
   private val accountId = AccountId(1)
   private val rub = Currency("RUB")
   private val usd = Currency("USD")
+  private val eur = Currency("EUR")
 
   private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
@@ -73,17 +75,26 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
     bars: List[Bar] = Nil,
     settings: List[TickerSource] = Nil,
     config: TaxConfig = TaxConfig(),
-    allocations: List[CorporateActionAllocation] = Nil
+    allocations: List[CorporateActionAllocation] = Nil,
+    transferCosts: Map[AccountId, List[TransferCost]] = Map.empty
   ): IO[TaxService[IO]] =
     for {
       operations <- AnalyticsFakes.accountOperationStorage(ops)
       allocationStorage <-
         TaxFakes.corporateActionAllocationStorage(Map(accountId -> allocations))
+      costStorage <- TaxFakes.transferCostStorage(transferCosts)
       instrumentDirectory <- MarketDataFakes.instrumentDirectory(directory)
       priceHistory <- MarketDataFakes.priceHistoryStorage(bars)
       sources <- MarketDataFakes.marketDataSources(settings = settings)
-    } yield TaxServiceImpl
-      .create[IO](operations, allocationStorage, instrumentDirectory, sources, priceHistory, config)
+    } yield TaxServiceImpl.create[IO](
+      operations,
+      allocationStorage,
+      costStorage,
+      instrumentDirectory,
+      sources,
+      priceHistory,
+      config
+    )
 
   "TaxServiceImpl" >> {
     "annualReport" >> {
@@ -169,6 +180,89 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
+      "lots paid in another currency than their sale" >> {
+        val saleDay = LocalDate.of(2024, 2, 1)
+        val usdtRub = Ticker("USDTRUB=X")
+        val eurRub = Ticker("EURRUB=X")
+
+        // 0.1 of a coin bought for 2000 euros and sold for 2400 tether.
+        val coinRoundTrip = List(
+          op(
+            OperationKind.Buy,
+            -2000,
+            LocalDate.of(2024, 1, 1),
+            Some("COIN"),
+            quantity = BigDecimal("0.1"),
+            currency = "EUR"
+          ),
+          op(
+            OperationKind.Sell,
+            2400,
+            saleDay,
+            Some("COIN"),
+            quantity = BigDecimal("-0.1"),
+            currency = "USDT"
+          )
+        )
+
+        "convert the cost in the currency it was paid in at the rate of the day of the sale" >> {
+          val bars = List(
+            // the rate of the day of the purchase, which must not be used
+            fxBar(eurRub, LocalDate.of(2024, 1, 1), 50),
+            fxBar(eurRub, LocalDate.of(2024, 1, 31), 100),
+            fxBar(usdtRub, LocalDate.of(2024, 1, 31), 90)
+          )
+          for {
+            service <- build(coinRoundTrip, bars = bars)
+            report <- service.annualReport(accountId, 2024)
+          } yield {
+            report.realizedGains must_== BigDecimal(16000) // 2400 * 90 - 2000 * 100
+            report.unconverted must_== 0
+          }
+        }
+
+        "leave the gain unconverted when the currency of the cost has no rate" >> {
+          for {
+            service <- build(coinRoundTrip, bars = List(fxBar(usdtRub, saleDay, 90)))
+            report <- service.annualReport(accountId, 2024)
+          } yield {
+            report.realizedGains must_== BigDecimal(0)
+            report.unconverted must_== 1
+          }
+        }
+      }
+
+      "transfer costs" >> {
+        val transfer =
+          op(OperationKind.SecurityIn, 0, LocalDate.of(2024, 1, 1), Some("COIN"), quantity = 4)
+        val sale = op(
+          OperationKind.Sell,
+          9000,
+          LocalDate.of(2024, 2, 1),
+          Some("COIN"),
+          quantity = -4,
+          currency = "USDT"
+        )
+
+        "are read for the report, and their currency is converted though no operation is in it" >> {
+          val bars = List(
+            fxBar(Ticker("EURRUB=X"), LocalDate.of(2024, 1, 31), 100),
+            fxBar(Ticker("USDTRUB=X"), LocalDate.of(2024, 1, 31), 90)
+          )
+          for {
+            service <- build(
+              List(transfer, sale),
+              bars = bars,
+              transferCosts = Map(accountId -> List(TransferCost(transfer.ref, 6000, eur, None)))
+            )
+            report <- service.annualReport(accountId, 2024)
+          } yield {
+            report.realizedGains must_== BigDecimal(210000) // 9000 * 90 - 6000 * 100
+            report.unconverted must_== 0
+          }
+        }
+      }
+
       "base currency" >> {
 
         "reports amounts in the configured base currency without converting them" >> {
@@ -197,8 +291,8 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
           service <- build(ops, directory = List(brokerInstrument("FIGI3", Ticker("CCC"))))
           lots <- service.openLots(accountId, Ticker("CCC"))
         } yield lots must_== List(
-          Lot(instrumentKey("FIGI3"), 10, 100, LocalDate.of(2019, 1, 1)),
-          Lot(instrumentKey("FIGI3"), 5, 120, LocalDate.of(2020, 1, 1))
+          lot(instrumentKey("FIGI3"), 10, 100, LocalDate.of(2019, 1, 1), rub),
+          lot(instrumentKey("FIGI3"), 5, 120, LocalDate.of(2020, 1, 1), rub)
         )
       }
 
@@ -212,7 +306,9 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
         for {
           service <- build(ops, directory)
           lots <- service.openLots(accountId, Ticker("DDD"))
-        } yield lots must_== List(Lot(instrumentKey("FIGI4"), 5, 120, LocalDate.of(2020, 1, 1)))
+        } yield lots must_== List(
+          lot(instrumentKey("FIGI4"), 5, 120, LocalDate.of(2020, 1, 1), rub)
+        )
       }
 
       "returns the lots of every instrument a ticker has, oldest first, same-day lots in instrument order" >> {
@@ -228,9 +324,9 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
           service <- build(ops, directory)
           lots <- service.openLots(accountId, Ticker("EEE"))
         } yield lots must_== List(
-          Lot(instrumentKey("FIGI5"), 2, 75, LocalDate.of(2019, 1, 1)),
-          Lot(instrumentKey("FIGI6"), 10, 100, LocalDate.of(2019, 1, 1)),
-          Lot(instrumentKey("FIGI5"), 5, 120, LocalDate.of(2020, 1, 1))
+          lot(instrumentKey("FIGI5"), 2, 75, LocalDate.of(2019, 1, 1), rub),
+          lot(instrumentKey("FIGI6"), 10, 100, LocalDate.of(2019, 1, 1), rub),
+          lot(instrumentKey("FIGI5"), 5, 120, LocalDate.of(2020, 1, 1), rub)
         )
       }
 
@@ -253,8 +349,50 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
           parent <- service.openLots(accountId, Ticker("CCC"))
           child <- service.openLots(accountId, Ticker("DDD"))
         } yield {
-          parent must_== List(Lot(instrumentKey("FIGI3"), 10, 80, LocalDate.of(2019, 1, 1)))
-          child must_== List(Lot(instrumentKey("FIGI4"), 5, 40, LocalDate.of(2019, 1, 1)))
+          parent must_== List(lot(instrumentKey("FIGI3"), 10, 80, LocalDate.of(2019, 1, 1), rub))
+          child must_== List(lot(instrumentKey("FIGI4"), 5, 40, LocalDate.of(2019, 1, 1), rub))
+        }
+      }
+
+      "opens the lot of a transfer in" >> {
+        val coin = instrumentKey("COIN")
+        val transferDay = LocalDate.of(2024, 1, 1)
+        val transfer = op(OperationKind.SecurityIn, 0, transferDay, Some("COIN"), quantity = 4)
+        val directory = List(brokerInstrument("COIN", Ticker("COIN")))
+
+        "at the cost entered for it, in the currency of the cost" >> {
+          for {
+            service <- build(
+              List(transfer),
+              directory = directory,
+              transferCosts = Map(accountId -> List(TransferCost(transfer.ref, 6000, eur, None)))
+            )
+            lots <- service.openLots(accountId, Ticker("COIN"))
+          } yield lots must_== List(lot(coin, 4, 1500, transferDay, eur))
+        }
+
+        "acquired on the day the cost names" >> {
+          val earlier = LocalDate.of(2022, 6, 1)
+          for {
+            service <- build(
+              List(transfer),
+              directory = directory,
+              transferCosts =
+                Map(accountId -> List(TransferCost(transfer.ref, 6000, eur, Some(earlier))))
+            )
+            lots <- service.openLots(accountId, Ticker("COIN"))
+          } yield lots must_== List(lot(coin, 4, 1500, earlier, eur))
+        }
+
+        "at no cost when the cost entered is of another account" >> {
+          for {
+            service <- build(
+              List(transfer),
+              directory = directory,
+              transferCosts = Map(AccountId(2) -> List(TransferCost(transfer.ref, 6000, eur, None)))
+            )
+            lots <- service.openLots(accountId, Ticker("COIN"))
+          } yield lots must_== List(Lot(coin, 4, Map.empty, transferDay))
         }
       }
 

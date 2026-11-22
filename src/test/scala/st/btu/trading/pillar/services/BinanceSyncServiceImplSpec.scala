@@ -271,6 +271,87 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
           }
         }
 
+        "of distributions are 180 days long, and follow one another without a gap" >> {
+          for {
+            f <- fixture(config = config.copy(historyStart = LocalDate.of(2025, 1, 1)))
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield windowsRead(calls, BinanceSource.Dividend) must_== List(
+            (at("2025-01-01T00:00:00Z"), at("2025-06-29T23:59:59.999Z")),
+            (at("2025-06-30T00:00:00Z"), at("2025-12-26T23:59:59.999Z")),
+            (at("2025-12-27T00:00:00Z"), now)
+          )
+        }
+
+        "of the dust log are 90 days long, and follow one another without a gap" >> {
+          for {
+            f <- fixture()
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield windowsRead(calls, BinanceSource.Dust) must_== List(
+            (at("2025-10-01T00:00:00Z"), at("2025-12-29T23:59:59.999Z")),
+            (at("2025-12-30T00:00:00Z"), now)
+          )
+        }
+
+        "of the dust log never start before 2020-12-01, though the history of the others does" >> {
+          for {
+            f <- fixture(config = config.copy(historyStart = LocalDate.of(2017, 7, 14)))
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield {
+            val dust = windowsRead(calls, BinanceSource.Dust)
+            dust.head must_== (at("2020-12-01T00:00:00Z"), at("2021-02-28T23:59:59.999Z"))
+            dust.last must_== (at("2026-02-03T00:00:00Z"), now)
+            dust.size must_== 22
+            windowsRead(calls, BinanceSource.Dividend).head._1 must_== at("2017-07-14T00:00:00Z")
+            windowsRead(calls, BinanceSource.Deposit).head._1 must_== at("2017-07-14T00:00:00Z")
+          }
+        }
+
+        "of distributions and of the dust log, on a later run, start 7 days before where the run before ended" >> {
+          for {
+            f <- fixture()
+            _ <- f.service.sync
+            _ <- f.nextHour
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield {
+            val later = (at("2026-03-03T12:00:00Z"), at("2026-03-10T13:00:00Z"))
+            windowsRead(calls, BinanceSource.Dividend).drop(1) must_== List(later)
+            windowsRead(calls, BinanceSource.Dust).drop(2) must_== List(later)
+          }
+        }
+
+        "of distributions and of the dust log, after a restart, start 7 days before the latest record stored for each" >> {
+          val stored = List(
+            record(
+              accountId,
+              BinanceSource.Dividend,
+              distribution(1, "DOGE", "100", "2026-03-08T00:00:00Z")
+            ),
+            record(
+              accountId,
+              BinanceSource.Dust,
+              dustConversion(
+                7,
+                "2026-03-06T00:00:00Z",
+                dustDetail(1, "DOGE", "1200", "0.0015", "0.00003", "2026-03-06T00:00:00Z")
+              )
+            )
+          )
+          for {
+            f <- fixture(stored = stored)
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield {
+            windowsRead(calls, BinanceSource.Dividend) must_==
+              List((at("2026-03-01T00:00:00Z"), now))
+            windowsRead(calls, BinanceSource.Dust) must_==
+              List((at("2026-02-27T00:00:00Z"), now))
+          }
+        }
+
         "of a later run of the same process start 7 days before where the run before ended" >> {
           for {
             f <- fixture()
@@ -382,6 +463,154 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
             )
             stored must beEmpty
           }
+        }
+      }
+
+      "distributions and dust" >> {
+        val credited = distribution(1637366104L, "DOGE", "100", "2026-03-09T08:00:00Z")
+        val converted = dustConversion(
+          45178372831L,
+          "2026-03-09T09:00:00Z",
+          dustDetail(4359321L, "DOGE", "1200", "0.0015", "0.00003", "2026-03-09T09:00:00Z")
+        )
+        val dogeClose = Map(minute("DOGEUSDT", "2026-03-09T08:00:00Z") -> BigDecimal("0.2"))
+
+        "are recorded with their translations" >> {
+          val script = ApiScript(
+            pairs = listed,
+            history =
+              Map(BinanceSource.Dividend -> List(credited), BinanceSource.Dust -> List(converted)),
+            closes = dogeClose
+          )
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            stored <- f.records.storedRecords
+            operations <- f.shared
+          } yield {
+            recordRefs(stored).toSet must_== Set("dividend/1637366104", "dust/45178372831")
+            operations.map(shown).map(op => (op._1, op._2)).toSet must_== Set(
+              ("dividend/1637366104", "reward"),
+              ("dust/45178372831/4359321", "conversion"),
+              ("dust/45178372831/4359321/received", "conversion")
+            )
+          }
+        }
+
+        "a distribution is valued by the bar that holds its time, which is read and stored" >> {
+          val script = ApiScript(
+            pairs = listed,
+            history = Map(BinanceSource.Dividend -> List(credited)),
+            closes = dogeClose
+          )
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            calls <- f.calls
+            stored <- f.prices.stored
+            operations <- f.shared
+          } yield {
+            // Binance lists no DOGEUSDC
+            barsRead(calls) must_== List("DOGEUSDT")
+            stored must_== dogeClose
+            operations.map(shown).map(op => (op._5, op._7)) must_==
+              List((Some(BigDecimal("0.2")), "USDT"))
+          }
+        }
+
+        "a distribution that no bar values is raised once as a record without a price" >> {
+          val script =
+            ApiScript(pairs = listed, history = Map(BinanceSource.Dividend -> List(credited)))
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            _ <- f.nextHour
+            _ <- f.service.sync
+            operations <- f.shared
+            raised <- f.alerts.raised.map(unvaluedAlerts)
+          } yield {
+            operations.map(_.price) must_== List(None)
+            raised.map(_.name) must_== List("binance-unvalued:1")
+            raised.head.body must contain("dividend/1637366104")
+          }
+        }
+
+        "that need no price ask for no bar" >> {
+          for {
+            f <- fixture(
+              ApiScript(pairs = listed, history = Map(BinanceSource.Dust -> List(converted)))
+            )
+            _ <- f.service.sync
+            calls <- f.calls
+          } yield barsRead(calls) must beEmpty
+        }
+
+        "bring the pairs of a coin credited as a distribution into a later run" >> {
+          val script = ApiScript(pairs = listed, trades = tradesOf("BTCUSDT", 1 to 3))
+          val later = distribution(1637366105L, "DOGE", "100", "2026-03-10T12:30:00Z")
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
+            before <- f.tradeReads.map(_.size)
+            _ <- f.api.setHistory(BinanceSource.Dividend, List(later))
+            _ <- f.nextHour
+            _ <- f.service.sync
+            reads <- f.tradeReads.map(_.drop(before))
+          } yield reads must_== List("BTCUSDT" -> 4L, "DOGEBTC" -> 0L, "DOGEUSDT" -> 0L)
+        }
+
+        "bring the pairs of the coin a dust conversion received into a later run" >> {
+          val script = ApiScript(pairs = listed, trades = tradesOf("BTCUSDT", 1 to 3))
+          val later = dustConversion(
+            45178372832L,
+            "2026-03-10T12:30:00Z",
+            dustDetail(4359322L, "DOGE", "1200", "0.0015", "0.00003", "2026-03-10T12:30:00Z")
+          )
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
+            before <- f.tradeReads.map(_.size)
+            _ <- f.api.setHistory(BinanceSource.Dust, List(later))
+            _ <- f.nextHour
+            _ <- f.service.sync
+            reads <- f.tradeReads.map(_.drop(before))
+          } yield reads must_== List("BNBUSDC" -> 0L, "BNBUSDT" -> 0L, "BTCUSDT" -> 4L)
+        }
+
+        "bring the pairs of the coin a dust conversion of cash bought into a later run" >> {
+          val script = ApiScript(pairs = listed, trades = tradesOf("BTCUSDT", 1 to 3))
+          val later = dustConversion(
+            45178372832L,
+            "2026-03-10T12:30:00Z",
+            dustDetail(4359322L, "USDT", "0.9", "0.0015", "0.00003", "2026-03-10T12:30:00Z")
+          )
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            _ <- f.reportsRecordedBalances
+            before <- f.tradeReads.map(_.size)
+            _ <- f.api.setHistory(BinanceSource.Dust, List(later))
+            _ <- f.nextHour
+            _ <- f.service.sync
+            reads <- f.tradeReads.map(_.drop(before))
+          } yield reads must_== List("BNBUSDC" -> 0L, "BNBUSDT" -> 0L, "BTCUSDT" -> 4L)
+        }
+
+        "put every coin their translations name in the instrument storage" >> {
+          val script = ApiScript(
+            pairs = listed,
+            history =
+              Map(BinanceSource.Dividend -> List(credited), BinanceSource.Dust -> List(converted)),
+            closes = dogeClose
+          )
+          for {
+            f <- fixture(script)
+            _ <- f.service.sync
+            instruments <- f.instruments.all
+          } yield instruments.map(_.ticker).toSet must_==
+            Set(Ticker("DOGEUSDT"), Ticker("BNBUSDC"))
         }
       }
 
@@ -1137,6 +1366,29 @@ class BinanceSyncServiceImplSpec extends Specification with CatsEffect {
           f <- fixture(stored = List(chargedBuy))
           failure <- f.service.rebuildTranslations.attempt
         } yield failure must beLeft[Throwable].like { case _: BinanceRecordError.UnknownPair => ok }
+      }
+
+      "translates the stored distributions and dust conversions again, a distribution with the stored price" >> {
+        val credited = distribution(1637366104L, "DOGE", "100", "2026-03-09T08:00:00Z")
+        val converted = dustConversion(
+          45178372831L,
+          "2026-03-09T09:00:00Z",
+          dustDetail(4359321L, "USDT", "0.9", "0.0015", "0.00003", "2026-03-09T09:00:00Z")
+        )
+        for {
+          f <- fixture(
+            stored = List(
+              record(accountId, BinanceSource.Dividend, credited),
+              record(accountId, BinanceSource.Dust, converted)
+            ),
+            storedPrices = Map(minute("DOGEUSDT", "2026-03-09T08:00:00Z") -> BigDecimal("0.2"))
+          )
+          _ <- f.service.rebuildTranslations
+          operations <- f.shared
+        } yield operations.map(shown).map(op => (op._1, op._2, op._5)) must_== List(
+          ("dividend/1637366104", "reward", Some(BigDecimal("0.2"))),
+          ("dust/45178372831/4359321", "buy", Some(BigDecimal(600)))
+        )
       }
 
       "records the translations in batches of 500" >> {

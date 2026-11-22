@@ -33,5 +33,11 @@ object BinanceSource extends StringEnum[BinanceSource] {
   /** An exchange of one asset for another through Binance Convert. */
   case object Convert extends BinanceSource("convert")
 
+  /** A conversion of small balances, the dust, into another coin, BNB as a rule. */
+  case object Dust extends BinanceSource("dust")
+
+  /** A distribution or an airdrop credited to the account, or a debit of one. */
+  case object Dividend extends BinanceSource("dividend")
+
   val values = findValues
 }

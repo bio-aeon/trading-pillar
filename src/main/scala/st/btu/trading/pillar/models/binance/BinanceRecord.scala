@@ -59,7 +59,7 @@ final case class BinanceRecord(
 
 object BinanceRecord {
 
-  private val RefSeparator = "/"
+  private[pillar] val RefSeparator = "/"
 
   // The fields that name a record and date it, as Binance names them.
   private object Field {
@@ -67,17 +67,22 @@ object BinanceRecord {
     val Id = "id"
     val OrderNo = "orderNo"
     val OrderId = "orderId"
+    val TransId = "transId"
     val Time = "time"
     val InsertTime = "insertTime"
     val ApplyTime = "applyTime"
     val CreateTime = "createTime"
+    val DivTime = "divTime"
+    val OperateTime = "operateTime"
   }
 
   /** The record that `attributes`, an object Binance sent for `source`, describes: a trade's id is
-    * its symbol and its trade id, a deposit's or a withdrawal's its `id`, a fiat order's or a fiat
-    * payment's its `orderNo`, and a Convert's the digits of its `orderId`, which exceeds what a
-    * double holds. Its time is the `time` of a trade, the `insertTime` of a deposit, the
-    * `applyTime` of a withdrawal, a UTC date and time, and the `createTime` of the others.
+    * its symbol and its trade id, a deposit's, a withdrawal's or a distribution's its `id`, a fiat
+    * order's or a fiat payment's its `orderNo`, a Convert's the digits of its `orderId`, which
+    * exceeds what a double holds, and a dust conversion's its own `transId`, not that of its
+    * details. Its time is the `time` of a trade, the `insertTime` of a deposit, the `applyTime` of
+    * a withdrawal, a UTC date and time, the `divTime` of a distribution, the `operateTime` of a
+    * dust conversion, and the `createTime` of the others.
     *
     * @return
     *   the record, or the field it lacks or holds in the wrong form
@@ -112,12 +117,13 @@ object BinanceRecord {
           symbol <- fields.required(Field.Symbol)
           id <- fields.required(Field.Id)
         } yield BinanceRecordId(s"$symbol$RefSeparator$id")
-      case BinanceSource.Deposit | BinanceSource.Withdrawal =>
+      case BinanceSource.Deposit | BinanceSource.Withdrawal | BinanceSource.Dividend =>
         fields.required(Field.Id).map(BinanceRecordId(_))
       case BinanceSource.FiatDeposit | BinanceSource.FiatWithdrawal | BinanceSource.FiatBuy |
           BinanceSource.FiatSell =>
         fields.required(Field.OrderNo).map(BinanceRecordId(_))
       case BinanceSource.Convert => fields.required(Field.OrderId).map(BinanceRecordId(_))
+      case BinanceSource.Dust => fields.required(Field.TransId).map(BinanceRecordId(_))
     }
 
   private def occurredAtOf(
@@ -128,6 +134,8 @@ object BinanceRecord {
       case BinanceSource.Trade => fields.requiredEpochMillis(Field.Time)
       case BinanceSource.Deposit => fields.requiredEpochMillis(Field.InsertTime)
       case BinanceSource.Withdrawal => fields.requiredUtcDateTime(Field.ApplyTime)
+      case BinanceSource.Dividend => fields.requiredEpochMillis(Field.DivTime)
+      case BinanceSource.Dust => fields.requiredEpochMillis(Field.OperateTime)
       case BinanceSource.FiatDeposit | BinanceSource.FiatWithdrawal | BinanceSource.FiatBuy |
           BinanceSource.FiatSell | BinanceSource.Convert =>
         fields.requiredEpochMillis(Field.CreateTime)

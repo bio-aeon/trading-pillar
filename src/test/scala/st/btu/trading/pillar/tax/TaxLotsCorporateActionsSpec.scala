@@ -5,13 +5,16 @@ import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.testkit.AnalyticsFakes
 import st.btu.trading.pillar.testkit.MarketDataFakes.instrumentKey
+import st.btu.trading.pillar.testkit.TaxFakes.{lot, realizedGain}
 
 import java.time.{Instant, LocalDate, ZoneOffset}
 
 class TaxLotsCorporateActionsSpec extends Specification {
 
   private val accountId = AccountId(1)
+
   private val usd = Currency("USD")
+  private val eur = Currency("EUR")
 
   private val f1 = instrumentKey("F1")
   private val f2 = instrumentKey("F2")
@@ -33,7 +36,8 @@ class TaxLotsCorporateActionsSpec extends Specification {
     instrument: String,
     cost: BigDecimal,
     quantity: BigDecimal,
-    date: LocalDate
+    date: LocalDate,
+    currency: String = "USD"
   ): AccountOperation =
     AnalyticsFakes.accountOperation(
       accountId,
@@ -42,7 +46,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
       at(date),
       Some(instrument),
       quantity,
-      currency = "USD"
+      currency = currency
     )
 
   private def sell(
@@ -79,7 +83,8 @@ class TaxLotsCorporateActionsSpec extends Specification {
     date: LocalDate = actionDay,
     price: Option[BigDecimal] = None,
     cash: BigDecimal = 0,
-    group: Option[String] = Some("A1")
+    group: Option[String] = Some("A1"),
+    currency: String = "USD"
   ): AccountOperation =
     AnalyticsFakes
       .accountOperation(
@@ -89,7 +94,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
         at(date),
         Some(instrument),
         quantity,
-        currency = "USD",
+        currency = currency,
         price = price
       )
       .copy(group = group.map(OperationGroup(_)))
@@ -99,9 +104,10 @@ class TaxLotsCorporateActionsSpec extends Specification {
     quantity: BigDecimal,
     price: Option[BigDecimal] = None,
     cash: BigDecimal = 0,
-    date: LocalDate = actionDay
+    date: LocalDate = actionDay,
+    currency: String = "USD"
   ): AccountOperation =
-    leg(OperationKind.Conversion, instrument, quantity, date, price, cash)
+    leg(OperationKind.Conversion, instrument, quantity, date, price, cash, currency = currency)
 
   private def allocation(group: String, instrument: InstrumentKey, fraction: BigDecimal) =
     CorporateActionAllocation(OperationGroup(group), instrument, fraction)
@@ -119,7 +125,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           val ledger = TaxLots.fifo(ops, noTickers)
 
-          ledger.open(f1) must_== List(Lot(f1, 20, 50, d0), Lot(f1, 40, 100, d1))
+          ledger.open(f1) must_== List(lot(f1, 20, 50, d0), lot(f1, 40, 100, d1))
           ledger.realized must beEmpty
           ledger.unmatched must beEmpty
         }
@@ -130,7 +136,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
             leg(OperationKind.Split, "F1", -75) // 25 of the 100 units stay
           )
 
-          TaxLots.fifo(ops, noTickers).open(f1) must_== List(Lot(f1, 25, 40, d0))
+          TaxLots.fifo(ops, noTickers).open(f1) must_== List(lot(f1, 25, 40, d0))
         }
 
         "the lots it leaves add up to the units held, though the division does not end" >> {
@@ -144,6 +150,25 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           ledger.open must beEmpty
           ledger.unmatched must beEmpty
+        }
+
+        "scales the unit cost in every currency a lot was paid in" >> {
+          val ops = List(
+            // 10 units for 1000 euros, with a fee of 20 dollars, so 100 euros and 2 dollars a unit
+            buy("F1", 1000, 10, d0, currency = "EUR"),
+            AnalyticsFakes.accountOperation(
+              accountId,
+              OperationKind.Fee,
+              -20,
+              at(d0),
+              Some("F1"),
+              currency = "USD"
+            ),
+            leg(OperationKind.Split, "F1", 10) // 10 held, so the lot doubles
+          )
+
+          TaxLots.fifo(ops, noTickers).open(f1) must_==
+            List(Lot(f1, 20, Map(eur -> BigDecimal(50), usd -> BigDecimal(1)), d0))
         }
 
         "units that would leave nothing close the lots without a gain, the rest being unmatched" >> {
@@ -160,7 +185,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
           "growing units open a lot at no cost on the day of the split" >> {
             val ledger = TaxLots.fifo(List(leg(OperationKind.Split, "F1", 5)), noTickers)
 
-            ledger.open(f1) must_== List(Lot(f1, 5, 0, actionDay))
+            ledger.open(f1) must_== List(lot(f1, 5, 0, actionDay))
           }
 
           "shrinking units are unmatched" >> {
@@ -177,13 +202,13 @@ class TaxLotsCorporateActionsSpec extends Specification {
           val dividend = leg(OperationKind.StockDividend, "F1", 5, price = Some(BigDecimal("31.9")))
 
           TaxLots.fifo(List(dividend), noTickers).open(f1) must_==
-            List(Lot(f1, 5, BigDecimal("31.9"), actionDay))
+            List(lot(f1, 5, BigDecimal("31.9"), actionDay))
         }
 
         "opens a lot at no cost when the broker reports no value" >> {
           val dividend = leg(OperationKind.StockDividend, "F1", 5)
 
-          TaxLots.fifo(List(dividend), noTickers).open(f1) must_== List(Lot(f1, 5, 0, actionDay))
+          TaxLots.fifo(List(dividend), noTickers).open(f1) must_== List(lot(f1, 5, 0, actionDay))
         }
 
         "of a negative quantity takes the units out of the lots like a transfer out" >> {
@@ -191,7 +216,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           val ledger = TaxLots.fifo(ops, noTickers)
 
-          ledger.open(f1) must_== List(Lot(f1, 6, 100, d0))
+          ledger.open(f1) must_== List(lot(f1, 6, 100, d0))
           ledger.realized must beEmpty
         }
       }
@@ -208,7 +233,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           val ledger = TaxLots.fifo(ops, noTickers)
 
-          ledger.open must_== Map(f2 -> List(Lot(f2, 10, 50, d0), Lot(f2, 10, 150, d1)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 10, 50, d0), lot(f2, 10, 150, d1)))
           ledger.realized must beEmpty
         }
 
@@ -221,7 +246,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           val ledger = TaxLots.fifo(ops, noTickers)
 
-          ledger.open must_== Map(f2 -> List(Lot(f2, 50, 20, d0)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 50, 20, d0)))
           ledger.realized must beEmpty
         }
 
@@ -236,10 +261,49 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           val ledger = TaxLots.fifo(ops, noTickers)
 
-          ledger.realized must_== List(
-            RealizedGain(f1, None, actionDay, 20, usd, 500, 200, 300, 60)
+          ledger.realized must_== List(realizedGain(f1, actionDay, 20, 500, 200, 60))
+          ledger.open must_== Map(f2 -> List(lot(f2, 50, 16, d0)))
+        }
+
+        "carries the currency of the cost to the units received" >> {
+          val ops = List(
+            buy("F1", 1000, 100, d0, currency = "EUR"),
+            conversion("F1", -100, price = Some(20)),
+            conversion("F2", 50, price = Some(40))
           )
-          ledger.open must_== Map(f2 -> List(Lot(f2, 50, 16, d0)))
+
+          TaxLots.fifo(ops, noTickers).open must_== Map(f2 -> List(lot(f2, 50, 20, d0, eur)))
+        }
+
+        "a merger paid in cash and stock realizes a gain in the currency of the cash, whose cost basis keeps the currencies of the lots" >> {
+          // 100 shares costing 1000 euros become 50 shares worth 2000 dollars, with 500 dollars in
+          // cash: the cash is 500 / (500 + 2000) of the whole, so it pays for 20 of the 100 shares,
+          // which cost 200 euros.
+          val ops = List(
+            buy("F1", 1000, 100, d0, currency = "EUR"),
+            conversion("F1", -100, cash = 500),
+            conversion("F2", 50, price = Some(40))
+          )
+
+          val ledger = TaxLots.fifo(ops, noTickers)
+
+          ledger.realized must_== List(
+            RealizedGain(f1, None, actionDay, 20, usd, 500, Map(eur -> BigDecimal(200)), 60)
+          )
+          ledger.open must_== Map(f2 -> List(lot(f2, 50, 16, d0, eur)))
+        }
+
+        "a rights subscription adds the cash paid to the cost of the shares received in the currency of the cash" >> {
+          // 100 shares bought for 1000 euros are converted into 50 shares for 500 dollars more, so
+          // each share received costs 20 euros and 10 dollars.
+          val ops = List(
+            buy("F1", 1000, 100, d0, currency = "EUR"),
+            conversion("F1", -100, cash = -500),
+            conversion("F2", 50)
+          )
+
+          TaxLots.fifo(ops, noTickers).open must_==
+            Map(f2 -> List(Lot(f2, 50, Map(eur -> BigDecimal(20), usd -> BigDecimal(10)), d0)))
         }
 
         "a rights subscription adds the cash paid to the cost of the shares received" >> {
@@ -251,7 +315,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           val ledger = TaxLots.fifo(ops, noTickers)
 
-          ledger.open must_== Map(f2 -> List(Lot(f2, 120, BigDecimal("14.9"), d0)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 120, BigDecimal("14.9"), d0)))
           ledger.realized must beEmpty
         }
 
@@ -264,7 +328,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
           )
 
           TaxLots.fifo(ops, noTickers).open must_==
-            Map(f2 -> List(Lot(f2, 40, 10, d0)), f3 -> List(Lot(f3, 30, 20, d0)))
+            Map(f2 -> List(lot(f2, 40, 10, d0)), f3 -> List(lot(f3, 30, 20, d0)))
         }
 
         "several instruments received share the cost by their units when one has no price" >> {
@@ -276,7 +340,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
           )
 
           TaxLots.fifo(ops, noTickers).open must_==
-            Map(f2 -> List(Lot(f2, 40, 10, d0)), f3 -> List(Lot(f3, 60, 10, d0)))
+            Map(f2 -> List(lot(f2, 40, 10, d0)), f3 -> List(lot(f3, 60, 10, d0)))
         }
 
         "several instruments given up each give the units received a share by their value" >> {
@@ -290,7 +354,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           // F1 is 600 of the 1000 given up and F3 is 400, so F2's 10 units are 6 and 4.
           TaxLots.fifo(ops, noTickers).open must_==
-            Map(f2 -> List(Lot(f2, 6, 100, d0), Lot(f2, 4, 100, d1)))
+            Map(f2 -> List(lot(f2, 6, 100, d0), lot(f2, 4, 100, d1)))
         }
 
         "an instrument given up that is valued at nothing still carries its cost, the units received being shared by units" >> {
@@ -304,7 +368,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           // F1 and F3 gave up 100 units each, so F2's 10 units are 5 and 5, at 600 and at 400.
           TaxLots.fifo(ops, noTickers).open must_==
-            Map(f2 -> List(Lot(f2, 5, 120, d0), Lot(f2, 5, 80, d1)))
+            Map(f2 -> List(lot(f2, 5, 120, d0), lot(f2, 5, 80, d1)))
         }
 
         "the lots of what was received add up to its units, though the division does not end" >> {
@@ -330,14 +394,14 @@ class TaxLotsCorporateActionsSpec extends Specification {
           val ledger = TaxLots.fifo(ops, noTickers)
 
           ledger.unmatched(f1) must_== BigDecimal(40)
-          ledger.open must_== Map(f2 -> List(Lot(f2, 30, 20, d0), Lot(f2, 20, 0, d1)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 30, 20, d0), lot(f2, 20, 0, d1)))
         }
 
         "units received with nothing given up open a lot on the day, costing the cash paid" >> {
           val ledger =
             TaxLots.fifo(List(conversion("F2", 10, cash = -100)), noTickers)
 
-          ledger.open must_== Map(f2 -> List(Lot(f2, 10, 10, actionDay)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 10, 10, actionDay)))
         }
 
         "the legs of a group take effect together, whichever of them comes first" >> {
@@ -345,7 +409,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
           val gaveUp = conversion("F1", -100).copy(occurredAt = at(actionDay).plusSeconds(1))
           val ops = List(buy("F1", 1000, 100, d0), received, gaveUp)
 
-          TaxLots.fifo(ops, noTickers).open must_== Map(f2 -> List(Lot(f2, 50, 20, d0)))
+          TaxLots.fifo(ops, noTickers).open must_== Map(f2 -> List(lot(f2, 50, 20, d0)))
         }
 
         "a leg without a group is a group of its own" >> {
@@ -356,7 +420,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
           )
 
           // Nothing links the legs, so what was received costs nothing.
-          TaxLots.fifo(ops, noTickers).open must_== Map(f2 -> List(Lot(f2, 50, 0, actionDay)))
+          TaxLots.fifo(ops, noTickers).open must_== Map(f2 -> List(lot(f2, 50, 0, actionDay)))
         }
 
         "lots carried into an instrument already held go before the lots bought later" >> {
@@ -368,7 +432,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
           )
 
           TaxLots.fifo(ops, noTickers).open(f2) must_==
-            List(Lot(f2, 10, 5, d0), Lot(f2, 10, 10, d1))
+            List(lot(f2, 10, 5, d0), lot(f2, 10, 10, d1))
         }
       }
 
@@ -383,8 +447,8 @@ class TaxLotsCorporateActionsSpec extends Specification {
           val ledger = TaxLots.fifo(parentLots ++ spinoff, noTickers)
 
           ledger.open must_== Map(
-            f1 -> List(Lot(f1, 60, 10, d0), Lot(f1, 40, 20, d1)),
-            f2 -> List(Lot(f2, 6, 0, d0), Lot(f2, 4, 0, d1))
+            f1 -> List(lot(f1, 60, 10, d0), lot(f1, 40, 20, d1)),
+            f2 -> List(lot(f2, 6, 0, d0), lot(f2, 4, 0, d1))
           )
         }
 
@@ -398,8 +462,34 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           // 0.2 of the lots' 600 and 800 is 120 and 160, over 6 and 4 units; the parent keeps 0.8.
           ledger.open must_== Map(
-            f1 -> List(Lot(f1, 60, 8, d0), Lot(f1, 40, 16, d1)),
-            f2 -> List(Lot(f2, 6, 20, d0), Lot(f2, 4, 40, d1))
+            f1 -> List(lot(f1, 60, 8, d0), lot(f1, 40, 16, d1)),
+            f2 -> List(lot(f2, 6, 20, d0), lot(f2, 4, 40, d1))
+          )
+        }
+
+        "moves the allocated fraction of the cost in each currency to the new instrument" >> {
+          val ops = List(
+            // 100 units costing 1000 euros, with a fee of 50 dollars: 10 euros and 0.5 dollar a unit
+            buy("F1", 1000, 100, d0, currency = "EUR"),
+            AnalyticsFakes.accountOperation(
+              accountId,
+              OperationKind.Fee,
+              -50,
+              at(d0),
+              Some("F1"),
+              currency = "USD"
+            ),
+            leg(OperationKind.Spinoff, "F2", 10),
+            leg(OperationKind.Spinoff, "F1", 0)
+          )
+
+          val ledger =
+            TaxLots.fifo(ops, noTickers, List(allocation("A1", f2, BigDecimal("0.2"))))
+
+          // 0.2 of the lot's 1000 euros and 50 dollars goes to the 10 units of F2.
+          ledger.open must_== Map(
+            f1 -> List(Lot(f1, 100, Map(eur -> BigDecimal(8), usd -> BigDecimal("0.4")), d0)),
+            f2 -> List(Lot(f2, 10, Map(eur -> BigDecimal(20), usd -> BigDecimal(1)), d0))
           )
         }
 
@@ -411,7 +501,7 @@ class TaxLotsCorporateActionsSpec extends Specification {
               List(allocation("A2", f2, BigDecimal("0.2")))
             )
 
-          ledger.open(f2) must_== List(Lot(f2, 6, 0, d0), Lot(f2, 4, 0, d1))
+          ledger.open(f2) must_== List(lot(f2, 6, 0, d0), lot(f2, 4, 0, d1))
         }
 
         "with two new instruments" >> {
@@ -429,9 +519,9 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
             // Each counts as the whole, so the two share the cost by halves and the parent keeps none.
             ledger.open must_== Map(
-              f1 -> List(Lot(f1, 60, 0, d0), Lot(f1, 40, 0, d1)),
-              f2 -> List(Lot(f2, 6, 50, d0), Lot(f2, 4, 100, d1)),
-              f3 -> List(Lot(f3, 3, 100, d0), Lot(f3, 2, 200, d1))
+              f1 -> List(lot(f1, 60, 0, d0), lot(f1, 40, 0, d1)),
+              f2 -> List(lot(f2, 6, 50, d0), lot(f2, 4, 100, d1)),
+              f3 -> List(lot(f3, 3, 100, d0), lot(f3, 2, 200, d1))
             )
           }
 
@@ -445,9 +535,9 @@ class TaxLotsCorporateActionsSpec extends Specification {
             val ledger = TaxLots.fifo(parentLots ++ twoChildren, noTickers, allocations)
 
             ledger.open must_== Map(
-              f1 -> List(Lot(f1, 60, 5, d0), Lot(f1, 40, 10, d1)),
-              f2 -> List(Lot(f2, 6, 50, d0), Lot(f2, 4, 100, d1)),
-              f3 -> List(Lot(f3, 3, 0, d0), Lot(f3, 2, 0, d1))
+              f1 -> List(lot(f1, 60, 5, d0), lot(f1, 40, 10, d1)),
+              f2 -> List(lot(f2, 6, 50, d0), lot(f2, 4, 100, d1)),
+              f3 -> List(lot(f3, 3, 0, d0), lot(f3, 2, 0, d1))
             )
           }
         }
@@ -464,9 +554,9 @@ class TaxLotsCorporateActionsSpec extends Specification {
 
           // 0.6 and 0.6 become a half each, so F2 and F3 take 500 each and F1 keeps nothing.
           TaxLots.fifo(ops, noTickers, allocations).open must_== Map(
-            f1 -> List(Lot(f1, 100, 0, d0)),
-            f2 -> List(Lot(f2, 10, 50, d0)),
-            f3 -> List(Lot(f3, 5, 100, d0))
+            f1 -> List(lot(f1, 100, 0, d0)),
+            f2 -> List(lot(f2, 10, 50, d0)),
+            f3 -> List(lot(f3, 5, 100, d0))
           )
         }
 
@@ -486,14 +576,14 @@ class TaxLotsCorporateActionsSpec extends Specification {
         "without a parent leg opens a lot at no cost on the day of the spin-off" >> {
           val ledger = TaxLots.fifo(List(leg(OperationKind.Spinoff, "F2", 10)), noTickers)
 
-          ledger.open must_== Map(f2 -> List(Lot(f2, 10, 0, actionDay)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 10, 0, actionDay)))
         }
 
         "with a parent that has no open lots opens a lot at no cost on the day of the spin-off" >> {
           val ledger =
             TaxLots.fifo(spinoff, noTickers, List(allocation("A1", f2, BigDecimal("0.2"))))
 
-          ledger.open must_== Map(f2 -> List(Lot(f2, 10, 0, actionDay)))
+          ledger.open must_== Map(f2 -> List(lot(f2, 10, 0, actionDay)))
         }
       }
     }

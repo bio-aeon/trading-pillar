@@ -21,7 +21,7 @@ class TaxHandlerSpec extends Specification with CatsEffect {
     unconverted: Int = 0,
     exemptGains: Option[BigDecimal] = Some(BigDecimal(0))
   ) =
-    AnnualTaxReport(year, 600, exemptGains, 600, 50, 20, 5, 78, unconverted, rub)
+    AnnualTaxReport(year, 600, exemptGains, 600, 50, 20, 7, 5, 78, unconverted, rub)
 
   "TaxHandler" >> {
     "handle" >> {
@@ -42,10 +42,26 @@ class TaxHandlerSpec extends Specification with CatsEffect {
           msg must contain("Taxable gains: 600.00")
           msg must contain("Dividend income: 50.00")
           msg must contain("Coupon income: 20.00")
+          msg must contain("Reward income: 7.00")
           msg must contain("Taxes withheld: 5.00")
           msg must contain("Estimated tax: 78.00")
           msg must not(contain("could not be converted"))
         }
+      }
+
+      "shows the reward income on the line after the coupon income" >> {
+        for {
+          tgGateway <- Fakes.tgGateway()
+          taxService <- TaxFakes.taxService(annualReports = Map((accountId, 2024) -> report(2024)))
+          handler = new TaxHandler[IO](tgGateway, taxService, accountId)
+          _ <- handler.handle(chatId, List("2024"))
+          messages <- tgGateway.sentMessages
+        } yield messages.head.message
+          .split("\n")
+          .toList
+          .dropWhile(!_.startsWith("Coupon income"))
+          .take(3) must_==
+          List("Coupon income: 20.00", "Reward income: 7.00", "Taxes withheld: 5.00")
       }
 
       "leaves out the long-term line under a regime without a long-term exemption" >> {

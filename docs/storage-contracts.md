@@ -159,13 +159,15 @@ below), and `record` stores both:
 
 `attributes` holds the JSON object Binance sent for the record, every field exactly as Binance
 sent it, strings as strings and numbers as the digits sent: a Convert `orderId` exceeds what a
-double holds, so a store that parses numbers as doubles loses it. The sync reads the records back
+double holds, so a store that parses numbers as doubles loses it. A `dust` record holds the
+`userAssetDribbletDetails` of its conversion as a nested list of objects, and its record id is the
+conversion's own `transId`, not that of a detail. The sync reads the records back
 to translate them again, `records` each time the process starts. `latestOccurredAt` tells it where
 to resume a source, and `lastTradeIds` where to resume each pair: the highest `id` among the stored
 trades of each `symbol`, both read from `attributes`. The order of `records` does not matter. A
 relational implementation could use a table such as `binance_records` with a generated `id`,
 `account_id`, `source` (`trade` | `deposit` | `withdrawal` | `fiat_deposit` | `fiat_withdrawal` |
-`fiat_buy` | `fiat_sell` | `convert`, the `BinanceSource` values), `record_id`, `occurred_at`,
+`fiat_buy` | `fiat_sell` | `convert` | `dust` | `dividend`, the `BinanceSource` values), `record_id`, `occurred_at`,
 `attributes` (a JSON object) and `updated_at`, a unique key on `(account_id, source, record_id)` for
 `record` to conflict on, and an index on `(account_id, occurred_at)` for `latestOccurredAt`;
 `lastTradeIds` groups the stored trades by `attributes->>'symbol'` and takes the maximum of
@@ -241,7 +243,10 @@ Binance, the record's source and record id, such as `trade/BTCUSDC/28457`, with 
 `/fee`). One raw record can give several operations, never the reverse.
 `kind`, `state`, `instrument.broker` and `brokerType` are persisted by their string values (the
 `value` of `OperationKind`, `OperationState` and `Broker`; `brokerType` is the broker's own name
-for the operation). A relational implementation could use a table such as `account_operations`
+for the operation). The kind `reward` is units of an instrument, or cash, received as income outside
+a trade, such as a distribution or an airdrop: with an instrument its `quantity` is the units
+received and its `price` their market value per unit where it is known, and without one its
+`amount` is the cash received. A relational implementation could use a table such as `account_operations`
 with a generated `id`, `account_id`, `ref`, `kind`, `state`, `occurred_at`, a nullable
 `instrument_broker` and `instrument_id` that are both null or both set, `quantity`, a nullable
 `price`, `amount`, `currency`, `broker_type`, a nullable `group_ref` (the value of the
@@ -592,6 +597,31 @@ fraction, so `0.2` is a fifth of the cost; a fixed-point decimal), `created_at`,
 and 1 and scale the fractions of one group down when they add up to more than 1, so a store that
 refuses such values loses nothing.
 
+## `TransferCostStorage[F[_]]`
+
+```scala
+trait TransferCostStorage[F[_]] {
+  def byAccount(accountId: AccountId): F[List[TransferCost]]
+}
+```
+
+No write method: the consumer provides the costs, for example through operator tooling, and
+trading-pillar (`TaxServiceImpl`, through `annualReport` and `openLots`, and
+`HeldInstrumentsServiceImpl`, for the rate tickers of their currencies) only reads them. A
+`TransferCost` says what the owner paid for the units that an executed `security_in` brought into
+the account, which no broker reports: `ref` is the `ref` of the operation, `cost` the total paid for
+all of its units (not a cost per unit, and not negative), `currency` the currency it was paid in,
+which the lot keeps, and `acquiredOn`, when it is not the day of the transfer, the day the units were
+acquired. Without a cost the lot of a transfer in costs the operation's own price, or nothing. See
+[`tax.md`](tax.md#transfers-in-with-an-entered-cost). The tax lots apply a cost at every broker.
+
+A relational implementation could use a table such as `transfer_costs` with a generated `id`,
+`account_id`, `operation_ref` (the `ref` of the operation), `cost` (a fixed-point decimal, checked to
+be at least zero), `currency`, a nullable `acquired_on` date, `created_at`, and a unique key on
+`(account_id, operation_ref)`, so that an operation has at most one cost. The tax lots ignore a cost
+whose `ref` names no executed `security_in` of an instrument, so a store that does not check that
+when it saves loses nothing.
+
 ## `PaperStorage[F[_]]`
 
 ```scala
@@ -650,6 +680,7 @@ implementation runs its statements in one transaction.
 | `PortfolioSnapshotStorage` | `portfolio_snapshots` / `portfolio_snapshot_positions` | `save` | none |
 | `AllocationTargetStorage` | `allocation_targets` | none | `byAccount` |
 | `CorporateActionAllocationStorage` | `corporate_action_allocations` | none | `byAccount` |
+| `TransferCostStorage` | `transfer_costs` | none | `byAccount` |
 | `PaperStorage` | `paper_accounts` / `paper_orders` / `paper_positions` | `insertOrder`, `recordFill` | `account`, `positions`, `recentOrders` |
 
 A trait with no library write ("none" in the third column) is populated entirely by the consumer,

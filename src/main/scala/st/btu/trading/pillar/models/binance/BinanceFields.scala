@@ -1,5 +1,6 @@
 package st.btu.trading.pillar.models.binance
 
+import cats.syntax.traverse.*
 import io.circe.{Json, JsonObject}
 
 import java.time.format.{DateTimeFormatter, ResolverStyle}
@@ -39,6 +40,16 @@ private[pillar] final class BinanceFields(
   def requiredBoolean(name: String): Either[BinanceRecordError, Boolean] =
     required(name).flatMap { value =>
       value.toBooleanOption.toRight(invalid(name, value))
+    }
+
+  // The objects of a field that is a list of them, such as the details of a dust conversion.
+  def objects(name: String): Either[BinanceRecordError, List[JsonObject]] =
+    attributes(name).filterNot(_.isNull) match {
+      case None => Left(BinanceRecordError.MissingField(source, recordId, name))
+      case Some(json) =>
+        json.asArray
+          .flatMap(_.toList.traverse(_.asObject))
+          .toRight(invalid(name, "not a list of objects"))
     }
 
   // An instant given as milliseconds since the epoch.

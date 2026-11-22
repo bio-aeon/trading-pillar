@@ -68,6 +68,22 @@ class BinanceTranslationSpec extends Specification {
 
   private def states(result: Result): Set[OperationState] = result.operations.map(_.state).toSet
 
+  private def distributionOf(id: Long, coin: String, amount: String, direction: Int = 1) =
+    distribution(id, coin, amount, tradeTime, direction)
+
+  // A conversion of dust with the id given, of the details given.
+  private def dustOf(transId: Long, details: JsonObject*) =
+    dustConversion(transId, tradeTime, details*)
+
+  // A detail of a conversion of dust, with a service charge of its own.
+  private def detailOf(
+    transId: Long,
+    from: String,
+    amount: String,
+    received: String,
+    target: Option[String] = Some("BNB")
+  ) = dustDetail(transId, from, amount, received, "0.00003", tradeTime, target)
+
   "BinanceTranslation" >> {
     "translate" >> {
       "a trade against cash" >> {
@@ -1051,6 +1067,372 @@ class BinanceTranslationSpec extends Specification {
               ) must_== Set(state)
             }
           }
+        }
+      }
+
+      "a distribution" >> {
+        val distributionId = 1637366104L
+        val reference = s"dividend/$distributionId"
+
+        "of a coin is a reward of the units at the close of the bar that holds its time, in the quote of that bar" >> {
+          val result = translate(
+            BinanceSource.Dividend,
+            distributionOf(distributionId, "BHFT", "10"),
+            book("BHFTUSDC" -> "0.25")
+          )
+          operations(result) must_== List(
+            (
+              reference,
+              "reward",
+              Some("BHFT"),
+              BigDecimal(10),
+              Some(BigDecimal("0.25")),
+              BigDecimal(0),
+              "USDC",
+              "Distribution"
+            )
+          )
+          result.notes must beEmpty
+        }
+
+        "of a coin falls back to the next price quote when the first has no bar" >> {
+          val prices =
+            book("BHFTUSDT" -> "0.26").copy(absent = Set(minute("BHFTUSDC", tradeMinute)))
+          val result =
+            translate(BinanceSource.Dividend, distributionOf(distributionId, "BHFT", "10"), prices)
+          operations(result).map(op => (op._4, op._5, op._7)) must_==
+            List((BigDecimal(10), Some(BigDecimal("0.26")), "USDT"))
+        }
+
+        "of a coin that no bar values is a reward at no price in the first price quote, and is noted" >> {
+          val result = translate(
+            BinanceSource.Dividend,
+            distributionOf(distributionId, "BHFT", "10"),
+            absent("BHFTUSDC", "BHFTUSDT")
+          )
+          operations(result) must_== List(
+            (
+              reference,
+              "reward",
+              Some("BHFT"),
+              BigDecimal(10),
+              None,
+              BigDecimal(0),
+              "USDC",
+              "Distribution"
+            )
+          )
+          result.notes must_== List(
+            BinanceNote(
+              OperationRef(reference),
+              BinanceNote.Reason.DistributionUnvalued(asset("BHFT"), BigDecimal(10))
+            )
+          )
+        }
+
+        "of a coin asks for the bars one at a time, in order, until it can be valued" >> {
+          val first =
+            translate(BinanceSource.Dividend, distributionOf(distributionId, "BHFT", "10"))
+          first.examined must_== List(
+            minute("BHFTUSDC", tradeMinute),
+            minute("BHFTUSDT", tradeMinute)
+          )
+          first.pending must beSome(minute("BHFTUSDC", tradeMinute))
+
+          val second = translate(
+            BinanceSource.Dividend,
+            distributionOf(distributionId, "BHFT", "10"),
+            absent("BHFTUSDC")
+          )
+          second.pending must beSome(minute("BHFTUSDT", tradeMinute))
+        }
+
+        "of cash is a reward of the amount in that currency, with no instrument" >> {
+          val result =
+            translate(BinanceSource.Dividend, distributionOf(distributionId, "USDT", "25"))
+          operations(result) must_== List(
+            (reference, "reward", None, BigDecimal(0), None, BigDecimal(25), "USDT", "Distribution")
+          )
+          result.examined must beEmpty
+        }
+
+        "debited from a coin takes the units out, at their cost" >> {
+          val result =
+            translate(BinanceSource.Dividend, distributionOf(distributionId, "BHFT", "10", -1))
+          operations(result) must_== List(
+            (
+              reference,
+              "security_out",
+              Some("BHFT"),
+              BigDecimal(-10),
+              None,
+              BigDecimal(0),
+              "USDC",
+              "Distribution"
+            )
+          )
+          result.examined must beEmpty
+        }
+
+        "debited from cash is a fee naming no instrument" >> {
+          val result =
+            translate(BinanceSource.Dividend, distributionOf(distributionId, "USDT", "25", -1))
+          operations(result) must_== List(
+            (reference, "fee", None, BigDecimal(0), None, BigDecimal(-25), "USDT", "Distribution")
+          )
+        }
+
+        "is executed whatever it is" >> {
+          states(translate(BinanceSource.Dividend, distributionOf(1, "USDT", "1"))) must_== Set(
+            OperationState.Executed
+          )
+        }
+
+        "is refused when its direction is neither a credit nor a debit, naming the field" >> {
+          BinanceTranslation.translate(
+            record(accountId, BinanceSource.Dividend, distributionOf(7, "BHFT", "10", 2)),
+            context,
+            PriceBook()
+          ) must beLeft[BinanceRecordError](
+            BinanceRecordError
+              .InvalidField(BinanceSource.Dividend, Some(BinanceRecordId("7")), "direction", "2")
+          )
+        }
+
+        "is refused when it lacks its asset, naming the record and the field" >> {
+          val without = obj("""{"id":8,"amount":"10","divTime":1773146096789,"direction":1}""")
+          BinanceTranslation.translate(
+            record(accountId, BinanceSource.Dividend, without),
+            context,
+            PriceBook()
+          ) must beLeft[BinanceRecordError](
+            BinanceRecordError
+              .MissingField(BinanceSource.Dividend, Some(BinanceRecordId("8")), "asset")
+          )
+        }
+      }
+
+      "a conversion of dust" >> {
+        val conversionId = 45178372831L
+        val detailId = 4359321L
+        val reference = s"dust/$conversionId"
+
+        "of a coin into a coin is two conversions of a group of their own, which carry the cost and realize nothing" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(conversionId, detailOf(detailId, "DOGE", "1200", "0.0015"))
+          )
+          operations(result) must_== List(
+            (
+              s"$reference/$detailId",
+              "conversion",
+              Some("DOGE"),
+              BigDecimal(-1200),
+              None,
+              BigDecimal(0),
+              "USDC",
+              "Dust"
+            ),
+            (
+              s"$reference/$detailId/received",
+              "conversion",
+              Some("BNB"),
+              BigDecimal("0.0015"),
+              None,
+              BigDecimal(0),
+              "USDC",
+              "Dust"
+            )
+          )
+          result.operations.map(_.group).distinct must_==
+            List(Some(OperationGroup(s"$reference/$detailId")))
+          result.notes must beEmpty
+        }
+
+        "of cash into a coin is a buy of the coin received for the cash, at the price the amounts give" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(conversionId, detailOf(detailId, "USDT", "0.9", "0.0015"))
+          )
+          operations(result) must_== List(
+            (
+              s"$reference/$detailId",
+              "buy",
+              Some("BNB"),
+              BigDecimal("0.0015"),
+              Some(BigDecimal(600)),
+              BigDecimal("-0.9"),
+              "USDT",
+              "Dust"
+            )
+          )
+        }
+
+        "of a coin into cash is a sale of the coin for the cash received, at the price the amounts give" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(conversionId, detailOf(detailId, "DOGE", "1200", "0.6", Some("USDT")))
+          )
+          operations(result) must_== List(
+            (
+              s"$reference/$detailId",
+              "sell",
+              Some("DOGE"),
+              BigDecimal(-1200),
+              Some(BigDecimal("0.0005")),
+              BigDecimal("0.6"),
+              "USDT",
+              "Dust"
+            )
+          )
+        }
+
+        "of cash into cash is two exchanges, one for each currency" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(conversionId, detailOf(detailId, "USDT", "0.9", "0.89", Some("USDC")))
+          )
+          operations(result) must_== List(
+            (
+              s"$reference/$detailId",
+              "exchange",
+              None,
+              BigDecimal(0),
+              None,
+              BigDecimal("-0.9"),
+              "USDT",
+              "Dust"
+            ),
+            (
+              s"$reference/$detailId/received",
+              "exchange",
+              None,
+              BigDecimal(0),
+              None,
+              BigDecimal("0.89"),
+              "USDC",
+              "Dust"
+            )
+          )
+        }
+
+        "converts into BNB when a detail names no target, as the log did before a target could be chosen" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(conversionId, detailOf(detailId, "DOGE", "1200", "0.0015", target = None))
+          )
+          operations(result).map(op => (op._3, op._4)) must_==
+            List((Some("DOGE"), BigDecimal(-1200)), (Some("BNB"), BigDecimal("0.0015")))
+        }
+
+        "gives each detail operations of its own, and a group of its own, so that what one gives up is never shared with what another receives" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(
+              conversionId,
+              detailOf(detailId, "DOGE", "1200", "0.0015"),
+              detailOf(4359322L, "ETH", "0.001", "0.0004"),
+              detailOf(4359323L, "USDT", "0.9", "0.0015")
+            )
+          )
+          operationRefs(result.operations) must_== List(
+            s"$reference/$detailId",
+            s"$reference/$detailId/received",
+            s"$reference/4359322",
+            s"$reference/4359322/received",
+            s"$reference/4359323"
+          )
+          result.operations.flatMap(_.group).distinct must_== List(
+            OperationGroup(s"$reference/$detailId"),
+            OperationGroup(s"$reference/4359322")
+          )
+        }
+
+        "tells details that carry one transaction id apart by the asset each gave up" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(
+              conversionId,
+              detailOf(detailId, "DOGE", "1200", "0.0015"),
+              detailOf(detailId, "ETH", "0.001", "0.0004"),
+              detailOf(4359400L, "USDT", "0.9", "0.0015")
+            )
+          )
+          operationRefs(result.operations) must_== List(
+            s"$reference/$detailId-DOGE",
+            s"$reference/$detailId-DOGE/received",
+            s"$reference/$detailId-ETH",
+            s"$reference/$detailId-ETH/received",
+            s"$reference/4359400"
+          )
+          result.operations.flatMap(_.group).distinct.size must_== 2
+        }
+
+        "with no details gives no operation" >> {
+          translate(BinanceSource.Dust, dustOf(conversionId)).operations must beEmpty
+        }
+
+        "is executed whatever it is, and asks for no price" >> {
+          val result = translate(
+            BinanceSource.Dust,
+            dustOf(conversionId, detailOf(detailId, "DOGE", "1200", "0.0015"))
+          )
+          states(result) must_== Set(OperationState.Executed)
+          result.examined must beEmpty
+          result.pending must beNone
+        }
+
+        "is refused when it lacks its details, naming the record and the field" >> {
+          val without = obj(s"""{"transId":$conversionId,"operateTime":1773146096789}""")
+          BinanceTranslation.translate(
+            record(accountId, BinanceSource.Dust, without),
+            context,
+            PriceBook()
+          ) must beLeft[BinanceRecordError](
+            BinanceRecordError.MissingField(
+              BinanceSource.Dust,
+              Some(BinanceRecordId(conversionId.toString)),
+              "userAssetDribbletDetails"
+            )
+          )
+        }
+
+        "is refused when its details are not objects" >> {
+          val garbled = obj(
+            s"""{"transId":$conversionId,"operateTime":1773146096789,"userAssetDribbletDetails":[1]}"""
+          )
+          BinanceTranslation.translate(
+            record(accountId, BinanceSource.Dust, garbled),
+            context,
+            PriceBook()
+          ) must beLeft[BinanceRecordError](
+            BinanceRecordError.InvalidField(
+              BinanceSource.Dust,
+              Some(BinanceRecordId(conversionId.toString)),
+              "userAssetDribbletDetails",
+              "not a list of objects"
+            )
+          )
+        }
+
+        "is refused when a detail lacks an amount, naming the record and the field" >> {
+          val broken =
+            obj(
+              s"""{"transId":$conversionId,"operateTime":1773146096789,"userAssetDribbletDetails":[
+              |{"transId":1,"fromAsset":"DOGE","transferedAmount":"0.0015"}]}""".stripMargin
+            )
+          BinanceTranslation.translate(
+            record(accountId, BinanceSource.Dust, broken),
+            context,
+            PriceBook()
+          ) must beLeft[BinanceRecordError](
+            BinanceRecordError
+              .MissingField(
+                BinanceSource.Dust,
+                Some(BinanceRecordId(conversionId.toString)),
+                "amount"
+              )
+          )
         }
       }
 

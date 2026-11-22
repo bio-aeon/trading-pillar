@@ -25,6 +25,8 @@ Binance's API is not a complete record of an account, which shapes the sync:
   token swaps and renames, and the automatic stablecoin conversions of 2022 and 2023.
 - Most history endpoints cap a request at 30 to 180 days, and silently return a default window when
   no times are given.
+- The dust log answers with at most 100 conversions and has no paging, and keeps nothing from before
+  1 December 2020.
 
 ## Setting up the key
 
@@ -59,10 +61,15 @@ own, and whether an account's entity serves the `/sapi` endpoints at all is not 
 | `fiat_deposit`, `fiat_withdrawal` | `GET /sapi/v1/fiat/orders` | 89 days | `orderNo` | `createTime` |
 | `fiat_buy`, `fiat_sell` | `GET /sapi/v1/fiat/payments` | 89 days | `orderNo` | `createTime` |
 | `convert` | `GET /sapi/v1/convert/tradeFlow` | 30 days | the digits of `orderId` | `createTime` |
+| `dividend` | `GET /sapi/v1/asset/assetDividend` | 180 days | `id`, as the digits Binance sent | `divTime` |
+| `dust` | `GET /sapi/v1/asset/dribblet` | 90 days, never from before 2020-12-01 | the conversion's own `transId` | `operateTime` |
 
 A fiat order and a fiat payment each carry no direction of their own, so the direction asked for
 decides the source. A Convert `orderId` exceeds what a double holds, so it is read as the digits
-Binance sent.
+Binance sent. The `dividend` source holds the distributions and airdrops credited to the account,
+and the debits of them, each row with its `direction`; the `dust` source holds one record for each
+conversion of small balances, with the `userAssetDribbletDetails` that list what it converted, and
+the id of the conversion, not the `transId` of a detail.
 
 Besides the records, each run reads the balances Binance reports, in the spot wallet
 (`GET /api/v3/account`) and the funding wallet (`POST /sapi/v1/asset/get-funding-asset`), to
@@ -70,9 +77,8 @@ compare them with what the records leave (see [Balances](#balances-and-the-recon
 
 What the sync does not read: Simple Earn, staking, Binance Pay and P2P, transfers between the
 account's wallets (its spot and funding wallets count as one pool), margin, futures, options, loans
-and the other products, the dust conversions and the distributions of the asset dividend log, and
-the website's statement export. Only what changes the spot wallet through the sources above is
-recorded.
+and the other products, and the website's statement export. Only what changes the spot wallet
+through the sources above is recorded.
 
 ## The client
 
@@ -102,6 +108,8 @@ trait BinanceApi[F[_]] extends BinanceMarket[F] {
   def fiatOrders(direction: FiatOrderDirection, from: Instant, to: Instant): F[List[JsonObject]]
   def fiatPayments(direction: FiatPaymentDirection, from: Instant, to: Instant): F[List[JsonObject]]
   def convertTradeFlow(from: Instant, to: Instant): F[List[JsonObject]]
+  def assetDividends(from: Instant, to: Instant): F[List[JsonObject]]
+  def dustLog(from: Instant, to: Instant): F[List[JsonObject]]
   def spotBalances: F[Map[BinanceAsset, BigDecimal]]
   def fundingBalances: F[Map[BinanceAsset, BigDecimal]]
 }
@@ -139,6 +147,8 @@ together.
 | `fiatOrders` | `/sapi/v1/fiat/orders` | 45,000 per account | by `transactionType` (0 deposit, 1 withdrawal), paged by `page`, 500 rows to a page; the envelope's `data` is absent when there is none |
 | `fiatPayments` | `/sapi/v1/fiat/payments` | 1 | by `transactionType` (0 buy, 1 sell), paged like fiat orders |
 | `convertTradeFlow` | `/sapi/v1/convert/tradeFlow` | 3,000 per account | `limit` 1,000; a window that answers `moreData` is read again as two halves, down to a single millisecond, which fails |
+| `assetDividends` | `/sapi/v1/asset/assetDividend` | 10, in a bucket of its own per IP address | at most 180 days, `limit` 500, the `rows` of the answer, absent when there are none; a window whose answer holds 500 rows is read again as two halves, down to a single millisecond, which fails |
+| `dustLog` | `/sapi/v1/asset/dribblet` | 1, in a bucket of its own per IP address | the `userAssetDribblets` of the answer, absent when there are none; no `limit` is sent, since the answer holds at most 100 conversions, and a window whose answer holds 100 is read again as two halves, down to a single millisecond, which fails |
 | `minuteClose` | `/api/v3/klines` on `data-api.binance.vision` | 2 | the close of the one-minute bar that starts at the minute, none when the pair had no bar or is unknown; needs no key |
 | `dailyBars` | `/api/v3/klines` on `data-api.binance.vision`, interval `1d` | 2 per page | the bars that open on the UTC days from the first to the last, both included, from the start of the first to the last millisecond of the last, 1,000 to a page; the next page starts the day after the last bar, and the reading ends at a page of fewer, or one that brings no day past where it started. A pair Binance does not know fails with `Refused` and code `-1121`; needs no key |
 | `lastPrice` | `/api/v3/ticker/price` on `data-api.binance.vision` | 2 | the price of the latest trade, none for a pair Binance does not know; needs no key |
@@ -171,8 +181,9 @@ the next call of the same bucket:
 - `/api/v3` has one bucket of 6,000 a minute per IP address, shared by the pairs, the trades and the
   spot account, and `data-api.binance.vision`, the bars and the ticker price, one of its own.
 - Each `/sapi` endpoint has a bucket of its own, "independent" of the others: 12,000 a minute per IP
-  address for the endpoints weighed by IP (the funding wallet among them), 180,000 a minute per
-  account for the ones weighed by account (withdrawals, fiat orders and Convert).
+  address for the endpoints weighed by IP (the funding wallet, the distributions and the dust log
+  among them), 180,000 a minute per account for the ones weighed by account (withdrawals, fiat
+  orders and Convert).
 - A call keeps the next call of its bucket waiting for `limitWindow * weight / (limit * budget)`:
   the share of the limit its weight takes, divided by a budget that leaves room for every other
   process on the address. The budgets are 0.5 per IP address and 0.9 per account. A `myTrades` call
@@ -284,10 +295,11 @@ Anything that fails ends the run, and the process starts a new one after its int
 A source other than trades is read from `rereadDays` before where this process last read it, kept in
 memory, so that a record Binance completes or changes late is stored again. After a restart, with
 nothing in memory, it is `rereadDays` before the latest record stored for the source; with no
-record stored, it is the start of `historyStart`. A window is 89 days (30 for Convert) and ends a
-millisecond before the next one starts; the last ends at the start of the run. A failed run leaves
-the memory as it was after the last window that was recorded, and the service that a crashed loop
-starts again with keeps it.
+record stored, it is the start of `historyStart`. The dust log is never read from before
+`2020-12-01`, whatever the start would be, since it keeps nothing older. A window is 89 days (30 for
+Convert, 180 for distributions, 90 for dust) and ends a millisecond before the next one starts; the
+last ends at the start of the run. A failed run leaves the memory as it was after the last window
+that was recorded, and the service that a crashed loop starts again with keeps it.
 
 A first import is slow, because Binance's limits are low next to the history of an account. Each
 call of a bucket waits for its share, so the weights above add up: an account opened in 2021 takes
@@ -308,8 +320,9 @@ while `exchangeInfo` lists it, since a pair Binance has dropped answers `-1121`.
   record has just brought into the account, the pairs of every coin whose balance differs from the
   records in a new way, and the pairs `delist-schedule` announces, so that a pair is read before
   Binance drops it.
-- **A coin that arrived**: an executed deposit, Convert or card purchase of a coin brings every
-  listed pair with that coin as its base or quote into the run. A cash asset brings none: reading
+- **A coin that arrived**: an executed deposit, Convert, card purchase or distribution of a coin, or a
+  dust conversion that gave one, brings every listed pair with that coin as its base or quote into
+  the run. A cash asset brings none: reading
   every USDT pair after a USDT deposit would cost minutes. A record brings its pairs in once for
   as long as the process runs, though the record is read again for `rereadDays`, and a record that
   was pending brings them in once it is executed.
@@ -319,8 +332,8 @@ while `exchangeInfo` lists it, since a pair Binance has dropped answers `-1121`.
   new to the account appears within one interval and not at the next read of every pair. It does so
   once for a difference: a coin whose difference is the one the last comparison found brings no
   pair in, and a new trade of the coin changes its balance and so its difference. A difference that
-  no trade explains, such as dust converted into BNB or a reward, therefore costs the coin's pairs
-  once, at 20 request weight each, and once more after a restart, which forgets the last comparison.
+  no trade explains, such as a coin moved into Simple Earn, therefore costs the coin's pairs once,
+  at 20 request weight each, and once more after a restart, which forgets the last comparison.
 
 ### Prices
 
@@ -362,8 +375,10 @@ of the same code. Binance has no lookup of a coin by its code, so the coins' dir
 What no price could value is noted, and the sync raises the system alert
 `binance-unvalued:<account id>` for the notes it has not raised yet. Each note names the record by
 its `ref` and says what the translation did instead: the two legs of a trade or a Convert between
-coins that no price values become a conversion that carries their cost, and a commission or a
-network fee that no price values leaves as units at their cost. The alert never names a key. The
+coins that no price values become a conversion that carries their cost, a commission or a
+network fee that no price values leaves as units at their cost, and a coin credited as a
+distribution that no price values is received at no cost and counts for no income. The alert never
+names a key. The
 notes raised are kept in memory, so a restart raises the ones that still stand once more, and an
 alert that failed to go out is tried again at the next run.
 
@@ -424,14 +439,17 @@ differences that are still there once more:
 An alert is raised before it is remembered, so one that fails to go out is tried again at the next
 run.
 
-**Expected differences**, until the dust conversions, the rewards and airdrops and the costs of
-coins deposited from elsewhere are read, or the statement is imported:
+**Expected differences**, until the statement is imported:
 
-- dust converted into BNB, and rewards and airdrops credited to the spot wallet;
 - card spending and cashback from the funding wallet, and assets moved into Simple Earn or staking,
-  which no longer show in the spot wallet;
+  which no longer show in the spot wallet, and the rewards of those products, which are not read;
 - trades on a pair Binance delisted before the sync read them;
+- history that the distribution and dust endpoints do not return: the dust log keeps nothing from
+  before 2020-12-01, and the distribution log may lack older rows;
 - a deposit credited, or a withdrawal still processing, around `asOf`, until the next run.
+
+Distributions and airdrops, and dust converted into another coin, are recorded, so they no longer
+show as differences.
 
 The funding wallet's call lists the business assets Binance names (Binance Pay, Binance Card, gift
 cards, stock tokens), and whether it shows the balances of P2P is not stated, so an asset held there
@@ -486,7 +504,7 @@ a slash, so that the storage replaces a record's operations as a whole by that p
 | Suffix | The operation |
 |---|---|
 | none | the record's own operation, or the side of an exchange that gives up |
-| `/received` | the side of an exchange that receives |
+| `/received` | the side of an exchange that receives, of a trade, a Convert or a detail of a dust conversion |
 | `/fee` | a fee |
 | `/fee-sale` | the sale of the coin that paid a fee |
 | `/deposit` | the deposit that comes with a purchase paid by card |
@@ -564,13 +582,56 @@ operations in place of the buy or the sale, and its fee names no instrument. A f
 `Failed` or `Refunded`, and `pending` otherwise. A Convert order is `executed` at `SUCCESS`,
 `canceled` at `FAIL`, and `pending` otherwise.
 
+### Distributions and airdrops
+
+A `dividend` record is a distribution or an airdrop credited to the account, or the debit of one,
+as its `direction` says: 1 is a credit and -1 a debit, and any other value refuses the record. Its
+operation has the record's own `ref`, such as `dividend/1637366104`, its `brokerType` is
+`Distribution`, and its state is always `executed`.
+
+| `direction` | Asset | Operation |
+|---|---|---|
+| credit | a coin | a `reward` of `amount` priced at the close of the one-minute bar that holds `divTime`, the first of the coin's pairs with each price quote that has one, in the quote of that bar; when no bar has a close, a `reward` with no price in the first price quote, and the record is noted |
+| credit | a cash asset | a `reward` of `amount` in that currency, with no instrument |
+| debit | a coin | a `security_out` of `amount`, at its cost |
+| debit | a cash asset | a `fee` of `amount` naming no instrument |
+
+A reward of a coin opens a lot at the price of the bar, which is also the income that the tax report
+counts (see [`tax.md`](tax.md#rewards)); a reward of cash is income at its amount. `enInfo`, the text
+Binance gives a distribution, is kept in the stored record and read by nothing.
+
+### Dust
+
+A `dust` record is one conversion of small balances, with the `userAssetDribbletDetails` that list
+what each coin gave and what it became. Each detail converts `amount` of `fromAsset` into
+`transferedAmount` of `targetAsset`, net of its service charge, which is not an operation of its
+own: the amount received is the net one, so the cost of the coin received includes the charge. A
+detail that names no target converts into BNB, as the log did before another coin could be chosen.
+Every operation has `brokerType` `Dust` and the state `executed`, and a detail asks for no price.
+
+| Given up | Received | Operations of the detail |
+|---|---|---|
+| a coin | a coin | two `conversion` operations of a group of their own, which carry the cost and the dates of the coin given up to the coin received, and realize nothing |
+| cash | a coin | a `buy` of the coin received for the cash, at the price the amounts give |
+| a coin | cash | a `sell` of the coin for the cash received, at the price the amounts give |
+| cash | cash | two `exchange` operations, one for each currency |
+
+The refs of a detail are `dust/<transId>/<detail transId>` for the operation that gives up, and the
+same with `/received` for the one that receives. Each coin-to-coin detail is a group of its own,
+named by the ref of its first operation, since a group shares what it received among what it gave
+up by value or by units, and units of different coins do not compare. When several details of one
+conversion carry the same `transId`, as Binance's own example shows two that do, each of them is
+told apart by the asset it gave up, `dust/<transId>/<detail transId>-<asset>`, so that no two
+details share a ref. A conversion with no detail gives no operation.
+
 ### Broker types
 
 An operation's `brokerType` is `Buy` or `Sell` for a trade and its legs, `Convert` for a Convert,
 `Commission` for a commission and the sale that pays it, `Deposit`, `Withdrawal` and `Network fee`
 for a crypto transfer, `Fiat deposit`, `Fiat withdrawal` and `Fiat fee` for fiat orders and the fee
-of a purchase or sale, and `Buy crypto` and `Sell crypto` for the other operations of a purchase or a
-sale with fiat money.
+of a purchase or sale, `Buy crypto` and `Sell crypto` for the other operations of a purchase or a
+sale with fiat money, `Distribution` for a distribution or an airdrop, and `Dust` for a conversion of
+small balances.
 
 ## Storage
 
@@ -600,9 +661,24 @@ stores each record's translations, which every reader reads through `AccountOper
   held in Simple Earn or staking stays in the account until another source takes it out.
 - **Whether `delist-schedule` needs a signature** is not confirmed. The client signs it, as its
   `timestamp` parameter suggests.
-- **Lots carry no currency**, so a coin bought in one currency, such as EUR, and sold in another,
-  such as USDT, has its cost counted as if it were in the currency of the sale (see
+- **The cost of a coin deposited from elsewhere** is what the owner entered for the transfer in, in
+  the currency they paid, and nothing until they enter it; a coin bought in one currency and sold
+  in another keeps its cost in the first and is converted on the day of the sale (see
   [`tax.md`](tax.md#trades-between-coins-and-fees-paid-in-a-coin)).
+- **Whether the dust log lists conversions into a coin other than BNB** is not confirmed. A detail
+  that names a `targetAsset` is read with it, and one that names none is read as BNB.
+- **The time of a dust conversion** is the `operateTime` the conversion carries. Binance's examples
+  differ in whether it has one and in how a detail writes its own time, in milliseconds or as a
+  UTC date and time, which nothing here reads, and a conversion without one fails the run.
+- **Whether the details of one dust conversion carry distinct `transId`s** is not confirmed:
+  Binance's example gives two details one `transId`. The translation keys a detail by its
+  `transId` and adds the asset where several share one.
+- **What `assetDividend` covers**: its `enInfo` text has no documented vocabulary, and whether it
+  includes the rewards of Simple Earn and staking, or the debits that `direction` -1 stands for, is
+  not confirmed. Rows from before the endpoint's retention are not returned.
+- **The dust log's limit**: an answer holds at most 100 conversions and has no paging, so a window
+  with that many is read again in halves, and a single millisecond that still holds 100 fails the
+  run. A conversion of many assets is one record, so it counts once.
 - **A coin priced by another source**: a held coin joins the watchlist as a Binance ticker only while
   the router serves Binance (see
   [`market-data.md`](market-data.md#held-instruments-on-the-watchlist)); without it the coin stays

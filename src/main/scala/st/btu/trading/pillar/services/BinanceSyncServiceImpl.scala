@@ -56,11 +56,13 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
     def context: Context = Context(config.cashAssets, config.priceQuotes, listed)
   }
 
-  // A source other than trades: how long a window it can be read in, and the call that reads one.
+  // A source other than trades: how long a window it can be read in, the call that reads one, and
+  // the earliest time the source reaches back to, if it has a limit.
   private final case class Feed(
     source: BinanceSource,
     length: FiniteDuration,
-    read: (Instant, Instant) => F[List[JsonObject]]
+    read: (Instant, Instant) => F[List[JsonObject]],
+    notBefore: Option[Instant] = None
   )
 
   private val feeds: List[Feed] = List(
@@ -78,7 +80,9 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
     ),
     Feed(BinanceSource.FiatBuy, HistoryWindow, api.fiatPayments(FiatPaymentDirection.Buy, _, _)),
     Feed(BinanceSource.FiatSell, HistoryWindow, api.fiatPayments(FiatPaymentDirection.Sell, _, _)),
-    Feed(BinanceSource.Convert, ConvertWindow, api.convertTradeFlow)
+    Feed(BinanceSource.Convert, ConvertWindow, api.convertTradeFlow),
+    Feed(BinanceSource.Dividend, DistributionWindow, api.assetDividends),
+    Feed(BinanceSource.Dust, DustWindow, api.dustLog, Some(DustLogStart))
   )
 
   def sync: F[Unit] =
@@ -159,7 +163,8 @@ final class BinanceSyncServiceImpl[F[_]: Logging] private (
   // next is read. Gives the coins the records brought into the account.
   private def readFeed(run: Run, feed: Feed): F[List[Received]] =
     for {
-      from <- startOf(feed.source)
+      start <- startOf(feed.source)
+      from = feed.notBefore.fold(start)(Ordering[Instant].max(start, _))
       windows = windowsBetween(from, run.now, feed.length)
       _ <-
         info"Reading the ${feed.source.value} records of account ${accountId.value} in ${windows.size} windows from $from"
@@ -369,9 +374,16 @@ object BinanceSyncServiceImpl {
   private val RecordBatchSize = 500
 
   // How much history one call of each endpoint can be asked for: Binance takes windows of under 90
-  // days for deposits, withdrawals and fiat money, and of at most 30 days for Convert.
+  // days for deposits, withdrawals and fiat money, of at most 30 days for Convert, and of at most
+  // 180 days for distributions. It documents no limit for dust, whose windows are 90 days.
   private val HistoryWindow = 89.days
   private val ConvertWindow = 30.days
+  private val DistributionWindow = 180.days
+  private val DustWindow = 90.days
+
+  // Binance's dust log keeps no conversion from before this day, so reading further back finds
+  // nothing.
+  private val DustLogStart = Instant.parse("2020-12-01T00:00:00Z")
 
   private val UnvaluedAlert = "binance-unvalued"
 

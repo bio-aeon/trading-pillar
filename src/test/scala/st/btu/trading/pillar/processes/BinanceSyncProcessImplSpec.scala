@@ -207,6 +207,7 @@ class BinanceSyncProcessImplSpec extends Specification with CatsEffect {
             case "/api/v3/account" => """{"balances":[]}"""
             case "/sapi/v1/fiat/orders" | "/sapi/v1/fiat/payments" => fiatEmpty
             case "/sapi/v1/convert/tradeFlow" => """{"list":[],"moreData":false}"""
+            case "/sapi/v1/asset/assetDividend" | "/sapi/v1/asset/dribblet" => """{"total":0}"""
             case _ => "[]"
           }
         VirtualTime.run(for {

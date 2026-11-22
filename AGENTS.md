@@ -25,17 +25,19 @@ alert while they differ. The legs of a corporate action are interpreted together
 conversion, spin-off, stock dividend or sale operations that share a group, and the tax lots carry
 their cost and dates through them; what the sync could not read for certain it raises as a system
 alert. The Binance sync reads a spot account through Binance's REST API with a read-only key, which
-every run checks, and records each trade, deposit, withdrawal, fiat order, card purchase and Convert
-order as Binance sent it with its translation; trades are read pair by pair, and a trade between two
-coins or a fee paid in BNB is valued by the stored close of a one-minute bar. Every run also compares
+every run checks, and records each trade, deposit, withdrawal, fiat order, card purchase, Convert
+order, dust conversion and distribution as Binance sent it with its translation; trades are read
+pair by pair, and a trade between two coins, a fee paid in BNB or a coin credited as a distribution
+is valued by the stored close of a one-minute bar. Every run also compares
 the balances Binance reports, in the spot and the funding wallet, with the ones the records leave,
 and raises a system alert while they differ. The valuation, the tax services and `/export` read those
 translations, and an instrument is looked up by its `InstrumentKey`, the broker and the id that
 broker gives it, through a directory per broker. The price-history sync starts every cycle by putting
 the instruments each account holds on its watchlist, with the source setting its broker's pricing
-rule gives, and the rate tickers that convert the currencies of its operations; a Binance coin is
-priced from Binance's own daily bars while the router has a Binance adapter, and stays off the
-watchlist otherwise.
+rule gives, and the rate tickers that convert the currencies of its operations and of the costs its
+owner entered for transfers in; a Binance coin is priced from Binance's own daily bars while the
+router has a Binance adapter, and stays off the watchlist otherwise. The tax lots keep the currency
+of their cost at every broker, and a sale converts each cost on the day of the sale.
 `Source` is a closed set of data sources, so supporting another broker's data means changing the
 library.
 
@@ -78,7 +80,7 @@ Package root `st.btu.trading.pillar`:
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
 | `analytics` | return, performance and risk functions; `portfolio` (valuation, `Holdings`, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
-| `paper`, `tax`, `charts` | paper broker; FIFO tax lots, carried through corporate actions, and the annual estimate; equity-curve PNG |
+| `paper`, `tax`, `charts` | paper broker; FIFO tax lots that keep the currency of their cost, carried through corporate actions, with the entered `TransferCost`s of transfers in, and the annual estimate; equity-curve PNG |
 | `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation` and `IbkrCorporateActions`, `IbkrReconciler` over the pure `IbkrReconciliation`, `BinanceSyncService` with the pure `BinanceTranslation`, `BinancePrices` and `BinanceInstruments`, `BinanceReconciler` over the pure `BinanceReconciliation`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols` and the `RateTickerConfig` of its rate tickers); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers, the latter reconciling positions), the Binance records sync, price-history sync (adding held instruments first), analytics |
 | `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |

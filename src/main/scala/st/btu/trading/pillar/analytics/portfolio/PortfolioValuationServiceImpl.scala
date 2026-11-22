@@ -359,7 +359,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
           OperationKind.SecurityOut | OperationKind.Dividend | OperationKind.Coupon |
           OperationKind.Interest | OperationKind.Fee | OperationKind.Tax | OperationKind.Exchange |
           OperationKind.Split | OperationKind.Conversion | OperationKind.Spinoff |
-          OperationKind.StockDividend | OperationKind.Other =>
+          OperationKind.StockDividend | OperationKind.Reward | OperationKind.Other =>
         false
     }
 }

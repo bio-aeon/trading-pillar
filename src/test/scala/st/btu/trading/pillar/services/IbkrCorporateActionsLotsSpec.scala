@@ -3,9 +3,10 @@ package st.btu.trading.pillar.services
 import org.specs2.mutable.Specification
 import st.btu.trading.pillar.models.domain.*
 import st.btu.trading.pillar.models.ibkr.*
-import st.btu.trading.pillar.tax.{CorporateActionAllocation, Lot, RealizedGain, TaxLots}
+import st.btu.trading.pillar.tax.{CorporateActionAllocation, TaxLots}
 import st.btu.trading.pillar.testkit.IbkrFakes
 import st.btu.trading.pillar.testkit.IbkrFakes.instrumentKey
+import st.btu.trading.pillar.testkit.TaxFakes.{lot, realizedGain}
 
 import java.time.{LocalDate, ZoneId}
 
@@ -14,7 +15,6 @@ class IbkrCorporateActionsLotsSpec extends Specification {
 
   private val accountId = AccountId(7)
   private val newYork = ZoneId.of("America/New_York")
-  private val usd = Currency("USD")
 
   private val boughtOn = LocalDate.of(2025, 1, 10)
   private val actionDay = LocalDate.of(2025, 3, 10)
@@ -74,7 +74,7 @@ class IbkrCorporateActionsLotsSpec extends Specification {
         )
 
         ledgerOf(rows).open must_== Map(
-          instrumentKey("222") -> List(Lot(instrumentKey("222"), 4, 250, boughtOn))
+          instrumentKey("222") -> List(lot(instrumentKey("222"), 4, 250, boughtOn))
         )
       }
 
@@ -89,10 +89,10 @@ class IbkrCorporateActionsLotsSpec extends Specification {
         val ledger = ledgerOf(rows)
 
         ledger.realized must_== List(
-          RealizedGain(instrumentKey("111"), None, actionDay, 20, usd, 500, 200, 300, 59)
+          realizedGain(instrumentKey("111"), actionDay, 20, 500, 200, 59)
         )
         ledger.open must_== Map(
-          instrumentKey("222") -> List(Lot(instrumentKey("222"), 50, 16, boughtOn))
+          instrumentKey("222") -> List(lot(instrumentKey("222"), 50, 16, boughtOn))
         )
       }
 
@@ -105,7 +105,7 @@ class IbkrCorporateActionsLotsSpec extends Specification {
         val ledger = ledgerOf(rows)
 
         ledger.realized must_== List(
-          RealizedGain(instrumentKey("111"), None, actionDay, 100, usd, 1500, 1000, 500, 59)
+          realizedGain(instrumentKey("111"), actionDay, 100, 1500, 1000, 59)
         )
         ledger.open must beEmpty
       }
@@ -120,8 +120,8 @@ class IbkrCorporateActionsLotsSpec extends Specification {
           )
 
         ledgerOf(rows, allocations).open must_== Map(
-          instrumentKey("111") -> List(Lot(instrumentKey("111"), 100, 8, boughtOn)),
-          instrumentKey("444") -> List(Lot(instrumentKey("444"), 10, 20, boughtOn))
+          instrumentKey("111") -> List(lot(instrumentKey("111"), 100, 8, boughtOn)),
+          instrumentKey("444") -> List(lot(instrumentKey("444"), 10, 20, boughtOn))
         )
       }
 
@@ -131,8 +131,8 @@ class IbkrCorporateActionsLotsSpec extends Specification {
 
         ledgerOf(rows).open must_== Map(
           instrumentKey("111") -> List(
-            Lot(instrumentKey("111"), 100, 10, boughtOn),
-            Lot(instrumentKey("111"), 50, BigDecimal("31.9"), actionDay)
+            lot(instrumentKey("111"), 100, 10, boughtOn),
+            lot(instrumentKey("111"), 50, BigDecimal("31.9"), actionDay)
           )
         )
       }
@@ -141,7 +141,7 @@ class IbkrCorporateActionsLotsSpec extends Specification {
         val rows = List(purchase, leg("4001", "111", "100", "type" -> "FS"))
 
         ledgerOf(rows).open must_== Map(
-          instrumentKey("111") -> List(Lot(instrumentKey("111"), 200, 5, boughtOn))
+          instrumentKey("111") -> List(lot(instrumentKey("111"), 200, 5, boughtOn))
         )
       }
     }

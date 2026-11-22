@@ -16,7 +16,9 @@ class PersistedBinanceValuesSpec extends Specification {
           "fiat_withdrawal",
           "fiat_buy",
           "fiat_sell",
-          "convert"
+          "convert",
+          "dust",
+          "dividend"
         )
       )
     }
