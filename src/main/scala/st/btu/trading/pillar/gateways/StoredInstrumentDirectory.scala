@@ -6,9 +6,10 @@ import st.btu.trading.pillar.models.market.BrokerInstrument
 import st.btu.trading.pillar.storages.BrokerInstrumentStorage
 
 /** An [[InstrumentDirectory]] for a broker whose API has no lookup of an instrument by the id it
-  * gives it, such as Binance with its asset codes. The directory answers from the storage alone,
-  * which the broker's sync fills with the instruments it reads of. A key of the broker that the
-  * storage lacks, and a key of any other broker, are answered with no instrument.
+  * gives it, such as Interactive Brokers with its contract ids or Binance with its asset codes. The
+  * directory answers from the storage alone, which the broker's sync fills with the instruments it
+  * reads of. A key of the broker that the storage lacks, and a key of any other broker, are
+  * answered with no instrument.
   */
 final class StoredInstrumentDirectory[F[_]] private (
   broker: Broker,

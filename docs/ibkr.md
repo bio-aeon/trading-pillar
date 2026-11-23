@@ -461,8 +461,9 @@ the stored rows together.
 ## Instruments
 
 The Flex Web Service has no lookup call, so the sync records the instruments each statement
-describes in `BrokerInstrumentStorage`, and `gateways.ibkr.IbkrInstrumentDirectory` answers
-`Broker.Ibkr` keys from that storage alone (and `None` for a key of another broker).
+describes in `BrokerInstrumentStorage`, and a `gateways.StoredInstrumentDirectory` for
+`Broker.Ibkr` answers IB's keys from that storage alone (and `None` for a key of another broker) -
+see [`market-data.md`](market-data.md#instrument-directory-instrumentdirectory).
 
 For each `SecurityInfo` row the sync upserts a `BrokerInstrument`: the IB symbol as the ticker, the
 listing exchange as the board (`classCode`), the description as the name (the symbol when there is

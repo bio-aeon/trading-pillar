@@ -429,30 +429,21 @@ object TcsInstrumentDirectory {
 }
 ```
 
-`gateways.ibkr.IbkrInstrumentDirectory` is Interactive Brokers' directory. Its instrument ids are
-contract ids (`conid`). The Flex Web Service, which IB's statements are read through, has no
-instrument lookup, so the directory answers from `BrokerInstrumentStorage` alone: a `Broker.Ibkr`
-key the storage holds is answered from it, and any other key, a key of another broker included, is
-answered with `None`. The statement sync fills the storage, with a record for each instrument a
-statement describes (the IB symbol as the ticker, the listing exchange as the board, the
-description as the name, the asset category as the type and the currency) - see
-[`ibkr.md`](ibkr.md#instruments). The directory raises no error of its own: only a failure of the
-storage reaches the caller.
-
-```scala
-object IbkrInstrumentDirectory {
-  def create[F[_]: Applicative](storage: BrokerInstrumentStorage[F]): IbkrInstrumentDirectory[F]
-}
-```
-
 `gateways.StoredInstrumentDirectory` is the directory of a broker whose API has no lookup of an
 instrument by the id it gives it. It answers from `BrokerInstrumentStorage` alone: a key of its
 broker that the storage holds is answered from it, and any other key, a key of another broker
 included, with `None`. It raises no error of its own: only a failure of the storage reaches the
-caller. Binance is such a broker: its instrument ids are asset codes such as `BTC`, and the Binance
-sync fills the storage with a record for each coin its translations name, whose ticker is the coin's
-pair with the first price quote that Binance lists, such as `BTCUSDC`, whose type is `crypto` and
-whose currency is that quote, with no board - see [`binance.md`](binance.md#recording).
+caller. Two brokers are like that:
+
+- Interactive Brokers: its instrument ids are contract ids (`conid`), and the Flex Web Service,
+  which IB's statements are read through, has no instrument lookup. The statement sync fills the
+  storage with a record for each instrument a statement describes (the IB symbol as the ticker, the
+  listing exchange as the board, the description as the name, the asset category as the type and
+  the currency) - see [`ibkr.md`](ibkr.md#instruments).
+- Binance: its instrument ids are asset codes such as `BTC`, and the Binance sync fills the storage
+  with a record for each coin its translations name, whose ticker is the coin's pair with the first
+  price quote that Binance lists, such as `BTCUSDC`, whose type is `crypto` and whose currency is
+  that quote, with no board - see [`binance.md`](binance.md#recording).
 
 ```scala
 object StoredInstrumentDirectory {

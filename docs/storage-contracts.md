@@ -404,7 +404,7 @@ from `find` when it can and otherwise fetches it from the broker and stores it w
 instrument the broker knows is fetched once - see
 [`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). Interactive Brokers
 has no lookup call: the statement sync writes the instruments each statement describes with
-`upsert`, and `IbkrInstrumentDirectory` answers from `find` alone. The reconciliation of an
+`upsert`, and a `StoredInstrumentDirectory` answers from `find` alone. The reconciliation of an
 Interactive Brokers account's positions reads `find` too, for the symbol of a contract that IB does
 not report. Binance has no lookup of a coin by its code either: the sync writes a record for each
 coin its translations name, and `StoredInstrumentDirectory` answers from `find` alone. The
