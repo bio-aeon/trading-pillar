@@ -439,8 +439,11 @@ differences that are still there once more:
 An alert is raised before it is remembered, so one that fails to go out is tried again at the next
 run.
 
-**Expected differences**, until the statement is imported:
+**Expected differences**:
 
+- trades, deposits and withdrawals from before about September 2022, which users report missing
+  from the API, and the rebates, token swaps and stablecoin conversions it has no source for (see
+  the limits at the top of this page);
 - card spending and cashback from the funding wallet, and assets moved into Simple Earn or staking,
   which no longer show in the spot wallet, and the rewards of those products, which are not read;
 - trades on a pair Binance delisted before the sync read them;
