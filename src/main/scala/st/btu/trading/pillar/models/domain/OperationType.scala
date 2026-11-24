@@ -70,6 +70,9 @@ object OperationType extends StringEnum[OperationType] {
   case object OutputPenalty extends OperationType("OPERATION_TYPE_OUTPUT_PENALTY")
   case object OverCom extends OperationType("OPERATION_TYPE_OVER_COM")
   case object Funding extends OperationType("OPERATION_TYPE_FUNDING")
+  case object AccruingVarmargin extends OperationType("OPERATION_TYPE_ACCRUING_VARMARGIN")
+  case object WritingOffVarmargin extends OperationType("OPERATION_TYPE_WRITING_OFF_VARMARGIN")
+  case object FutureExpiration extends OperationType("OPERATION_TYPE_FUTURE_EXPIRATION")
 
   // Not part of `values` (findValues would reject a non-singleton case as a value member, and
   // this one is intentionally outside the closed set it enumerates).
@@ -134,7 +137,10 @@ object OperationType extends StringEnum[OperationType] {
     OutStampDuty,
     OutputPenalty,
     OverCom,
-    Funding
+    Funding,
+    AccruingVarmargin,
+    WritingOffVarmargin,
+    FutureExpiration
   )
 
   /** Decodes a raw Tinkoff operation-type string, falling back to [[Unknown]] rather than throwing.

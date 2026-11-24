@@ -572,6 +572,46 @@ class TaxLotsSpec extends Specification {
 
         ledger.open must beEmpty
       }
+
+      "futures" >> {
+        val d0 = LocalDate.of(2025, 3, 3)
+        val d1 = d0.plusDays(5)
+        val futures = Set(f1)
+
+        // Two contracts of F1 bought and sold, which move no cash for their price.
+        val contractTrades = List(buy(0, d0, 2), sell(0, d1, 2))
+
+        "opens no lot for a futures buy, whatever fee is charged that day" >> {
+          val ledger = TaxLots.fifo(List(buy(0, d0, 2), fee(10, d0)), noTickers, futures = futures)
+
+          ledger must_== LotLedger.empty
+        }
+
+        "realizes nothing for a futures sell, and leaves nothing unmatched" >> {
+          val ledger = TaxLots.fifo(contractTrades :+ fee(10, d1), noTickers, futures = futures)
+
+          ledger must_== LotLedger.empty
+        }
+
+        "leaves nothing unmatched for a futures sell that has no buy" >> {
+          val ledger = TaxLots.fifo(List(sell(0, d1, 2)), noTickers, futures = futures)
+
+          ledger must_== LotLedger.empty
+        }
+
+        "leaves the lots and gains of other instruments as they are" >> {
+          val shares = List(buy(1000, d0, 10, "F2"), fee(5, d0, "F2"), sell(1600, d1, 10, "F2"))
+
+          TaxLots.fifo(shares ++ contractTrades, noTickers, futures = futures) must_==
+            TaxLots.fifo(shares, noTickers)
+        }
+
+        "treats the same operations as an ordinary instrument's when no future is named" >> {
+          val ledger = TaxLots.fifo(List(buy(0, d0, 2)), noTickers)
+
+          ledger.open(f1) must_== List(Lot(f1, 2, Map.empty, d0))
+        }
+      }
     }
   }
 }

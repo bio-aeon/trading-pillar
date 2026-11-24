@@ -101,6 +101,18 @@ class AllocationSpec extends Specification {
         allocation.unpricedWeightUnknown must_== 1
       }
 
+      "leaves a position of zero weight out of every breakdown" >> {
+        val positions = Vector(
+          position("F1", Some("share"), Some("RUB"), Some("MOEX"), Some(BigDecimal("0.6"))),
+          position("FUT1", Some("futures"), Some("RUB"), Some("SPBFUT"), Some(BigDecimal(0)))
+        )
+        val allocation = Allocation.of(snapshot(positions, BigDecimal(400), BigDecimal(1000), 0))
+
+        allocation.byInstrumentType must_== Map("share" -> BigDecimal("0.6"))
+        allocation.byCurrency must_== Map("RUB" -> BigDecimal("0.6"))
+        allocation.byExchange must_== Map("MOEX" -> BigDecimal("0.6"))
+      }
+
       "reports cashWeight 0 for a zero total instead of dividing by zero" >> {
         val allocation = Allocation.of(snapshot(Vector.empty, BigDecimal(0), BigDecimal(0), 0))
         allocation.cashWeight must_== BigDecimal(0)

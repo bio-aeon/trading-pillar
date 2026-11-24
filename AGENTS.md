@@ -37,7 +37,12 @@ the instruments each account holds on its watchlist, with the source setting its
 rule gives, and the rate tickers that convert the currencies of its operations and of the costs its
 owner entered for transfers in; a Binance coin is priced from Binance's own daily bars while the
 router has a Binance adapter, and stays off the watchlist otherwise. The tax lots keep the currency
-of their cost at every broker, and a sale converts each cost on the day of the sale.
+of their cost at every broker, and a sale converts each cost on the day of the sale. A futures
+contract is valued at zero, since the broker settles its gain or loss into cash as variation
+margin: `BrokerInstrument.isFuture` says which instruments are futures, the valuation counts the
+margin as cash and a return, the tax lots leave futures out, and `/tax` reports the year's margin
+less the fees charged on futures as the futures result, part of the taxable gains. At Tinkoff the
+buy or sell of a futures contract has an amount of zero, whatever payment the broker reports.
 `Source` is a closed set of data sources, so supporting another broker's data means changing the
 library.
 
@@ -80,7 +85,7 @@ Package root `st.btu.trading.pillar`:
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |
 | `alerts` | rules, `AlertEngine`, the `AlertDispatcher` guard chain, channels, live strategy evaluation, `SystemAlerts` |
 | `analytics` | return, performance and risk functions; `portfolio` (valuation, `Holdings`, positions, allocation, rebalancing, performance metrics, periods, snapshots) |
-| `paper`, `tax`, `charts` | paper broker; FIFO tax lots that keep the currency of their cost, carried through corporate actions, with the entered `TransferCost`s of transfers in, and the annual estimate; equity-curve PNG |
+| `paper`, `tax`, `charts` | paper broker; FIFO tax lots that keep the currency of their cost, carried through corporate actions, with the entered `TransferCost`s of transfers in and no lots for futures, and the annual estimate with its futures result; equity-curve PNG |
 | `services` | sync and command services (`TcsPortfolioService`, `IbkrSyncService` with the pure `IbkrRowTranslation` and `IbkrCorporateActions`, `IbkrReconciler` over the pure `IbkrReconciliation`, `BinanceSyncService` with the pure `BinanceTranslation`, `BinancePrices` and `BinanceInstruments`, `BinanceReconciler` over the pure `BinanceReconciliation`, `HeldInstrumentsService` with its pricing rules `HeldInstrumentPricing` and `IbkrYahooSymbols` and the `RateTickerConfig` of its rate tickers); `commands` (one handler per Telegram command, `CommandHandlers.standard`, `CommandEffect`, `CommandRunner`); `analysis` |
 | `processes` | long-running fs2 loops: Telegram updates, portfolio sync (Tinkoff and Interactive Brokers, the latter reconciling positions), the Binance records sync, price-history sync (adding held instruments first), analytics |
 | `mcp` | MCP server for AI agents: `McpTools` over the storages, market data sources and command handlers, `McpToolBuilder` (the conventions every tool follows), `McpToolServer`, `McpHttpServer` behind a bearer token, `EffectBridge` |

@@ -8,7 +8,7 @@ import cats.syntax.traverse.*
 import st.btu.trading.pillar.analytics.{FxRates, OperationHistoryYears}
 import st.btu.trading.pillar.gateways.{InstrumentDirectory, MarketDataSources}
 import st.btu.trading.pillar.models.domain.{AccountId, AccountOperation, Currency, InstrumentKey}
-import st.btu.trading.pillar.models.market.Ticker
+import st.btu.trading.pillar.models.market.{BrokerInstrument, Ticker}
 import st.btu.trading.pillar.storages.{
   AccountOperationStorage,
   CorporateActionAllocationStorage,
@@ -36,21 +36,21 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
     for {
       ops <- loadOperations(accountId)
       costs <- transferCosts.byAccount(accountId)
-      (ledger, _) <- buildLedger(accountId, ops, costs)
+      (ledger, records) <- buildLedger(accountId, ops, costs)
       fxRate <- fxRateFn(ops, costs)
-    } yield TaxReport.annual(year, ledger, ops, fxRate, config)
+    } yield TaxReport.annual(year, ledger, ops, fxRate, config, futuresIn(records))
 
-  // Resolves the ticker back to its instruments through the same tickerByInstrument mapping
-  // buildLedger already computed, because the directory only looks up by key. A ticker can have an
-  // instrument per board, so the lots of every one are returned: concatenated in instrument order,
-  // then stably sorted by date, which leaves lots acquired on the same date in instrument order.
+  // Resolves the ticker back to its instruments through the same directory records buildLedger
+  // already read, because the directory only looks up by key. A ticker can have an instrument per
+  // board, so the lots of every one are returned: concatenated in instrument order, then stably
+  // sorted by date, which leaves lots acquired on the same date in instrument order.
   def openLots(accountId: AccountId, ticker: Ticker): F[List[Lot]] =
     for {
       ops <- loadOperations(accountId)
       costs <- transferCosts.byAccount(accountId)
-      (ledger, tickerByInstrument) <- buildLedger(accountId, ops, costs)
-    } yield tickerByInstrument.toList
-      .collect { case (instrument, t) if t == ticker => instrument }
+      (ledger, records) <- buildLedger(accountId, ops, costs)
+    } yield records.toList
+      .collect { case (instrument, record) if record.ticker == ticker => instrument }
       .sorted
       .flatMap(instrument => ledger.open.getOrElse(instrument, Nil))
       .sortBy(_.acquiredOn.toEpochDay)
@@ -65,26 +65,31 @@ final class TaxServiceImpl[F[_]: Monad: Clock] private (
       operations.operations(accountId, since, now).map(_.toList)
     }
 
-  // tickerByInstrument is resolved once per call, over the distinct instruments actually present
-  // in `ops` - at most one InstrumentDirectory lookup per instrument, not per operation. Returned
-  // alongside the ledger so openLots can resolve a ticker back to its instruments through the very
-  // same mapping.
+  // The directory's records are read once per call, over the distinct instruments actually present
+  // in `ops` - at most one InstrumentDirectory lookup per instrument, not per operation. They give
+  // the tickers and tell the futures, and are returned alongside the ledger so openLots can
+  // resolve a ticker back to its instruments through the very same mapping.
   private def buildLedger(
     accountId: AccountId,
     ops: List[AccountOperation],
     costs: List[TransferCost]
-  ): F[(LotLedger, Map[InstrumentKey, Ticker])] =
+  ): F[(LotLedger, Map[InstrumentKey, BrokerInstrument])] =
     for {
       pairs <- ops.iterator
         .flatMap(_.instrument)
         .toSet
         .toVector
-        .traverse(key => directory.byKey(key).map(found => key -> found.map(_.ticker)))
+        .traverse(key => directory.byKey(key).map(key -> _))
       stored <- allocations.byAccount(accountId)
     } yield {
-      val tickerByInstrument = pairs.collect { case (key, Some(ticker)) => key -> ticker }.toMap
-      (TaxLots.fifo(ops, tickerByInstrument.get, stored, costs), tickerByInstrument)
+      val records = pairs.collect { case (key, Some(record)) => key -> record }.toMap
+      val ledger =
+        TaxLots.fifo(ops, key => records.get(key).map(_.ticker), stored, costs, futuresIn(records))
+      (ledger, records)
     }
+
+  private def futuresIn(records: Map[InstrumentKey, BrokerInstrument]): Set[InstrumentKey] =
+    records.collect { case (key, record) if record.isFuture => key }.toSet
 
   // One PriceHistoryStorage.bars call per non-base currency actually used by `ops` or by a
   // transfer cost, on the source its rate ticker is configured to use and covering the same

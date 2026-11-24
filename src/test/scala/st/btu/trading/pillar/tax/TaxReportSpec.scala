@@ -495,6 +495,125 @@ class TaxReportSpec extends Specification {
           report.taxesWithheld must_== BigDecimal(13)
         }
       }
+
+      "futures result" >> {
+
+        val year = 2025
+        val contract = instrumentKey("FUT1")
+        val futures = Set(contract)
+
+        def margin(
+          amount: BigDecimal,
+          date: LocalDate,
+          currency: String = "RUB",
+          state: OperationState = OperationState.Executed
+        ) = op(OperationKind.VariationMargin, amount, date, Some("FUT1"), currency, state)
+
+        def gains(amounts: BigDecimal*): LotLedger =
+          LotLedger(
+            Map.empty,
+            amounts.toList.map(rg("F1", LocalDate.of(year, 6, 1), _, holdingDays = 30)),
+            Map.empty
+          )
+
+        "is the year's variation margin less the fees charged on futures, and joins the taxable gains" >> {
+          val ops = List(
+            margin(1500, LocalDate.of(year, 3, 3)),
+            margin(-400, LocalDate.of(year, 3, 4)),
+            op(OperationKind.Fee, -10, LocalDate.of(year, 3, 3), Some("FUT1")),
+            op(OperationKind.Fee, -5, LocalDate.of(year, 3, 3), Some("F1"))
+          )
+
+          val report = TaxReport.annual(year, gains(2000), ops, noRate, futures = futures)
+
+          // 1500 - 400 - 10; the fee of 5 is charged on a share, so it is not a futures fee
+          report.futuresResult must_== BigDecimal(1090)
+          report.taxableGains must_== BigDecimal(3090)
+        }
+
+        "is taxed with the gains" >> {
+          val ops = List(margin(1090, LocalDate.of(year, 3, 3)))
+
+          val report = TaxReport.annual(year, gains(2000), ops, noRate, futures = futures)
+
+          report.estimatedTax must_== BigDecimal("401.7") // 3090 at 13%
+        }
+
+        "lowers the taxable gains when it is a loss, to no less than zero" >> {
+          val ops = List(
+            margin(-3000, LocalDate.of(year, 3, 3)),
+            op(OperationKind.Fee, -10, LocalDate.of(year, 3, 3), Some("FUT1"))
+          )
+
+          val report = TaxReport.annual(year, gains(1000), ops, noRate, futures = futures)
+
+          report.futuresResult must_== BigDecimal(-3010)
+          report.taxableGains must_== BigDecimal(0)
+          report.estimatedTax must_== BigDecimal(0)
+        }
+
+        "is set against the gains that remain after the long-term exemption" >> {
+          // 2000 of gains, 500 of them long-term and exempt, and 100 of futures: 2000 - 500 + 100.
+          val ledger = LotLedger(
+            Map.empty,
+            List(
+              rg("F1", LocalDate.of(year, 3, 1), 500, holdingDays = 1200),
+              rg("F1", LocalDate.of(year, 4, 1), 1500, holdingDays = 30)
+            ),
+            Map.empty
+          )
+          val ops = List(margin(100, LocalDate.of(year, 3, 3)))
+
+          val report = TaxReport.annual(year, ledger, ops, noRate, futures = futures)
+
+          report.exemptGains must_== Some(BigDecimal(500))
+          report.taxableGains must_== BigDecimal(1600)
+        }
+
+        "counts a margin that names no contract" >> {
+          val ops = List(op(OperationKind.VariationMargin, 200, LocalDate.of(year, 3, 3)))
+
+          TaxReport.annual(year, LotLedger.empty, ops, noRate).futuresResult must_==
+            BigDecimal(200)
+        }
+
+        "converts each amount on its own day" >> {
+          // 10 dollars credited at 90 roubles, and a fee of 2 dollars at 80
+          val rates: (Currency, LocalDate) => Option[BigDecimal] = (ccy, date) =>
+            if (ccy != usd) None
+            else if (date == LocalDate.of(year, 3, 3)) Some(BigDecimal(90))
+            else Some(BigDecimal(80))
+          val ops = List(
+            margin(10, LocalDate.of(year, 3, 3), "USD"),
+            op(OperationKind.Fee, -2, LocalDate.of(year, 3, 4), Some("FUT1"), "USD")
+          )
+
+          val report = TaxReport.annual(year, LotLedger.empty, ops, rates, futures = futures)
+
+          report.futuresResult must_== BigDecimal(740) // 900 - 160
+        }
+
+        "leaves out an amount whose currency has no exchange rate, counting it once as unconverted" >> {
+          val ops =
+            List(margin(10, LocalDate.of(year, 3, 3), "USD"), margin(50, LocalDate.of(year, 3, 4)))
+
+          val report = TaxReport.annual(year, LotLedger.empty, ops, noRate, futures = futures)
+
+          report.futuresResult must_== BigDecimal(50)
+          report.unconverted must_== 1
+        }
+
+        "is the margin of the requested year only, from executed operations only" >> {
+          val ops = List(
+            margin(100, LocalDate.of(year, 3, 3)),
+            margin(999, LocalDate.of(year - 1, 12, 31)),
+            margin(999, LocalDate.of(year, 3, 4), state = OperationState.Canceled)
+          )
+
+          TaxReport.annual(year, LotLedger.empty, ops, noRate).futuresResult must_==
+            BigDecimal(100)
+        }
+      }
     }
   }
 }

@@ -80,6 +80,14 @@ object OperationKind extends StringEnum[OperationKind] {
     */
   case object Reward extends OperationKind("reward")
 
+  /** The settlement into cash of a futures position's gain or loss, which a broker books as often
+    * as every day: `amount` is the cash credited (positive) or debited (negative) and `quantity` is
+    * zero. It names the contract as its instrument where the broker says which one. Buying or
+    * selling a contract moves no cash for its price, so the `amount` of a futures `buy` or `sell`
+    * is zero, and a contract's gain or loss reaches the account as variation margin alone.
+    */
+  case object VariationMargin extends OperationKind("variation_margin")
+
   /** Anything else, including what a broker names but the bot does not classify; it carries no
     * change of position.
     */

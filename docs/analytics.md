@@ -178,13 +178,13 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    units, positive for a `buy` and a `security_in`, negative for a `sell` and a `security_out`,
    of either sign for a `split` and for a `conversion` leg, positive for a `stock_dividend`, for a
    `reward` of units and for the new instrument of a `spinoff` and zero for every other kind, a
-   spin-off's marker of its parent included, so a partly filled buy adds only the units that were
-   filled, and a fractional share or coin counts as the fraction it is.
+   spin-off's marker of its parent and a `variation_margin` included, so a partly filled buy adds
+   only the units that were filled, and a fractional share or coin counts as the fraction it is.
 4. **Cash** is the running sum of `amount` over *every* executed operation (commissions, taxes,
-   dividends, buys/sells, deposits/withdrawals, the legs of currency exchanges - all of them), kept
-   as one running total per operation `currency`, not just the base currency. A currency exchange
-   is two `exchange` operations of opposite signs, one per currency, so it moves cash from one
-   total to the other and leaves the position of every instrument as it is.
+   dividends, buys/sells, deposits/withdrawals, variation margin, the legs of currency exchanges -
+   all of them), kept as one running total per operation `currency`, not just the base currency. A
+   currency exchange is two `exchange` operations of opposite signs, one per currency, so it moves
+   cash from one total to the other and leaves the position of every instrument as it is.
 5. **External flows**: the `amount` of `deposit` and `withdrawal` operations, whatever the type the
    broker names them by (Tinkoff's SWIFT, acquiring and multi-currency transfers are deposits and
    withdrawals too), attributed to their own date; `invested` is their running sum, `cashFlow` is
@@ -193,14 +193,17 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    `stock_dividend`: they change what the account holds, and the cash a `conversion` pays or charges
    is cash like any other, and nothing is paid in from outside. Nor is a `reward`: the units or the
    cash received as income outside a trade, such as a distribution or an airdrop, raise the value of
-   the account as a dividend does, so they are a return and not a flow.
+   the account as a dividend does, so they are a return and not a flow. Nor is a `variation_margin`:
+   the cash that settles a futures position's gain or loss changes the value of the account, so it
+   is a return too (see ["Futures"](#futures)).
 6. **Value**: `cash + Σ quantity × last known close on or before the date`. Bars for every ticker
    with a nonzero position are fetched once per `dailySeries` call, over
    `[from - priceLookback, to]` - `priceLookback` (default 10 days) is how far before `from` a
    carried-forward close may come from. A ticker's bars come **only from the source the ticker is
    configured to use** (`MarketDataSources.settingFor(ticker).source`): bars another source stored
    for the same ticker are never mixed in or used as a fallback, so a ticker with no bars on its
-   own source is unpriced rather than priced from the other one.
+   own source is unpriced rather than priced from the other one. A futures contract is the
+   exception: it is valued at zero (see ["Futures"](#futures)).
 7. **Currency conversion**: a non-base-currency position or cash balance is converted with the
    latest close on or before the date of that currency's **rate ticker** - the ticker
    `config.fxTickers` names for the currency, otherwise the conventional `"<CCY><baseCurrency>=X"`
@@ -223,7 +226,8 @@ a day with neither) - this is exactly the `(invested, cashFlow)` pair persisted 
    `dailySeries` call, independent of any one date) and its position never contributes to `value`.
    A *mapped* ticker with no close known on or before some date is excluded from `value` on that
    date only and goes in `unpricedInstruments` - same set as an FX-conversion failure, since both
-   mean "this ticker/currency's contribution to `value` could not be priced".
+   mean "this ticker/currency's contribution to `value` could not be priced". A futures contract
+   is never in it.
 9. **Price currency and metadata**: a mapped position's price currency is the `currency` of the
    `InstrumentInfo` stored for its ticker (`InstrumentStorage.find`) when that metadata was read
    from the ticker's configured source (`InstrumentInfo.origin.source` equals
@@ -267,6 +271,79 @@ and neither does one that only carries cash for an instrument, such as a fee. `a
 operations on top of an earlier result, which is how `dailySeries` and `positionsAsOf` walk an
 account's operations day by day. Which operations to pass, and as of when, is the caller's choice:
 the function counts the operations it is given.
+
+### Futures
+
+A futures contract is an instrument whose position counts contracts, but is not worth their price:
+the broker settles the contract's gain or loss into cash, as **variation margin**, usually once a
+day, so an open position is worth only what is not settled yet. The valuation values a future at
+nothing and counts the margin as cash:
+
+- **A future is valued at zero.** `BrokerInstrument.isFuture` on the directory's record of an
+  instrument says which positions are futures: at Tinkoff, a record whose instrument type is
+  `futures`; no other broker's record is one yet. A future adds nothing to a day's `value`, whatever
+  its close or the rate of its currency, and is never an unpriced instrument. Its `PositionValue`
+  keeps the contracts as `quantity`, the last close as `price`, as the source quotes the contract,
+  and the `dayReturn` of that close, with a `value` of zero and so a weight of zero. What the
+  contract has gained or lost since the last settlement is left out, an approximation of the daily
+  valuation.
+- **Variation margin is cash and a return.** The kind `variation_margin` moves its `amount` into
+  cash like any other operation, and is no external flow: `invested` and `cashFlow` do not move, and
+  the performance figures count the margin as a return, as they count a dividend. A buy or sell of a
+  contract moves no cash for its price, so its `amount` is zero, and the margin carries all of the
+  contract's gain or loss.
+- **The day change counts the margin.** `PositionSnapshot.dayChange` adds the executed
+  `variation_margin` operations dated the snapshot's `date`, each converted at the rate on or before
+  that date and left out when its currency has none, to the price moves of the other positions. A
+  future's own position adds no move, since the margin is that move already. The margin counts
+  whether or not it names its contract, and for a contract sold during the day. A margin exists
+  only once the broker has booked it at a clearing, so a snapshot taken before the day's clearing
+  has none of that day's margin, while the day before's is dated the day before: its day change
+  leaves out the futures' move, though it shows the latest price move of every other position. A
+  consumer that keeps one snapshot a day sees the futures' move only in a snapshot taken after the
+  day's last clearing. An operation is dated by its UTC day, so a margin that Tinkoff times after
+  UTC midnight belongs to the next day's change. `dailySeries` has no day change and is unaffected.
+- **Allocation.** A weight of zero adds nothing to the [allocation](#positions-and-allocation), so a
+  future's type, currency and exchange are keys only when another position has them, and allocation
+  targets and rebalancing give futures no part.
+
+#### Futures at Tinkoff
+
+At Tinkoff the trades in a contract are buy and sell operations whose instrument type is `futures`.
+Its variation margin is `OPERATION_TYPE_ACCRUING_VARMARGIN` when credited and
+`OPERATION_TYPE_WRITING_OFF_VARMARGIN` when debited, and its end is
+`OPERATION_TYPE_FUTURE_EXPIRATION`. The translation into `AccountOperation`s:
+
+- A margin is a `variation_margin` of quantity zero, with the operation's FIGI as its instrument
+  where Tinkoff gives one. Its `amount` is the size of the payment, positive when credited and
+  negative when debited, whichever sign Tinkoff gives the payment.
+- An operation whose instrument type is `futures` and whose kind is `buy` or `sell`, the delivery
+  types included, has an `amount` of zero, whatever payment Tinkoff reports, and keeps its quantity
+  and price. The raw record keeps the payment. A fee charged on the contract is an operation of its
+  own.
+- An expiration is kind `other` with a quantity and an `amount` of zero, so it closes no position.
+  An open future is valued at zero and has no lots, so an expired contract still on the books
+  changes no figure and only shows among the positions.
+
+The first sync of a real account confirms the points the translation rests on without having seen
+them:
+
+- the payment of a futures trade, which is expected to be zero, as no money changes hands for a
+  contract beyond its fee, and that the operation carries the instrument type `futures`. The
+  translation sets the amount to zero whatever the payment is, so the cash stays right if Tinkoff
+  reports the contract's value there;
+- that a broker fee charged on a contract names the contract's FIGI, which is how the
+  [futures result](tax.md#futures) tells it from a fee on a share;
+- that a variation margin names its contract's FIGI. The day change and the futures result count a
+  margin either way, and only a breakdown per contract needs the FIGI;
+- the shape of an expiration, its quantity, price and payment, and whether it tells the direction of
+  the position it ends;
+- the unit of a futures trade's price, points as expected, which reaches displays only.
+
+A fix to the translation after that sync needs no migration: the sync process translates every
+stored raw record again when it starts. The ticker of a contract the account no longer holds stays
+on the watchlist, and `/positions` lists an open future with its contracts, its price and a value
+of zero.
 
 ### Storage, process and commands
 
@@ -391,7 +468,9 @@ Rules, sharing a `valueOnePosition` per-instrument helper that `valuePositions` 
    ticker (rule 7 above) - `None` when there is no known close at all, or (for a non-base currency)
    no FX rate on or before `date`; either way this position also counts toward `unpriced`. A
    base-currency instrument's `price` and per-share contribution to `value` coincide; a foreign
-   one's don't - `value` is never simply `price * quantity` for those.
+   one's don't - `value` is never simply `price * quantity` for those. A futures contract is the
+   exception, with a `value` of zero whether or not a close or a rate is known, and so never
+   unpriced (see ["Futures"](#futures)).
 4. **Cash**: `cash` is `dailySeries`'s own per-date cash figure - the running sum of every executed
    operation's `amount`, per currency, converted to the base currency (`convertBucket`; an
    inconvertible non-base balance is silently dropped from the sum, same as `dailySeries.value`).
@@ -407,8 +486,11 @@ Rules, sharing a `valueOnePosition` per-instrument helper that `valuePositions` 
    `PositionSnapshot.dayChange` is the sum, over every position that has both a `value` and a
    `dayReturn`, of `quantity * (last close - previous close)`, converted to the base currency at
    the rate `value` used, the latest on or before `date`, so a currency move is not counted as a
-   price move. It is `0` when no position qualifies, and a position with a `dayReturn` but no
-   `value` (no exchange rate) adds nothing.
+   price move, plus the executed `variation_margin` operations dated `date`, each converted at the
+   rate on or before `date` and left out when its currency has none. A futures contract adds no
+   move of its own: the margin is that move settled in cash (see ["Futures"](#futures)). It is `0`
+   when no position qualifies and no margin is dated `date`, and a position with a `dayReturn` but
+   no `value` (no exchange rate) adds nothing.
 
 `analytics/portfolio/Allocation.scala` is a pure grouping of one snapshot's position weights:
 
@@ -428,9 +510,10 @@ ticker's configured source is stored, and such a position lands in `"unknown"` i
 breakdown only. An unpriced
 position (no `weight`) contributes to none of the three - there's nothing to add, its share of
 `total` being unknown rather than zero - and is reflected only in `unpricedWeightUnknown`
-(`snapshot.unpriced`, carried over as-is). `cashWeight` is `cash / total` (`0` for a zero total, not
-a division error) - cash carries no per-currency breakdown of its own (rule 4 above), so it is never
-folded into `byCurrency`.
+(`snapshot.unpriced`, carried over as-is). A position of zero weight, a futures contract, adds
+nothing either, so its type, currency and exchange are keys only when another position has them.
+`cashWeight` is `cash / total` (`0` for a zero total, not a division error) - cash carries no
+per-currency breakdown of its own (rule 4 above), so it is never folded into `byCurrency`.
 
 `/positions` and `/allocation` (see [`telegram-commands.md`](telegram-commands.md#positions)) call
 `positionsAsOf(accountId, today)` live, unlike `/performance`/`/portfolio` which read the stored

@@ -663,7 +663,10 @@ come first, largest `value` first; unpriced ones (no known close, no FX rate, or
 broker's instrument id when there's no ticker). A quantity is a decimal and prints as plain digits,
 without trailing zeros or an exponent: half a unit reads `0.5`. `price` is the instrument's own last
 known close in its own currency, unconverted; `value` and the trailing `Cash`/`Total` lines are all
-in the account's base currency. `No positions.` in place of the list when the snapshot has none.
+in the account's base currency. A futures contract is listed with its contracts and its last close
+and a value of `0.00`, since its gain or loss reaches the cash as variation margin (see
+[`analytics.md`](analytics.md#futures)). `No positions.` in place of the list when the snapshot has
+none.
 Single-account app, same as `/performance`: the handler is constructed with a fixed `AccountId`, not
 derived from the chat, and uses today's date (UTC).
 
@@ -849,22 +852,27 @@ Usage: `/tax (year, default current year) - estimated annual tax report`
 Tax estimate 2025 (RUB) - not tax advice
 Realized gains: 54200.00
 Long-term exempt: 12000.00
-Taxable gains: 42200.00
+Futures result: 1000.00
+Taxable gains: 43200.00
 Dividend income: 3100.00
 Coupon income: 800.00
 Reward income: 450.00
 Taxes withheld: 403.00
-Estimated tax: 5486.00
+Estimated tax: 5616.00
 ```
 
 Built from `TaxService.annualReport` (FIFO lots via `TaxLots.fifo`, the estimate via
 `TaxReport.annual` - see [`tax.md`](tax.md)). `year` defaults to the current year (UTC) when
 omitted or not an integer. The `Long-term exempt` line appears only when `TaxConfig.longTermYears`
-is set; without it every gain is taxable. `Reward income` is the market value of the year's rewards,
-such as the distributions and airdrops of a Binance account, and like the dividend and coupon
-income it is shown for reference and is not in the estimated tax. A trailing line, `"N amount(s) could not be converted to
-RUB and were excluded."`, appears only when `unconverted > 0`. Single-account app, same as every
-other handler: the handler is constructed with a fixed `AccountId`, not derived from the chat.
+is set; without it every gain is taxable. `Futures result` is the year's variation margin less the
+fees charged on futures, a loss negative, and the taxable gains add it: `Taxable gains` is the
+realized gains less the long-term exempt ones plus the futures result, never below zero, so a loss
+on futures lowers it (here 54200 - 12000 + 1000). `Reward income` is the market value of the year's
+rewards, such as the distributions and airdrops of a Binance account, and like the dividend and
+coupon income it is shown for reference and is not in the estimated tax. A trailing line,
+`"N amount(s) could not be converted to RUB and were excluded."`, appears only when
+`unconverted > 0`. Single-account app, same as every other handler: the handler is constructed with
+a fixed `AccountId`, not derived from the chat.
 
 ### `/lots`
 
@@ -883,7 +891,8 @@ without trailing zeros or an exponent), unit cost, acquisition date, holding day
 and a trailing `, long-term` when `holdingDays >= TaxConfig.longTermYears * 365`, never while
 `longTermYears` is unset. The unit cost names the currency it was paid in, `@ 20000.00 EUR`; a cost
 paid in several currencies joins its parts with ` + `, ordered by currency code, as in
-`@ 0.00123 BNB + 20000.00 EUR`; a lot that cost nothing shows `@ 0`. `No open lots for SYM.` when there are none (including an unknown ticker).
+`@ 0.00123 BNB + 20000.00 EUR`; a lot that cost nothing shows `@ 0`. `No open lots for SYM.` when
+there are none (including an unknown ticker, and a futures contract, which has no lots).
 `Usage: ...` when the ticker is missing.
 
 ### `/export`

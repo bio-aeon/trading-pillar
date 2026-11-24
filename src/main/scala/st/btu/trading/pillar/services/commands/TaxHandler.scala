@@ -42,6 +42,7 @@ final class TaxHandler[F[_]: Monad: Clock](
       s"Tax estimate ${r.year} (${r.currency.value}) - not tax advice",
       s"Realized gains: ${Replies.scaled(r.realizedGains)}"
     ) ++ exemptLine ++ List(
+      s"Futures result: ${Replies.scaled(r.futuresResult)}",
       s"Taxable gains: ${Replies.scaled(r.taxableGains)}",
       s"Dividend income: ${Replies.scaled(r.dividendIncome)}",
       s"Coupon income: ${Replies.scaled(r.couponIncome)}",

@@ -1,6 +1,7 @@
 package st.btu.trading.pillar.services
 
 import st.btu.trading.pillar.models.domain.*
+import st.btu.trading.pillar.models.tcs.FuturesInstrumentType
 
 /** Translates Tinkoff operations into `AccountOperation`s. Pure: the translation of an operation
   * depends on nothing but the operation.
@@ -14,6 +15,10 @@ object TcsOperationTranslation {
     * The quantity is the executed units, `quantity` less `quantityRest`, signed by the kind. The
     * `ref` is the operation's id and type joined with a slash, the key a stored Tinkoff operation
     * is identified by.
+    *
+    * The amount is the operation's payment, except for futures. A variation margin is positive when
+    * credited and negative when debited, whichever sign Tinkoff gives it, and its quantity is zero.
+    * The buy or sale of a futures contract, and an expiration, have an amount of zero.
     */
   def translate(operation: TcsPortfolioOperation): AccountOperation = {
     val kind = kindOf(operation.operationTypeEnum)
@@ -27,7 +32,7 @@ object TcsOperationTranslation {
         operation.figi.map(figi => InstrumentKey(Broker.Tinkoff, BrokerInstrumentId(figi.value))),
       quantity = signedQuantity(kind, operation.quantity - operation.quantityRest),
       price = Some(operation.price).filter(_.signum != 0),
-      amount = operation.amount,
+      amount = amountOf(operation, kind),
       currency = operation.currency,
       brokerType = BrokerOperationType(operation.operationType.value)
     )
@@ -66,10 +71,25 @@ object TcsOperationTranslation {
           TaxCorrectionProgressive | TaxCorrectionCoupon | TaxRepo | TaxRepoProgressive |
           TaxRepoHold | TaxRepoHoldProgressive | TaxRepoRefund | TaxRepoRefundProgressive =>
         OperationKind.Tax
-      case Unknown(_) =>
+      case AccruingVarmargin | WritingOffVarmargin =>
+        OperationKind.VariationMargin
+      case FutureExpiration | Unknown(_) =>
         OperationKind.Other
     }
   }
+
+  private def amountOf(operation: TcsPortfolioOperation, kind: OperationKind): BigDecimal =
+    operation.operationTypeEnum match {
+      case OperationType.AccruingVarmargin => operation.amount.abs
+      case OperationType.WritingOffVarmargin => -operation.amount.abs
+      case OperationType.FutureExpiration => BigDecimal(0)
+      case _ if isFuturesTrade(operation, kind) => BigDecimal(0)
+      case _ => operation.amount
+    }
+
+  private def isFuturesTrade(operation: TcsPortfolioOperation, kind: OperationKind): Boolean =
+    operation.instrumentType.exists(_.value == FuturesInstrumentType) &&
+      (kind == OperationKind.Buy || kind == OperationKind.Sell)
 
   private def stateOf(status: OperationStatus): OperationState =
     status match {
@@ -86,7 +106,7 @@ object TcsOperationTranslation {
           OperationKind.Coupon | OperationKind.Interest | OperationKind.Fee | OperationKind.Tax |
           OperationKind.Exchange | OperationKind.Split | OperationKind.Conversion |
           OperationKind.Spinoff | OperationKind.StockDividend | OperationKind.Reward |
-          OperationKind.Other =>
+          OperationKind.VariationMargin | OperationKind.Other =>
         BigDecimal(0)
     }
 }

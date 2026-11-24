@@ -27,9 +27,11 @@ import java.time.{LocalDate, ZoneOffset}
 //    filled.
 //  - cash = running sum of `amount` over *every* executed operation, kept per operation currency.
 //  - external flows = the `amount` of deposits (+) and withdrawals (-), on their own date;
-//    `invested` is their running sum, `cashFlow` is just that date's own sum.
+//    `invested` is their running sum, `cashFlow` is just that date's own sum. A variation margin
+//    is cash like a dividend, and no flow.
 //  - value(date) = cash + Sum(quantity * last known close on or before date), both converted to
-//    `config.baseCurrency` where needed.
+//    `config.baseCurrency` where needed. A future adds nothing to the sum: its gain or loss
+//    reaches cash as variation margin, so it is valued at zero and is never unpriced.
 //  - An instrument is mapped to its ticker by the InstrumentDirectory. The ticker's bars come only
 //    from the source the ticker is configured to use, never from another source as a fallback, and
 //    so do the bars of an FX rate ticker.
@@ -37,7 +39,9 @@ import java.time.{LocalDate, ZoneOffset}
 //    read from the ticker's configured source, else the broker's currency for the instrument.
 //  - A position's day return compares its last close on or before the date with the close of the
 //    bar before it. A snapshot's day change sums quantity * (last close - previous close) over the
-//    positions with both a value and a day return, converted at the rate their value used.
+//    positions with both a value and a day return, converted at the rate their value used, and
+//    adds the variation margin dated the snapshot's date. A future's own price move adds nothing,
+//    since the margin is that move already.
 //  - A non-base cash currency or position with no FX rate is excluded from `value` and the
 //    currency/ticker is recorded in `unpricedInstruments`; an instrument the directory does not
 //    know is excluded and recorded in `unmappedInstruments`.
@@ -93,7 +97,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       positions.sortBy(_.instrument),
       cashBase,
       total,
-      priced.iterator.flatMap(_.dayChange).sum,
+      priced.iterator.flatMap(_.dayChange).sum + marginOn(date, ops, ctx),
       positions.count(_.value.isEmpty)
     )
 
@@ -280,8 +284,9 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   // or (for a non-base currency) no FX rate is known on or before `date`. `dayReturn` compares
   // that close with the one before it, still in the instrument's own currency. `dayChange` is what
   // that move adds to `value`, converted at the rate `value` used, so it is set exactly when
-  // `value` and `dayReturn` both are. `weight` is always None here; it depends on a snapshot-wide
-  // total only positionsAsOf computes.
+  // `value` and `dayReturn` both are. A future is the exception: its `value` is zero whether or not
+  // a close or a rate is known, and it has no `dayChange`. `weight` is always None here; it
+  // depends on a snapshot-wide total only positionsAsOf computes.
   private def valueOnePosition(
     instrument: InstrumentKey,
     qty: BigDecimal,
@@ -311,6 +316,11 @@ final class PortfolioValuationServiceImpl[F[_]] private (
         val closes = ctx.tickerBars.get(held.ticker).flatMap(latestCloses(_, date))
         def inBase(amount: BigDecimal): Option[BigDecimal] =
           toBase(amount, held.currency, date, ctx)
+        val value =
+          if (held.isFuture) Some(Zero) else closes.flatMap(c => inBase(c.last * qty))
+        val dayChange =
+          if (held.isFuture) None
+          else closes.flatMap(_.priceChange).flatMap(change => inBase(change * qty))
         PricedPosition(
           PositionValue(
             instrument,
@@ -322,16 +332,28 @@ final class PortfolioValuationServiceImpl[F[_]] private (
             Some(held.source),
             qty,
             closes.map(_.last),
-            closes.flatMap(c => inBase(c.last * qty)),
+            value,
             None,
             closes.flatMap(_.dayReturn)
           ),
-          closes.flatMap(_.priceChange).flatMap(change => inBase(change * qty))
+          dayChange
         )
     }
 
   private def weightOf(value: BigDecimal, total: BigDecimal): Option[BigDecimal] =
     if (total == Zero) None else Some(value / total)
+
+  // The variation margin dated `date`, credits and debits together, in the base currency at the
+  // rate of that day; an amount in a currency with no rate adds nothing.
+  private def marginOn(
+    date: LocalDate,
+    ops: Vector[(LocalDate, AccountOperation)],
+    ctx: PricingContext
+  ): BigDecimal =
+    ops.iterator
+      .collect { case (day, op) if day == date && op.kind == OperationKind.VariationMargin => op }
+      .flatMap(op => toBase(op.amount, op.currency, date, ctx))
+      .sum
 
   // `amount` of `currency` in ctx.baseCurrency, at the latest rate on or before `date`; None when
   // `currency` has no rate.
@@ -359,7 +381,8 @@ final class PortfolioValuationServiceImpl[F[_]] private (
           OperationKind.SecurityOut | OperationKind.Dividend | OperationKind.Coupon |
           OperationKind.Interest | OperationKind.Fee | OperationKind.Tax | OperationKind.Exchange |
           OperationKind.Split | OperationKind.Conversion | OperationKind.Spinoff |
-          OperationKind.StockDividend | OperationKind.Reward | OperationKind.Other =>
+          OperationKind.StockDividend | OperationKind.Reward | OperationKind.VariationMargin |
+          OperationKind.Other =>
         false
     }
 }
@@ -390,6 +413,7 @@ object PortfolioValuationServiceImpl {
     def name: String = info.flatMap(_.name).getOrElse(broker.name)
     def instrumentType: String = info.fold(broker.instrumentType)(_.instrumentType)
     def exchange: Option[String] = info.map(_.exchange)
+    def isFuture: Boolean = broker.isFuture
   }
 
   private object HeldInstrument {

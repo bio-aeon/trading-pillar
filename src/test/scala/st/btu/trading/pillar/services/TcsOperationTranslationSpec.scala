@@ -61,12 +61,11 @@ class TcsOperationTranslationSpec extends Specification {
       "TAX_REPO_REFUND",
       "TAX_REPO_REFUND_PROGRESSIVE"
     ),
+    OperationKind.VariationMargin -> List("ACCRUING_VARMARGIN", "WRITING_OFF_VARMARGIN"),
     OperationKind.Other -> List(
       "UNSPECIFIED",
       "BOND_REPAYMENT",
       "DIVIDEND_TRANSFER",
-      "ACCRUING_VARMARGIN",
-      "WRITING_OFF_VARMARGIN",
       "TRANS_IIS_BS",
       "TRANS_BS_BS",
       "OVER_PLACEMENT",
@@ -87,11 +86,16 @@ class TcsOperationTranslationSpec extends Specification {
     amount: BigDecimal = 0,
     figi: Option[String] = Some("BBG004730N88"),
     extId: String = "op-1",
-    createdAt: ZonedDateTime = ZonedDateTime.ofInstant(occurredAt, ZoneOffset.UTC)
+    createdAt: ZonedDateTime = ZonedDateTime.ofInstant(occurredAt, ZoneOffset.UTC),
+    instrumentType: Option[String] = None
   ): TcsPortfolioOperation =
     AnalyticsFakes
       .operation(accountId, operationType, amount, createdAt, figi, quantity, "RUB", status, price)
-      .copy(extId = PortfolioOperationExtId(extId), quantityRest = quantityRest)
+      .copy(
+        extId = PortfolioOperationExtId(extId),
+        quantityRest = quantityRest,
+        instrumentType = instrumentType.map(PortfolioInstrumentType(_))
+      )
 
   private def translated(op: TcsPortfolioOperation): AccountOperation =
     TcsOperationTranslation.translate(op)
@@ -165,6 +169,21 @@ class TcsOperationTranslationSpec extends Specification {
             BigDecimal(0)
         }
 
+        "is zero for a variation margin, whatever units Tinkoff reports with it" >> {
+          translated(operation("OPERATION_TYPE_ACCRUING_VARMARGIN", quantity = 2)).quantity must_==
+            BigDecimal(0)
+        }
+
+        "is zero for a futures expiration, whatever units Tinkoff reports with it" >> {
+          translated(
+            operation(
+              "OPERATION_TYPE_FUTURE_EXPIRATION",
+              quantity = 2,
+              instrumentType = Some("futures")
+            )
+          ).quantity must_== BigDecimal(0)
+        }
+
         "is zero for a type the library does not name" >> {
           translated(operation("OPERATION_TYPE_SOME_FUTURE_TYPE", quantity = 5)).quantity must_==
             BigDecimal(0)
@@ -204,6 +223,87 @@ class TcsOperationTranslationSpec extends Specification {
           refund.kind must_== OperationKind.Tax
           refund.amount must_== BigDecimal(25)
         }
+
+        "keeps the payment of a share buy" >> {
+          translated(
+            operation(
+              "OPERATION_TYPE_BUY",
+              quantity = 2,
+              price = 95000,
+              amount = -190000,
+              instrumentType = Some("share")
+            )
+          ).amount must_== BigDecimal(-190000)
+        }
+
+        "keeps the payment of a fee charged on a futures contract" >> {
+          translated(
+            operation("OPERATION_TYPE_BROKER_FEE", amount = -10, instrumentType = Some("futures"))
+          ).amount must_== BigDecimal(-10)
+        }
+
+        "of a variation margin" >> {
+          "is positive when credited" >> {
+            translated(operation("OPERATION_TYPE_ACCRUING_VARMARGIN", amount = 1500)).amount must_==
+              BigDecimal(1500)
+          }
+
+          "is negative when debited" >> {
+            translated(
+              operation("OPERATION_TYPE_WRITING_OFF_VARMARGIN", amount = -800)
+            ).amount must_== BigDecimal(-800)
+          }
+
+          "takes its sign from the operation type, whichever sign Tinkoff reports" >> {
+            val debitedAsPositive =
+              translated(operation("OPERATION_TYPE_WRITING_OFF_VARMARGIN", amount = 800))
+            val creditedAsNegative =
+              translated(operation("OPERATION_TYPE_ACCRUING_VARMARGIN", amount = -1500))
+
+            debitedAsPositive.amount must_== BigDecimal(-800)
+            creditedAsNegative.amount must_== BigDecimal(1500)
+          }
+        }
+
+        "of a futures trade" >> {
+          def futuresTrade(operationType: String) =
+            translated(
+              operation(
+                operationType,
+                quantity = 2,
+                price = 95000,
+                amount = -190000,
+                instrumentType = Some("futures")
+              )
+            )
+
+          "is zero for a buy, whatever payment Tinkoff reports, with its units and price kept" >> {
+            val buy = futuresTrade("OPERATION_TYPE_BUY")
+
+            buy.amount must_== BigDecimal(0)
+            buy.quantity must_== BigDecimal(2)
+            buy.price must beSome(BigDecimal(95000))
+          }
+
+          "is zero for a sell, with its units kept" >> {
+            val sell = futuresTrade("OPERATION_TYPE_SELL")
+
+            sell.amount must_== BigDecimal(0)
+            sell.quantity must_== BigDecimal(-2)
+          }
+        }
+
+        "of a futures expiration" >> {
+          "is zero, whatever payment Tinkoff reports" >> {
+            translated(
+              operation(
+                "OPERATION_TYPE_FUTURE_EXPIRATION",
+                amount = 5000,
+                instrumentType = Some("futures")
+              )
+            ).amount must_== BigDecimal(0)
+          }
+        }
       }
 
       "instrument" >> {
@@ -215,6 +315,18 @@ class TcsOperationTranslationSpec extends Specification {
 
         "is absent for an operation with no FIGI" >> {
           translated(operation("OPERATION_TYPE_INPUT", figi = None)).instrument must beNone
+        }
+
+        "is the contract's FIGI for a variation margin" >> {
+          translated(
+            operation("OPERATION_TYPE_ACCRUING_VARMARGIN", figi = Some("FUTSBERH7"))
+          ).instrument must beSome(InstrumentKey(Broker.Tinkoff, BrokerInstrumentId("FUTSBERH7")))
+        }
+
+        "is absent for a variation margin with no FIGI" >> {
+          translated(
+            operation("OPERATION_TYPE_WRITING_OFF_VARMARGIN", figi = None)
+          ).instrument must beNone
         }
       }
 

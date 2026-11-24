@@ -246,7 +246,11 @@ Binance, the record's source and record id, such as `trade/BTCUSDC/28457`, with 
 for the operation). The kind `reward` is units of an instrument, or cash, received as income outside
 a trade, such as a distribution or an airdrop: with an instrument its `quantity` is the units
 received and its `price` their market value per unit where it is known, and without one its
-`amount` is the cash received. A relational implementation could use a table such as `account_operations`
+`amount` is the cash received. The kind `variation_margin` is the settlement into cash of a futures
+position's gain or loss: its `amount` is the cash credited (positive) or debited (negative), its
+`quantity` is zero, and it names the contract as its instrument where the broker says which one. The
+buy or sell of a futures contract has an `amount` of zero, so the margin carries the whole gain or
+loss. A relational implementation could use a table such as `account_operations`
 with a generated `id`, `account_id`, `ref`, `kind`, `state`, `occurred_at`, a nullable
 `instrument_broker` and `instrument_id` that are both null or both set, `quantity`, a nullable
 `price`, `amount`, `currency`, `broker_type`, a nullable `group_ref` (the value of the

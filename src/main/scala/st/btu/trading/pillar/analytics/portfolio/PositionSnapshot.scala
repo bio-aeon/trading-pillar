@@ -17,10 +17,15 @@ import java.time.LocalDate
   * @param dayChange
   *   what the latest price moves added to `total`: the sum, over every position with a `value` and
   *   a `dayReturn`, of `quantity * (last close - previous close)`, converted to `currency` at the
-  *   rate the position's `value` used, so a currency move does not count as a price move; `0` when
-  *   no position has both
+  *   rate the position's `value` used, so a currency move does not count as a price move, plus the
+  *   executed variation margin dated `date`, each amount converted at the rate on or before `date`
+  *   and left out when its currency has none. A futures contract adds no move of its own, since the
+  *   margin is its move settled in cash. A margin exists only once the broker has booked it at a
+  *   clearing, so a snapshot taken before the day's clearing leaves out the futures' move of that
+  *   day; `0` when there is neither
   * @param unpriced
-  *   count of positions, mapped or not, whose value is `None`
+  *   count of positions, mapped or not, whose value is `None`; a futures contract is never one, its
+  *   value being zero
   */
 final case class PositionSnapshot(
   date: LocalDate,

@@ -263,6 +263,39 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
+      "futures" >> {
+        val directory = List(
+          brokerInstrument("FIGI1", Ticker("AAA")),
+          brokerInstrument("FUT1", Ticker("SFH7"), instrumentType = "futures")
+        )
+
+        "tells a future by the directory's record of the instrument" >> {
+          val d0 = LocalDate.of(2024, 2, 1)
+          val ops = List(
+            // 10 shares bought for 1000 with a fee of 5, and sold for 3005: a gain of 2000
+            op(OperationKind.Buy, -1000, LocalDate.of(2024, 1, 1), Some("FIGI1"), quantity = 10),
+            op(OperationKind.Fee, -5, LocalDate.of(2024, 1, 1), Some("FIGI1")),
+            op(OperationKind.Sell, 3005, LocalDate.of(2024, 6, 1), Some("FIGI1"), quantity = -10),
+            // two contracts, at no cash for their price, with a fee of 10, and a margin credited
+            // and one debited
+            op(OperationKind.Buy, 0, d0, Some("FUT1"), quantity = 2),
+            op(OperationKind.Fee, -10, d0, Some("FUT1")),
+            op(OperationKind.VariationMargin, 1500, d0.plusDays(1), Some("FUT1")),
+            op(OperationKind.VariationMargin, -400, d0.plusDays(2), Some("FUT1")),
+            op(OperationKind.Sell, 0, d0.plusDays(3), Some("FUT1"), quantity = -2)
+          )
+          for {
+            service <- build(ops, directory)
+            report <- service.annualReport(accountId, 2024)
+          } yield {
+            report.realizedGains must_== BigDecimal(2000)
+            report.futuresResult must_== BigDecimal(1090) // 1500 - 400 - 10
+            report.taxableGains must_== BigDecimal(3090)
+            report.unconverted must_== 0
+          }
+        }
+      }
+
       "base currency" >> {
 
         "reports amounts in the configured base currency without converting them" >> {
@@ -394,6 +427,18 @@ class TaxServiceImplSpec extends Specification with CatsEffect {
             lots <- service.openLots(accountId, Ticker("COIN"))
           } yield lots must_== List(Lot(coin, 4, Map.empty, transferDay))
         }
+      }
+
+      "returns no lot for a futures contract, whatever was bought" >> {
+        val ops = List(
+          op(OperationKind.Buy, 0, LocalDate.of(2024, 2, 1), Some("FUT1"), quantity = 2),
+          op(OperationKind.Fee, -10, LocalDate.of(2024, 2, 1), Some("FUT1"))
+        )
+        val directory = List(brokerInstrument("FUT1", Ticker("SFH7"), instrumentType = "futures"))
+        for {
+          service <- build(ops, directory)
+          lots <- service.openLots(accountId, Ticker("SFH7"))
+        } yield lots must beEmpty
       }
 
       "returns nothing for a ticker with no instrument mapping" >> {

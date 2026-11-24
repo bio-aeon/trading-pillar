@@ -17,12 +17,16 @@ import st.btu.trading.pillar.models.market.{Source, Ticker}
   * @param quantity
   *   the units held, fractional for an instrument that trades in fractions
   * @param price
-  *   the last known close in this position's own `currency`, unconverted
+  *   the last known close in this position's own `currency`, unconverted; for a futures contract,
+  *   its quotation, which is not what a contract is worth
   * @param value
   *   this position's contribution to `PositionSnapshot.total`, converted to the snapshot's base
-  *   currency; need not equal `price * quantity` for a non-base-currency position
+  *   currency; need not equal `price * quantity` for a non-base-currency position. Zero for a
+  *   futures contract, with or without a close or a rate: its gain or loss reaches cash as
+  *   variation margin, so a contract is never unpriced
   * @param weight
-  *   `value / total`; `None` whenever `value` is, or on a zero-total snapshot
+  *   `value / total`, so zero for a futures contract; `None` whenever `value` is, or on a
+  *   zero-total snapshot
   * @param dayReturn
   *   the last close over the close of the bar before it, minus 1, as a fraction (`0.02` is +2%), in
   *   the position's own `currency`; both closes are on or before the snapshot date, and the field

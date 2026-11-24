@@ -20,6 +20,11 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
   private val usd = Currency("USD")
   private val usdRub = Ticker("USDRUB=X")
   private val usdOnMoex = Ticker("USD000UTSTOM")
+  private val sfh7 = Ticker("SFH7")
+
+  // A futures contract as Tinkoff's directory records it.
+  private val contract =
+    brokerInstrument("FUT1", sfh7, classCode = "SPBFUT", instrumentType = "futures")
 
   private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
@@ -55,6 +60,23 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
     proceeds: BigDecimal
   ) =
     accountOperation(accountId, OperationKind.Sell, proceeds, at(date), Some(instrument), -quantity)
+
+  // A variation margin of `amount`, credited when positive and debited when negative, on the
+  // contract unless told otherwise.
+  private def margin(
+    date: LocalDate,
+    amount: BigDecimal,
+    currency: String = "RUB",
+    instrument: Option[String] = Some("FUT1")
+  ) =
+    accountOperation(
+      accountId,
+      OperationKind.VariationMargin,
+      amount,
+      at(date),
+      instrument,
+      currency = currency
+    )
 
   // 1000 deposited, in roubles unless told otherwise, and `cost` of them spent on `quantity` units
   // of the instrument, both on `date`.
@@ -632,6 +654,61 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
           }
         }
       }
+
+      "futures" >> {
+
+        val d0 = LocalDate.of(2026, 11, 2)
+        val d1 = d0.plusDays(1)
+        val d2 = d0.plusDays(2)
+        // Two contracts bought at no cash for their price, with a fee of 10, and a margin of 1500
+        // credited and one of 400 debited on the next days.
+        val ops = List(
+          deposit(d0, 100000),
+          buy(d0, "FUT1", quantity = 2, cost = 0),
+          accountOperation(accountId, OperationKind.Fee, -10, at(d0), Some("FUT1")),
+          margin(d1, 1500),
+          margin(d2, -400)
+        )
+
+        "values the account at its cash while contracts are open, whatever their quotation" >> {
+          val bars = List(bar(sfh7, d0, 95000), bar(sfh7, d1, 96000), bar(sfh7, d2, 95500))
+          for {
+            service <- buildService(ops, List(contract), bars = bars)
+            series <- service.dailySeries(accountId, d0, d2)
+          } yield {
+            // 100000 less the fee, then the margin as it is credited and debited
+            series.points.map(p => (p.date, p.value)) must_== Vector(
+              (d0, BigDecimal(99990)),
+              (d1, BigDecimal(101490)),
+              (d2, BigDecimal(101090))
+            )
+            series.unpricedInstruments must beEmpty
+            series.unmappedInstruments must beEmpty
+          }
+        }
+
+        "counts the variation margin as a return, not as invested" >> {
+          for {
+            service <- buildService(ops, List(contract))
+            series <- service.dailySeries(accountId, d0, d2)
+          } yield series.points.map(p => (p.invested, p.cashFlow)) must_== Vector(
+            (BigDecimal(100000), BigDecimal(100000)),
+            (BigDecimal(100000), BigDecimal(0)),
+            (BigDecimal(100000), BigDecimal(0))
+          )
+        }
+
+        "does not report a contract with no bars as unpriced" >> {
+          for {
+            service <- buildService(ops, List(contract))
+            series <- service.dailySeries(accountId, d0, d2)
+          } yield {
+            series.points.map(_.value) must_==
+              Vector(BigDecimal(99990), BigDecimal(101490), BigDecimal(101090))
+            series.unpricedInstruments must beEmpty
+          }
+        }
+      }
     }
 
     "positionsAsOf" >> {
@@ -891,6 +968,88 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
         }
       }
 
+      "futures" >> {
+
+        val d0 = LocalDate.of(2026, 11, 3)
+        val d1 = d0.minusDays(1)
+        val aaa = Ticker("AAA")
+        val ccc = Ticker("CCC")
+        val directory =
+          List(brokerInstrument("F1", aaa), contract, brokerInstrument("F3", ccc, currency = "USD"))
+        // Two contracts at no cash for their price; 10 shares for 5000, quoted at 500; and a share
+        // quoted in dollars, for which no rate is stored.
+        val ops = List(
+          deposit(d0, 100000),
+          buy(d0, "FUT1", quantity = 2, cost = 0),
+          buy(d0, "F1", quantity = 10, cost = 5000),
+          accountOperation(
+            accountId,
+            OperationKind.SecurityIn,
+            0,
+            at(d0),
+            Some("F3"),
+            quantity = 1,
+            currency = "USD"
+          )
+        )
+        val shareBars = List(bar(aaa, d0, 500), bar(ccc, d0, 20))
+        val contractBars = List(bar(sfh7, d1, 90000), bar(sfh7, d0, 99000))
+
+        def snapshotWith(bars: List[Bar]): IO[PositionSnapshot] =
+          for {
+            service <- buildService(ops, directory, Map(aaa -> info(aaa)), bars)
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot
+
+        def contractIn(snapshot: PositionSnapshot): PositionValue =
+          snapshot.positions.find(_.instrument == instrumentKey("FUT1")).get
+
+        "values contracts at zero with a weight of zero, whatever their quotation" >> {
+          snapshotWith(shareBars ++ contractBars).map { snapshot =>
+            contractIn(snapshot).value must beSome(BigDecimal(0))
+            contractIn(snapshot).weight must beSome(BigDecimal(0))
+            // 95000 in cash and the shares at 5000; the contracts add nothing
+            snapshot.total must_== BigDecimal(100000)
+          }
+        }
+
+        "values contracts at zero with a weight of zero when no close is stored for them" >> {
+          snapshotWith(shareBars).map { snapshot =>
+            contractIn(snapshot).value must beSome(BigDecimal(0))
+            contractIn(snapshot).weight must beSome(BigDecimal(0))
+          }
+        }
+
+        "keeps the contracts, their last close and their day return" >> {
+          snapshotWith(shareBars ++ contractBars).map { snapshot =>
+            val position = contractIn(snapshot)
+            position.quantity must_== BigDecimal(2)
+            position.price must beSome(BigDecimal(99000))
+            position.dayReturn must beSome(BigDecimal("0.1")) // 99000 / 90000 - 1
+          }
+        }
+
+        "leaves contracts out of the unpriced count, which a share with no rate is in" >> {
+          snapshotWith(shareBars).map { snapshot =>
+            snapshot.unpriced must_== 1
+            snapshot.positions.filter(_.value.isEmpty).map(_.instrument.id.value) must_==
+              Vector("F3")
+          }
+        }
+
+        "gives the allocation no entry for contracts" >> {
+          snapshotWith(shareBars ++ contractBars).map { snapshot =>
+            val allocation = Allocation.of(snapshot)
+
+            // 5000 of 100000 is in shares; the contracts have no exchange metadata either, which
+            // would otherwise key them under unknown.
+            allocation.byInstrumentType must_== Map("share" -> BigDecimal("0.05"))
+            allocation.byCurrency must_== Map("RUB" -> BigDecimal("0.05"))
+            allocation.byExchange must_== Map("MOEX" -> BigDecimal("0.05"))
+          }
+        }
+      }
+
       "source" >> {
 
         val d0 = LocalDate.of(2026, 10, 6)
@@ -1044,6 +1203,70 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
             position.dayReturn must beSome(BigDecimal("0.25")) // 50 / 40 - 1
             position.value must beNone
             snapshot.dayChange must_== BigDecimal(0)
+          }
+        }
+
+        "variation margin" >> {
+
+          "adds the margin dated the day, and neither the margin of the day before nor the contracts' own move" >> {
+            val ops = List(
+              deposit(d1, 100000),
+              buy(d1, "FUT1", quantity = 2, cost = 0),
+              buy(d1, "F1", quantity = 10, cost = 500),
+              margin(d1, 999),
+              margin(d0, 1500),
+              margin(d0, -400)
+            )
+            // The share moves from 50 to 80 and the contracts from 90000 to 99000, which would add
+            // 2 * 9000 if their own move counted.
+            val bars =
+              List(bar(aaa, d1, 50), bar(aaa, d0, 80), bar(sfh7, d1, 90000), bar(sfh7, d0, 99000))
+            for {
+              service <- buildService(ops, List(brokerInstrument("F1", aaa), contract), bars = bars)
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield
+            // 10 * (80 - 50) = 300 for the share, and 1500 - 400 = 1100 of margin
+            snapshot.dayChange must_== BigDecimal(1400)
+          }
+
+          "adds the margin of a contract sold during the day" >> {
+            val ops = List(
+              deposit(d1, 100000),
+              buy(d1, "FUT1", quantity = 2, cost = 0),
+              sell(d0, "FUT1", quantity = 2, proceeds = 0),
+              margin(d0, 700)
+            )
+            for {
+              service <- buildService(ops, List(contract))
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield {
+              snapshot.positions must beEmpty
+              snapshot.dayChange must_== BigDecimal(700)
+            }
+          }
+
+          "adds a margin that names no contract" >> {
+            val ops = List(deposit(d1, 100000), margin(d0, 250, instrument = None))
+            for {
+              service <- buildService(ops)
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield snapshot.dayChange must_== BigDecimal(250)
+          }
+
+          "converts a margin in another currency at the rate of the day" >> {
+            val ops = List(deposit(d1, 100000), margin(d0, 10, currency = "USD"))
+            for {
+              service <- buildService(ops, bars = List(bar(usdRub, d1, 80), bar(usdRub, d0, 90)))
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield snapshot.dayChange must_== BigDecimal(900) // 10 dollars at 90, not at 80
+          }
+
+          "leaves out a margin whose currency has no exchange rate" >> {
+            val ops = List(deposit(d1, 100000), margin(d0, 10, currency = "USD"))
+            for {
+              service <- buildService(ops)
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield snapshot.dayChange must_== BigDecimal(0)
           }
         }
       }

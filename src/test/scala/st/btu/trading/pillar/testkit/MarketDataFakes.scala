@@ -321,14 +321,15 @@ object MarketDataFakes {
     instrumentId: String,
     ticker: Ticker,
     currency: String = "RUB",
-    classCode: String = "TQBR"
+    classCode: String = "TQBR",
+    instrumentType: String = "share"
   ): BrokerInstrument =
     BrokerInstrument(
       instrumentKey(instrumentId),
       ticker,
       Some(ClassCode(classCode)),
       name = ticker.value,
-      instrumentType = "share",
+      instrumentType = instrumentType,
       currency = Currency(currency),
       updatedAt = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
     )

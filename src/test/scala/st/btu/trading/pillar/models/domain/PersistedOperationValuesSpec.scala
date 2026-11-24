@@ -32,6 +32,7 @@ class PersistedOperationValuesSpec extends Specification {
           "spinoff",
           "stock_dividend",
           "reward",
+          "variation_margin",
           "other"
         )
       )

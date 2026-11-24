@@ -3,13 +3,14 @@
 Package `st.btu.trading.pillar.tax`. Turns an account's executed `AccountOperation`s, its
 operations in terms shared by every broker, into FIFO cost-basis lots that keep the currency of
 their cost, carried through splits, mergers, spin-offs and stock dividends, and a per-year tax
-estimate that converts each cost on the day of the sale.
+estimate that converts each cost on the day of the sale and counts the variation margin of futures
+as a result of its own.
 
 **This is an estimate for personal reference, not tax advice.** It knows about exactly the rules
-listed below - progressive rate, an optional long-term exemption, broker-withheld tax - and nothing
-else (no loss carry-forward across years, no IIS deductions, no instrument-specific rules). The FX
-conversion it uses is a documented approximation, not the official rate for any given instant - see
-["FX conversion"](#fx-conversion) below.
+listed below - progressive rate, an optional long-term exemption, broker-withheld tax, the
+variation margin of futures - and nothing else (no loss carry-forward across years, no IIS
+deductions, no instrument-specific rules). The FX conversion it uses is a documented approximation,
+not the official rate for any given instant - see ["FX conversion"](#fx-conversion) below.
 
 ## `TaxLots.fifo` - building the ledger
 
@@ -25,7 +26,8 @@ final case class LotLedger(open: Map[InstrumentKey, List[Lot]], realized: List[R
 object TaxLots {
   def fifo(operations: List[AccountOperation], tickerOf: InstrumentKey => Option[Ticker],
            allocations: List[CorporateActionAllocation] = Nil,
-           transferCosts: List[TransferCost] = Nil): LotLedger
+           transferCosts: List[TransferCost] = Nil,
+           futures: Set[InstrumentKey] = Set.empty): LotLedger
 }
 ```
 
@@ -34,10 +36,11 @@ considered; everything else in `operations` is ignored, such as the legs of a cu
 (`exchange`), which name none. An `InstrumentKey` is the broker and the id
 that broker gives the instrument, so lots of instruments at different brokers never mix. `tickerOf`
 is a plain function so `TaxLots` itself never touches an `InstrumentDirectory` - the caller
-(`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. `allocations` and
-`transferCosts` are plain data for the same reason: see ["Spin-offs"](#spin-offs) and
-["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost). Quantities are decimals,
-since an instrument can trade in fractions of a unit.
+(`TaxServiceImpl`) resolves every instrument it sees to a ticker once, up front. `allocations`,
+`transferCosts` and `futures` are plain data for the same reason: see ["Spin-offs"](#spin-offs),
+["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost) and
+["Futures"](#futures). Quantities are decimals, since an instrument can trade in fractions of a
+unit.
 
 The ledger is one chronological fold over the operations of every instrument of the account, since
 a conversion or a spin-off moves lots from one instrument to another. Its state is the open lots of
@@ -66,6 +69,9 @@ a sale's cost basis has several when it consumes lots paid in different currenci
 | `buy` | `\|amount\| / quantity` in the operation's currency, **plus** that day's pro-rated fee shares for this instrument, each in the currency of its fee (see below) |
 | `security_in` | the cost entered for it, divided by its units, in the currency of that cost; else the operation's own `price` in the operation's currency, or nothing when the broker gives none - see ["Transfers in with an entered cost"](#transfers-in-with-an-entered-cost) |
 | `stock_dividend`, `reward` | the operation's own `price`, the market value per unit, in the operation's currency, or nothing when it gives none - see ["Stock dividends"](#stock-dividends) and ["Rewards"](#rewards) |
+
+No operation of an instrument in `futures` opens a lot, whatever its kind: see
+["Futures"](#futures).
 
 A lot's `quantity` is the operation's `quantity`, which is the **executed** units. A buy that was
 only partly filled opens a lot of the units that were filled, costed over those units: its `amount`
@@ -112,7 +118,8 @@ broker's own commission is charged per trade, so a day that mixes a buy and a se
 instrument (the only case this double-uses the fee pool) is rare; it is called out here rather than
 hidden. `security_in` never receives a fee share (there is no `amount`-derived cost for a fee to add
 to). A fee names the instrument it was charged on, so a fee with no instrument, such as a service
-charge on the account, is in no trade's cost.
+charge on the account, is in no trade's cost. Nor is a fee charged on a future: it joins no pool,
+and the futures result counts it instead.
 
 ### Consuming lots on a sell
 
@@ -315,6 +322,21 @@ takes the units out of the lots like a transfer out. A reward of cash names no i
 opens no lot, and its amount is income. Neither the Tinkoff nor the Interactive Brokers translation
 gives a reward.
 
+### Futures
+
+A futures contract has no lots. `TaxLots.fifo` leaves out every operation that names an instrument
+in `futures`, before it orders the operations and pools the fees, so a future opens no lot, consumes
+none, realizes no gain and leaves nothing unmatched, and its fees join no fee pool. The gain or loss
+of a contract is its variation margin, which `TaxReport` counts as the
+[`futuresResult`](#field-definitions). With an empty `futures` set, the default, every instrument is
+in the ledger as before.
+
+`TaxServiceImpl` takes the futures from the directory's record of each instrument it sees, the
+record it reads for the ticker already (`BrokerInstrument.isFuture`; see
+[`analytics.md`](analytics.md#futures)), and passes them to the ledger and to the report, for
+`annualReport` and for `openLots` alike. So `openLots` of a future's ticker is empty, and `/lots`
+replies that it has no open lots.
+
 ### Trades between coins and fees paid in a coin
 
 A broker that exchanges coins for coins, as Binance does, reaches the ledger through the kinds
@@ -367,13 +389,14 @@ final case class TaxConfig(baseCurrency: Currency = Currency("RUB"), progressive
                            lowerRate: BigDecimal = 0.13, upperRate: BigDecimal = 0.15,
                            longTermYears: Option[Int] = Some(3), fxTickers: Map[Currency, Ticker] = Map.empty)
 final case class AnnualTaxReport(year: Int, realizedGains: BigDecimal, exemptGains: Option[BigDecimal],
-                                 taxableGains: BigDecimal, dividendIncome: BigDecimal, couponIncome: BigDecimal,
-                                 rewardIncome: BigDecimal, taxesWithheld: BigDecimal, estimatedTax: BigDecimal,
-                                 unconverted: Int, currency: Currency)
+                                 futuresResult: BigDecimal, taxableGains: BigDecimal, dividendIncome: BigDecimal,
+                                 couponIncome: BigDecimal, rewardIncome: BigDecimal, taxesWithheld: BigDecimal,
+                                 estimatedTax: BigDecimal, unconverted: Int, currency: Currency)
 
 object TaxReport {
   def annual(year: Int, ledger: LotLedger, operations: List[AccountOperation],
-             fxRate: (Currency, LocalDate) => Option[BigDecimal], config: TaxConfig = TaxConfig()): AnnualTaxReport
+             fxRate: (Currency, LocalDate) => Option[BigDecimal], config: TaxConfig = TaxConfig(),
+             futures: Set[InstrumentKey] = Set.empty): AnnualTaxReport
   def isLongTerm(holdingDays: Long, config: TaxConfig): Boolean
 }
 ```
@@ -384,10 +407,11 @@ defaults.
 
 Pure. `operations` must be the same (or a superset of the) operations `ledger` was built from -
 `TaxReport.annual` uses it for what `ledger` alone cannot provide: the **dividend, coupon and
-reward income, and the withheld tax**. Dividends, coupons and taxes never open or close a lot, so
-they never appear in `ledger` at all, and the income of a `stock_dividend` or a `reward` appears
-there only as the cost of the lot it opened. All of them are scanned directly from `operations`,
-the executed ones of the year.
+reward income, the withheld tax, and the variation margin and fees of futures**. Dividends, coupons
+and taxes never open or close a lot, so they never appear in `ledger` at all, the income of a
+`stock_dividend` or a `reward` appears there only as the cost of the lot it opened, and a future has
+no lots (see ["Futures"](#futures)). All of them are scanned directly from `operations`, the
+executed ones of the year. `futures` names the instruments whose fees belong to the futures result.
 
 ### How a gain is converted
 
@@ -443,18 +467,25 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
    `holdingDays >= longTermYears * 365`) **and** itself positive after conversion - a long-held
    *loss* is not "exempt", it simply remains counted in `realizedGains` and reduces the taxable
    total below. `None` when `longTermYears` is.
-3. **`taxableGains`**: `max(0, realizedGains - exemptGains.getOrElse(0))`.
-4. **`dividendIncome`** / **`couponIncome`**: the `amount` of the year's `dividend` / `coupon`
+3. **`futuresResult`**: the year's executed `variation_margin` amounts plus the amounts of its
+   executed `fee`s that name an instrument in `futures`, each converted on its own day, so a loss is
+   negative. A margin counts whether or not it names its contract; a fee that names a share, or no
+   instrument at all, does not count. An amount with no rate is counted in `unconverted` and left
+   out.
+4. **`taxableGains`**: `max(0, realizedGains - exemptGains.getOrElse(0) + futuresResult)`. The
+   estimate sets the futures result against the gains in one base, so a loss on futures lowers the
+   taxable gains, to no less than zero; regimes that tax derivatives as a base of their own differ.
+5. **`dividendIncome`** / **`couponIncome`**: the `amount` of the year's `dividend` / `coupon`
    operations, converted and summed as-is (positive, following the same "amount is a signed
    payment" convention `PortfolioValuationServiceImpl` uses - income is a positive `amount`).
    `dividendIncome` also counts each `stock_dividend` of the year that has a `price`, at `price`
    times `quantity`, converted in the operation's currency on its date; one with no price counts
    nothing, and is not an unconverted amount.
-5. **`rewardIncome`**: the year's executed `reward`s, each converted in its own currency on its
+6. **`rewardIncome`**: the year's executed `reward`s, each converted in its own currency on its
    date: one with an instrument at `price` times `quantity` (counting nothing, and no unconverted
    amount, when it has no price), one without an instrument at its `amount`. Like the other income,
    it is shown for reference and is not in `estimatedTax`.
-6. **`taxesWithheld`**: **minus** the sum of the `amount` of the year's `tax` operations, converted.
+7. **`taxesWithheld`**: **minus** the sum of the `amount` of the year's `tax` operations, converted.
    Withholding is a negative `amount`, an outflow, so the figure reads as "how much was withheld",
    and a refund or a correction in the account's favour, a positive `amount`, **lowers** it: it is
    negative if the refunds of the year exceed what was withheld in it. The `tax` kind is every
@@ -464,18 +495,18 @@ base with no rate, and `AnnualTaxReport.currency` carries the configured base cu
    `_TAX_REPO_PROGRESSIVE`, `_TAX_REPO_HOLD`, `_TAX_REPO_REFUND`, `_TAX_REPO_HOLD_PROGRESSIVE`,
    `_TAX_REPO_REFUND_PROGRESSIVE`) and `_TAX_CORRECTION_COUPON`, the correction of tax withheld on
    coupons.
-7. **`estimatedTax`**: `config.lowerRate` applied to `taxableGains` up to `config.progressiveThreshold`,
+8. **`estimatedTax`**: `config.lowerRate` applied to `taxableGains` up to `config.progressiveThreshold`,
    `config.upperRate` above it - `taxableGains <= threshold ? taxableGains * lowerRate : threshold *
    lowerRate + (taxableGains - threshold) * upperRate`. **Decision**: this estimates tax on
-   `taxableGains` (realized capital gains, net of any long-term exemption) **only** - dividend, coupon
-   and reward income is shown for reference and is not folded into this estimate, since the
-   withholding on dividends and coupons is already reported separately in `taxesWithheld` (the
-   broker withholds dividend/coupon tax at source; re-estimating it here would double-count against
-   a figure the report already shows).
-8. **`unconverted`**: total count of individual amounts (realized gains - counted once per gain even
+   `taxableGains` (realized capital gains, net of any long-term exemption, with the futures result)
+   **only** - dividend, coupon and reward income is shown for reference and is not folded into this
+   estimate, since the withholding on dividends and coupons is already reported separately in
+   `taxesWithheld` (the broker withholds dividend/coupon tax at source; re-estimating it here would
+   double-count against a figure the report already shows).
+9. **`unconverted`**: total count of individual amounts (realized gains - counted once per gain even
    though it has several amounts to convert and a long-term one is also checked for `exemptGains`,
-   see above - dividends, coupons, rewards, tax operations, stock dividends) dropped from every sum
-   for lack of an `fxRate`.
+   see above - variation margins, futures fees, dividends, coupons, rewards, tax operations, stock
+   dividends) dropped from every sum for lack of an `fxRate`.
 
 ## `TaxService[F]` / `TaxServiceImpl`
 
@@ -504,12 +535,13 @@ method. Both also read the account's [spin-off allocations](#spin-offs) from `al
 [entered transfer costs](#transfers-in-with-an-entered-cost) from `transferCosts`, and build the
 ledger with them.
 
-Every instrument in the loaded operations is mapped to a ticker through
-`InstrumentDirectory.byKey`, once per distinct instrument per call; an instrument the directory
-does not know is left out of the ticker mapping, so it never matches a ticker in `openLots`. A
-ticker can have one instrument per board: `openLots` returns the open lots of every instrument that
-maps to it, concatenated in instrument order and then stably sorted by acquisition date, so the
-result is oldest first with same-day lots in instrument order.
+Every instrument in the loaded operations is looked up through `InstrumentDirectory.byKey`, once
+per distinct instrument per call. The record gives its ticker, and whether it is a future (see
+["Futures"](#futures)); an instrument the directory does not know is left out of the mapping, so it
+never matches a ticker in `openLots` and is not taken for a future. A ticker can have one instrument
+per board: `openLots` returns the open lots of every instrument that maps to it, concatenated in
+instrument order and then stably sorted by acquisition date, so the result is oldest first with
+same-day lots in instrument order.
 
 FX bars are loaded once per `annualReport` call, one `PriceHistoryStorage.bars` call per non-base
 currency actually present in the loaded operations or in the account's transfer costs (over the same

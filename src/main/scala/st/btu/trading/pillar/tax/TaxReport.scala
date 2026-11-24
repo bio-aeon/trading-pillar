@@ -8,10 +8,11 @@ import java.time.LocalDate
 
 /** Builds one year's [[AnnualTaxReport]] from a FIFO ledger plus the operations it was built from.
   * `operations` supplies what the ledger alone cannot: the dividend, coupon and withheld-tax
-  * amounts, which never open or close a lot, the cash received as rewards, and the market value of
-  * the shares received as stock dividends and of the units received as rewards, which is income as
-  * well as a new lot. This is an estimate for personal reference, not tax advice: it does not know
-  * about loss carry-forward, IIS deductions, or any rule beyond the ones implemented here.
+  * amounts, which never open or close a lot, the cash received as rewards, the market value of the
+  * shares received as stock dividends and of the units received as rewards, which is income as well
+  * as a new lot, and the variation margin and fees of futures, which have no lots. This is an
+  * estimate for personal reference, not tax advice: it does not know about loss carry-forward, IIS
+  * deductions, or any rule beyond the ones implemented here.
   */
 object TaxReport {
 
@@ -36,16 +37,23 @@ object TaxReport {
     * currency is converted in its own and taken off. A gain with an amount that cannot be converted
     * is left out and counted once in `unconverted`.
     *
+    * The year's variation margin and the fees charged on futures make the futures result, each
+    * converted on its day. It is set against the gains in one base, so a loss on futures lowers the
+    * taxable gains, to no less than zero.
+    *
     * @param fxRate
     *   approximates a currency's conversion rate on or before a date, e.g. from the latest stored
     *   FX close
+    * @param futures
+    *   the instruments that are futures, whose fees count in the futures result
     */
   def annual(
     year: Int,
     ledger: LotLedger,
     operations: List[AccountOperation],
     fxRate: (Currency, LocalDate) => Option[BigDecimal],
-    config: TaxConfig = TaxConfig()
+    config: TaxConfig = TaxConfig(),
+    futures: Set[InstrumentKey] = Set.empty
   ): AnnualTaxReport = {
     val base = config.baseCurrency
 
@@ -79,10 +87,19 @@ object TaxReport {
         }
       }
     val exemptGains = config.longTermYears.as(exemptTotal)
-    val taxableGains = (realizedGains - exemptTotal).max(Zero)
 
     val yearOps =
       operations.filter(op => op.state == OperationState.Executed && op.occurredOn.getYear == year)
+    val margins =
+      sumConverted(yearOps.filter(_.kind == OperationKind.VariationMargin), convert, _.amount)
+    val futuresFees = sumConverted(
+      yearOps.filter(op => op.kind == OperationKind.Fee && op.instrument.exists(futures)),
+      convert,
+      _.amount
+    )
+    val futuresResult = margins.total + futuresFees.total
+    val taxableGains = (realizedGains - exemptTotal + futuresResult).max(Zero)
+
     val dividends =
       sumConverted(yearOps.filter(_.kind == OperationKind.Dividend), convert, _.amount)
     val stockDividends = sumConverted(
@@ -110,12 +127,13 @@ object TaxReport {
     val unconverted =
       gainsUnconverted + dividends.unconverted + stockDividends.unconverted +
         coupons.unconverted + unitRewards.unconverted + cashRewards.unconverted +
-        withheld.unconverted
+        withheld.unconverted + margins.unconverted + futuresFees.unconverted
 
     AnnualTaxReport(
       year,
       realizedGains,
       exemptGains,
+      futuresResult,
       taxableGains,
       dividends.total + stockDividends.total,
       coupons.total,

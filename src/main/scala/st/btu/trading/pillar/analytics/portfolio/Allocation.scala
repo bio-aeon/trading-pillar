@@ -5,7 +5,8 @@ import io.circe.generic.semiauto.deriveCodec
 
 /** Cash is reported separately via `cashWeight`, never folded into the three breakdowns below. A
   * position with no weight contributes to none of them, since its share of total is unknown rather
-  * than zero.
+  * than zero. A position of zero weight, such as a futures contract, adds nothing either, so a
+  * type, currency or exchange that only such positions have is not a key.
   *
   * Each breakdown is keyed by the text of the field it groups by, `unknown` for a position without
   * that field; `byCurrency` is keyed by `Currency.value`.
@@ -28,10 +29,10 @@ object Allocation {
   implicit val codecForAllocation: Codec.AsObject[Allocation] = deriveCodec
 
   /** Groups `snapshot`'s priced positions into instrument-type, currency and exchange weight
-    * breakdowns, each summing to at most `1 - cashWeight`.
+    * breakdowns, each summing to at most `1 - cashWeight`. A position of zero weight is left out.
     */
   def of(snapshot: PositionSnapshot): Allocation = {
-    val weighted = snapshot.positions.flatMap(p => p.weight.map(p -> _))
+    val weighted = snapshot.positions.flatMap(p => p.weight.filter(_.signum != 0).map(p -> _))
     Allocation(
       byInstrumentType = grouped(weighted)(_.instrumentType),
       byCurrency = grouped(weighted)(_.currency.map(_.value)),

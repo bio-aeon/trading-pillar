@@ -19,9 +19,19 @@ class TaxHandlerSpec extends Specification with CatsEffect {
   private def report(
     year: Int,
     unconverted: Int = 0,
-    exemptGains: Option[BigDecimal] = Some(BigDecimal(0))
+    exemptGains: Option[BigDecimal] = Some(BigDecimal(0)),
+    futuresResult: BigDecimal = BigDecimal(0)
   ) =
-    AnnualTaxReport(year, 600, exemptGains, 600, 50, 20, 7, 5, 78, unconverted, rub)
+    AnnualTaxReport(year, 600, exemptGains, futuresResult, 600, 50, 20, 7, 5, 78, unconverted, rub)
+
+  private def replyTo(year: Int, taxReport: AnnualTaxReport): IO[List[String]] =
+    for {
+      tgGateway <- Fakes.tgGateway()
+      taxService <- TaxFakes.taxService(annualReports = Map((accountId, year) -> taxReport))
+      handler = new TaxHandler[IO](tgGateway, taxService, accountId)
+      _ <- handler.handle(chatId, List(year.toString))
+      messages <- tgGateway.sentMessages
+    } yield messages.head.message.split("\n").toList
 
   "TaxHandler" >> {
     "handle" >> {
@@ -62,6 +72,20 @@ class TaxHandlerSpec extends Specification with CatsEffect {
           .dropWhile(!_.startsWith("Coupon income"))
           .take(3) must_==
           List("Coupon income: 20.00", "Reward income: 7.00", "Taxes withheld: 5.00")
+      }
+
+      "shows the futures result between the long-term line and the taxable gains" >> {
+        replyTo(2024, report(2024, futuresResult = BigDecimal(1090))).map(
+          _.dropWhile(!_.startsWith("Long-term exempt")).take(3) must_==
+            List("Long-term exempt: 0.00", "Futures result: 1090.00", "Taxable gains: 600.00")
+        )
+      }
+
+      "shows the futures result after the realized gains under a regime without a long-term exemption" >> {
+        replyTo(2024, report(2024, exemptGains = None, futuresResult = BigDecimal(1090))).map(
+          _.dropWhile(!_.startsWith("Realized gains")).take(3) must_==
+            List("Realized gains: 600.00", "Futures result: 1090.00", "Taxable gains: 600.00")
+        )
       }
 
       "leaves out the long-term line under a regime without a long-term exemption" >> {

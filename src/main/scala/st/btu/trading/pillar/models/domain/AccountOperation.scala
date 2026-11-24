@@ -20,12 +20,14 @@ import java.time.{Instant, LocalDate, ZoneOffset}
   *   the signed change of the position in executed units: positive for buy, security_in, a
   *   spin-off's new instrument, a stock dividend and a reward of units, negative for sell and
   *   security_out, of either sign for a split and for a conversion leg, and zero for every other
-  *   kind, a spin-off's parent marker included
+  *   kind, a spin-off's parent marker and a variation margin included
   * @param price
   *   the price per unit in `currency`, where the broker gives one; for a conversion leg, a stock
-  *   dividend and a reward of units, the market value per unit
+  *   dividend and a reward of units, the market value per unit; for a futures trade, the contract's
+  *   quotation as the broker gives it
   * @param amount
-  *   the signed change of cash in `currency`; a tax refund is positive
+  *   the signed change of cash in `currency`; a tax refund is positive, a variation margin credited
+  *   is positive and one debited negative, and the buy or sell of a futures contract has none
   * @param brokerType
   *   the broker's own name for the operation, for display
   * @param group

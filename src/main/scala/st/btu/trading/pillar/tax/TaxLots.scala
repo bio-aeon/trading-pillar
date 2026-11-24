@@ -23,6 +23,9 @@ import scala.math.BigDecimal.RoundingMode
   * conversion moves the lots of what was given up to what was received, a spin-off gives the new
   * instrument lots out of the parent's, and a stock dividend opens a lot at its market value. Lots
   * keep their acquisition dates through all of them.
+  *
+  * A future has no lots: its operations are left out, since its gain or loss is the variation
+  * margin that `TaxReport` counts.
   */
 object TaxLots {
 
@@ -45,18 +48,22 @@ object TaxLots {
     *   what the owner paid for the units of a transfer in, by the operation's `ref`: its lot costs
     *   that, in the currency of the cost, and is acquired on the day the cost gives where it gives
     *   one; a transfer in with none costs its own price
+    * @param futures
+    *   the instruments that are futures: their operations open, consume and carry no lot, realize
+    *   no gain and leave nothing unmatched, and their fees join no fee pool
     */
   def fifo(
     operations: List[AccountOperation],
     tickerOf: InstrumentKey => Option[Ticker],
     allocations: List[CorporateActionAllocation] = Nil,
-    transferCosts: List[TransferCost] = Nil
+    transferCosts: List[TransferCost] = Nil,
+    futures: Set[InstrumentKey] = Set.empty
   ): LotLedger = {
     // One chronological order for the whole account: the operation's instant, then its ref as a
     // tiebreaker for same-instant operations.
     val ordered = operations
       .filter(_.state == OperationState.Executed)
-      .flatMap(op => op.instrument.map(OnInstrument(_, op)))
+      .flatMap(op => op.instrument.filterNot(futures).map(OnInstrument(_, op)))
       .sortBy(entry => (entry.operation.occurredAt, entry.operation.ref.value))
 
     val fold =
@@ -304,7 +311,7 @@ object TaxLots {
           together(state, date, List(entry))
         case OperationKind.Deposit | OperationKind.Withdrawal | OperationKind.Dividend |
             OperationKind.Coupon | OperationKind.Interest | OperationKind.Fee | OperationKind.Tax |
-            OperationKind.Exchange | OperationKind.Other =>
+            OperationKind.Exchange | OperationKind.VariationMargin | OperationKind.Other =>
           state
       }
     }

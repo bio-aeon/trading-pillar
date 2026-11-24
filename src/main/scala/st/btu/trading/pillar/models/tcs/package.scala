@@ -6,6 +6,11 @@ import cats.Show
   */
 package object tcs {
 
+  /** Tinkoff's instrument type of a futures contract, in an operation and in an instrument record
+    * alike.
+    */
+  private[pillar] val FuturesInstrumentType: String = "futures"
+
   /** A Tinkoff Invest API token, the secret sent as the bearer token of every gRPC call. */
   opaque type Token = String
 

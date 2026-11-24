@@ -10,8 +10,11 @@ import st.btu.trading.pillar.models.domain.Currency
   *   the subset of `realizedGains` that is both long-term and itself positive, or `None` under a
   *   regime without a long-term exemption; a long-held loss stays in `realizedGains`, it is not
   *   "exempt"
+  * @param futuresResult
+  *   the year's variation margin plus the fees charged on futures, each converted on its day: a
+  *   loss is negative
   * @param taxableGains
-  *   `realizedGains` less `exemptGains`, never below 0
+  *   `realizedGains` less `exemptGains` plus `futuresResult`, never below 0
   * @param dividendIncome
   *   the year's dividends, and the market value of the shares received as stock dividends, which
   *   the broker reports as a price per unit
@@ -26,13 +29,15 @@ import st.btu.trading.pillar.models.domain.Currency
   *   the configured progressive rate applied to `taxableGains` only; dividend, coupon and reward
   *   income is shown for reference, not re-estimated here
   * @param unconverted
-  *   how many individual amounts (gains, dividends, stock dividends, coupons, rewards, tax
-  *   operations) could not be converted into `currency` and were excluded from every sum above
+  *   how many individual amounts (gains, variation margins and futures fees, dividends, stock
+  *   dividends, coupons, rewards, tax operations) could not be converted into `currency` and were
+  *   excluded from every sum above
   */
 final case class AnnualTaxReport(
   year: Int,
   realizedGains: BigDecimal,
   exemptGains: Option[BigDecimal],
+  futuresResult: BigDecimal,
   taxableGains: BigDecimal,
   dividendIncome: BigDecimal,
   couponIncome: BigDecimal,
