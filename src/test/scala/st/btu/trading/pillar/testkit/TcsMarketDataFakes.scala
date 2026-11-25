@@ -14,12 +14,13 @@ object TcsMarketDataFakes {
   private def unimplemented[A](name: String): IO[A] =
     IO.raiseError(new NotImplementedError(s"$name is not used by the TcsMarketDataSource fakes"))
 
-  // --- InstrumentsServiceFs2Grpc (only getInstrumentBy / getDividends are exercised by
-  // TcsMarketDataSource) ---
+  // --- InstrumentsServiceFs2Grpc (getInstrumentBy / getDividends are exercised by
+  // TcsMarketDataSource, futureBy by the instrument directory) ---
 
   trait FakeInstrumentsService extends InstrumentsServiceFs2Grpc[IO, Unit] {
     def getInstrumentByCalls: IO[List[InstrumentRequest]]
     def getDividendsCalls: IO[List[GetDividendsRequest]]
+    def futureByCalls: IO[List[InstrumentRequest]]
   }
 
   // A ticker as looked up on one board; the key of byBoard.
@@ -27,16 +28,20 @@ object TcsMarketDataFakes {
 
   // A ticker lookup is answered from byBoard, keyed by the request's class code and ticker, and
   // otherwise from byTicker, keyed by the ticker alone; a FIGI lookup is answered from byFigi.
-  // Dividends are keyed by GetDividendsRequest.instrumentId, the FIGI getInstrumentBy resolved.
+  // Dividends are keyed by GetDividendsRequest.instrumentId, the FIGI getInstrumentBy resolved. A
+  // futureBy lookup is answered from futuresByFigi, keyed by FIGI; an entry that raises an error or
+  // never completes makes the lookup fail or hang, and a FIGI without an entry fails the fake.
   def instrumentsService(
     byTicker: Map[String, IO[InstrumentResponse]] = Map.empty,
     dividends: Map[String, IO[GetDividendsResponse]] = Map.empty,
     byBoard: Map[OnBoard, IO[InstrumentResponse]] = Map.empty,
-    byFigi: Map[String, IO[InstrumentResponse]] = Map.empty
+    byFigi: Map[String, IO[InstrumentResponse]] = Map.empty,
+    futuresByFigi: Map[String, IO[FutureResponse]] = Map.empty
   ): IO[FakeInstrumentsService] =
     for {
       callsRef <- Ref.of[IO, List[InstrumentRequest]](List.empty)
       dividendsCallsRef <- Ref.of[IO, List[GetDividendsRequest]](List.empty)
+      futureByCallsRef <- Ref.of[IO, List[InstrumentRequest]](List.empty)
     } yield new FakeInstrumentsService {
       def getInstrumentBy(request: InstrumentRequest, ctx: Unit): IO[InstrumentResponse] = {
         val response = request.idType match {
@@ -82,7 +87,13 @@ object TcsMarketDataFakes {
       def etfs(request: InstrumentsRequest, ctx: Unit): IO[EtfsResponse] =
         unimplemented("etfs")
       def futureBy(request: InstrumentRequest, ctx: Unit): IO[FutureResponse] =
-        unimplemented("futureBy")
+        futureByCallsRef.update(_ :+ request) >> futuresByFigi.getOrElse(
+          request.id,
+          IO.raiseError(new NoSuchElementException(s"no fake future for ${request.id}"))
+        )
+
+      def futureByCalls: IO[List[InstrumentRequest]] = futureByCallsRef.get
+
       def futures(request: InstrumentsRequest, ctx: Unit): IO[FuturesResponse] =
         unimplemented("futures")
       def optionBy(request: InstrumentRequest, ctx: Unit): IO[OptionResponse] =

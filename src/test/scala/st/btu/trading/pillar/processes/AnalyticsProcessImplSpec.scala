@@ -50,7 +50,8 @@ class AnalyticsProcessImplSpec extends Specification with CatsEffect {
       price = None,
       value = None,
       weight = Some(weight),
-      dayReturn = None
+      dayReturn = None,
+      future = None
     )
 
   // A valuation point with no cash flow on its day.

@@ -21,7 +21,7 @@ import st.btu.trading.pillar.tax.TransferCost
 import tofu.logging.{Logging, Logs}
 import tofu.syntax.logging.*
 
-import java.time.ZonedDateTime
+import java.time.{LocalDate, ZonedDateTime}
 
 final class HeldInstrumentsServiceImpl[F[_]: Logging] private (
   accounts: AccountStorage[F],
@@ -43,22 +43,71 @@ final class HeldInstrumentsServiceImpl[F[_]: Logging] private (
       _ <- stored.traverse_(addForAccount(_, now))
     } yield ()
 
-  private def addForAccount(account: Account, now: ZonedDateTime): F[Unit] =
+  private def addForAccount(account: Account, now: ZonedDateTime): F[Unit] = {
+    val today = now.toLocalDate
     for {
       history <- AccountHoldings.operationsBefore(operations, account.id, now.toInstant)
-      instruments <- Holdings
+      held <- Holdings
         .of(history)
         .keys
         .toList
         .sorted
         .traverse(lookUp(account.id, _))
         .map(_.flatten)
+      // A contract that has expired is no longer held, whatever the operations say.
+      instruments = held.filterNot(_.expiredOn(today))
+      _ <- removeExpiredFutures(account.id, history, held, instruments, today)
       costs <- transferCosts.byAccount(account.id)
       listed <- watchlist.byAccount(account.id).map(_.map(_.ticker).toSet)
       // Two instruments can share a ticker, such as one listed on two boards: the first stands.
       _ <- instruments.distinctBy(_.ticker).traverse_(watch(account.id, listed, now, _))
       _ <- addRateTickers(account.id, currenciesOf(history, instruments, costs), now)
     } yield ()
+  }
+
+  // Takes off the watchlist the entries this step added for a future the account traded and that
+  // has expired, held or not. The traded instruments are looked up only when an entry with the held
+  // note names no instrument watched this cycle; `held` are the instruments already looked up.
+  private def removeExpiredFutures(
+    accountId: AccountId,
+    history: Iterable[AccountOperation],
+    held: List[BrokerInstrument],
+    watched: List[BrokerInstrument],
+    today: LocalDate
+  ): F[Unit] =
+    for {
+      entries <- watchlist.byAccount(accountId)
+      watchedTickers = watched.map(_.ticker).toSet
+      unwatched = entries.filter(entry =>
+        entry.note.contains(HeldNote) && !watchedTickers(entry.ticker)
+      )
+      _ <- F.whenA(unwatched.nonEmpty) {
+        expiredFutureTickers(accountId, history, held, today).flatMap { expired =>
+          unwatched.filter(entry => expired(entry.ticker)).traverse_ { entry =>
+            watchlist.remove(accountId, entry.ticker) >>
+              info"Removed expired future ${entry.ticker} from the watchlist of account ${accountId.value}"
+          }
+        }
+      }
+    } yield ()
+
+  private def expiredFutureTickers(
+    accountId: AccountId,
+    history: Iterable[AccountOperation],
+    held: List[BrokerInstrument],
+    today: LocalDate
+  ): F[Set[Ticker]] = {
+    val known = held.map(instrument => instrument.instrument -> instrument).toMap
+    val traded = history.iterator
+      .filter(op => op.state == OperationState.Executed && op.quantity.signum != 0)
+      .flatMap(_.instrument)
+      .toList
+      .distinct
+      .sorted
+    traded
+      .traverse(key => known.get(key).fold(lookUp(accountId, key))(found => F.pure(Some(found))))
+      .map(_.flatten.filter(_.expiredOn(today)).map(_.ticker).toSet)
+  }
 
   // A failed lookup is logged and gives no instrument, so that it does not stop the others.
   private def lookUp(accountId: AccountId, key: InstrumentKey): F[Option[BrokerInstrument]] =
@@ -155,7 +204,9 @@ object HeldInstrumentsServiceImpl {
     * from their executed operations in `operations`, resolves them through `directory`, and writes
     * to `watchlist` and `tickerSources`. It gives a ticker a source setting only for a source that
     * `sources` serves. It also puts on each watchlist the rate tickers that `rates` describes the
-    * account's currencies need, among them the currencies of the costs in `transferCosts`.
+    * account's currencies need, among them the currencies of the costs in `transferCosts`. A
+    * futures contract that has expired is not held: it is not watched, and the watchlist entry this
+    * service added for it is removed once the account has traded it.
     */
   def create[I[_]: Functor, F[_]: MonadThrow: Clock](
     accounts: AccountStorage[F],

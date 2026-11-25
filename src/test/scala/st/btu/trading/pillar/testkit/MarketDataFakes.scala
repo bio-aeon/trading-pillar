@@ -322,7 +322,9 @@ object MarketDataFakes {
     ticker: Ticker,
     currency: String = "RUB",
     classCode: String = "TQBR",
-    instrumentType: String = "share"
+    instrumentType: String = "share",
+    futureTerms: Option[FutureTerms] = None,
+    updatedAt: ZonedDateTime = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
   ): BrokerInstrument =
     BrokerInstrument(
       instrumentKey(instrumentId),
@@ -331,7 +333,8 @@ object MarketDataFakes {
       name = ticker.value,
       instrumentType = instrumentType,
       currency = Currency(currency),
-      updatedAt = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+      updatedAt = updatedAt,
+      futureTerms = futureTerms
     )
 
   def instrumentDirectory(known: List[BrokerInstrument] = List.empty): IO[InstrumentDirectory[IO]] =

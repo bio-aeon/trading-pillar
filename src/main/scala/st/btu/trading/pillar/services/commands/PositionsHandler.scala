@@ -5,6 +5,7 @@ import cats.effect.Clock
 import cats.syntax.flatMap.*
 import cats.syntax.functor.*
 import st.btu.trading.pillar.analytics.portfolio.{
+  FutureExposure,
   PortfolioValuationService,
   PositionSnapshot,
   PositionValue
@@ -33,8 +34,8 @@ final class PositionsHandler[F[_]: Monad: Clock](
       _ <- Replies.reply(tgGateway, chatId, format(snapshot))
     } yield ()
 
-  // Priced positions first, largest value first; unpriced ones (nothing to sort by) last, ordered
-  // by their own label for a stable reply.
+  // Priced positions first, largest value first, a future among them with its zero value; unpriced
+  // ones (nothing to sort by) last, ordered by their own label for a stable reply.
   private def format(snapshot: PositionSnapshot): String = {
     val (priced, unpriced) = snapshot.positions.partition(_.value.isDefined)
     val lines = priced.sortBy(p => -p.value.get).map(formatPosition) ++
@@ -44,6 +45,24 @@ final class PositionsHandler[F[_]: Monad: Clock](
   }
 
   private def formatPosition(p: PositionValue): String =
+    p.future match {
+      case Some(future) => formatFuture(p, future)
+      case None => formatHolding(p)
+    }
+
+  private def formatFuture(p: PositionValue, future: FutureExposure): String = {
+    val contracts =
+      s"${Replies.plain(p.quantity)} ${if (p.quantity.abs == 1) "contract" else "contracts"}"
+    future match {
+      case FutureExposure.Known(_, amount) =>
+        val price = p.price.fold("?")(Replies.plain)
+        s"${label(p)} $contracts @ $price, exposure ${Replies.scaled(amount)}"
+      case FutureExposure.Unpriced(_) => s"${label(p)} $contracts (exposure unknown)"
+      case FutureExposure.TermsUnknown => s"${label(p)} $contracts (terms unknown)"
+    }
+  }
+
+  private def formatHolding(p: PositionValue): String =
     p.value match {
       case Some(value) =>
         val price = p.price.fold("?")(Replies.price)

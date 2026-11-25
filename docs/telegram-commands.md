@@ -663,10 +663,19 @@ come first, largest `value` first; unpriced ones (no known close, no FX rate, or
 broker's instrument id when there's no ticker). A quantity is a decimal and prints as plain digits,
 without trailing zeros or an exponent: half a unit reads `0.5`. `price` is the instrument's own last
 known close in its own currency, unconverted; `value` and the trailing `Cash`/`Total` lines are all
-in the account's base currency. A futures contract is listed with its contracts and its last close
-and a value of `0.00`, since its gain or loss reaches the cash as variation margin (see
-[`analytics.md`](analytics.md#futures)). `No positions.` in place of the list when the snapshot has
-none.
+in the account's base currency. A futures contract has a value of zero, since its gain or loss
+reaches the cash as variation margin, so it sorts among the priced positions by that zero, and is
+listed with its contracts and its exposure in place of a value (see [`analytics.md`](analytics.md#futures)):
+
+```
+SFH7 2 contracts @ 95000, exposure 190000.00
+SFH7 2 contracts (exposure unknown)
+SFH7 2 contracts (terms unknown)
+```
+
+`@ 95000` is the last close in points, as the source quotes it, and `1 contract` is said for one.
+The exposure is unknown without a close or a rate, and the terms are unknown for a contract whose
+broker gave none. `No positions.` in place of the list when the snapshot has none.
 Single-account app, same as `/performance`: the handler is constructed with a fixed `AccountId`, not
 derived from the chat, and uses today's date (UTC).
 

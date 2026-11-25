@@ -405,7 +405,8 @@ trait BrokerInstrumentStorage[F[_]] {
 Broker reference data keyed by an `InstrumentKey`, the broker and the id that broker gives the
 instrument. Read and written by the library through `TcsInstrumentDirectory`, which answers a key
 from `find` when it can and otherwise fetches it from the broker and stores it with `upsert`, so an
-instrument the broker knows is fetched once - see
+instrument the broker knows is fetched once, except a futures contract, whose record the directory
+fetches again once a day and stores with `upsert` - see
 [`market-data.md`](market-data.md#instrument-directory-instrumentdirectory). Interactive Brokers
 has no lookup call: the statement sync writes the instruments each statement describes with
 `upsert`, and a `StoredInstrumentDirectory` answers from `find` alone. The reconciliation of an
@@ -419,6 +420,14 @@ relational implementation could use a table such as `broker_instruments` with a 
 broker (`broker`) and the instrument id (`instrument_id`), `ticker`, a nullable `class_code` (the
 board, for a broker that has one), `name`, `instrument_type`, `currency` and `updated_at`, and a
 unique key on `(broker, instrument_id)` for `upsert` to conflict on.
+
+`futureTerms` is stored in five nullable columns: `underlying`, `last_trade_date`, `expiration_date`,
+`price_step` and `price_step_value` (a fixed-point decimal with 18 places). They are all set or all
+`NULL`, each price is above zero when set and the underlying is not empty. Only a Tinkoff futures
+record has them, so the records of Interactive Brokers and of Binance carry none. A future without
+terms, because the broker gave none, is stored with the columns `NULL` and is still a future: the
+directory asks again once the record is a day old. `updated_at` is the time of the last answer from
+the broker, whether or not the answer changed the terms.
 
 ## `BacktestRunStorage[F[_]]`
 
@@ -547,7 +556,12 @@ A relational implementation could use two tables, and save in one transaction:
   `value` of the position's `Broker`) and `instrument_id`, which together are the position's
   `InstrumentKey`, `ticker`, `name`, `instrument_type`, `currency`, `exchange`, `source` (`yahoo` |
   `tinkoff` | `binance`, the `Source` values), `quantity`, `price`, `value`, `weight`, `day_return`
-  and a unique key on `(snapshot_id, instrument_broker, instrument_id)`. Every column but the two
+  and a unique key on `(snapshot_id, instrument_broker, instrument_id)`, and for a futures contract
+  a nullable `point_value` and `exposure` (the amount of `FutureExposure.Known`, in the snapshot's
+  currency, with the scale of `value`). `Known` stores both, `Unpriced` the point value alone and
+  `TermsUnknown` neither, so a stored future without terms reads back like a position that is no
+  future; a consumer that must tell them apart keeps the instrument type, which is `futures` for
+  either. Every column but the two
   that name the instrument and `quantity` is nullable: an instrument the directory does not know has
   no ticker, name, type, currency, exchange or source, and a position with no close or exchange
   rate has no price, value, weight or day return. `quantity` is a decimal wide enough for coins,

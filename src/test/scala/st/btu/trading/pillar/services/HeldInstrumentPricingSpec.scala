@@ -27,7 +27,8 @@ class HeldInstrumentPricingSpec extends Specification {
       ticker,
       "share",
       Currency("USD"),
-      ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+      ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC),
+      futureTerms = None
     )
 
   private val sber = instrument(Broker.Tinkoff, "SBER", Some("TQBR"))

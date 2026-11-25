@@ -38,4 +38,14 @@ package object market {
     implicit val show: Show[YahooSymbol] = Show.catsShowForString
     implicit val loggable: Loggable[YahooSymbol] = Loggable.stringValue
   }
+
+  /** The asset a futures contract is on, as its broker names it. */
+  opaque type Underlying = String
+
+  object Underlying {
+    def apply(value: String): Underlying = value
+    extension (underlying: Underlying) def value: String = underlying
+    implicit val show: Show[Underlying] = Show.catsShowForString
+    implicit val loggable: Loggable[Underlying] = Loggable.stringValue
+  }
 }

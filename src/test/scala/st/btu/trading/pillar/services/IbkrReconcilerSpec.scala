@@ -56,7 +56,8 @@ class IbkrReconcilerSpec extends Specification with CatsEffect {
       symbol,
       "STK",
       Currency("GBP"),
-      ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+      ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC),
+      futureTerms = None
     )
 
   private def reconcilerOver(

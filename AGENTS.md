@@ -42,7 +42,12 @@ contract is valued at zero, since the broker settles its gain or loss into cash 
 margin: `BrokerInstrument.isFuture` says which instruments are futures, the valuation counts the
 margin as cash and a return, the tax lots leave futures out, and `/tax` reports the year's margin
 less the fees charged on futures as the futures result, part of the taxable gains. At Tinkoff the
-buy or sell of a futures contract has an amount of zero, whatever payment the broker reports.
+buy or sell of a futures contract has an amount of zero, whatever payment the broker reports. A
+future's record also carries its `FutureTerms`, which only `TcsInstrumentDirectory` writes and
+refreshes once a day: the value of a point and the expiration date. A position shows its exposure
+as a `FutureExposure`, the day change counts a future's price move through the point value, and a
+contract that `BrokerInstrument.expiredOn` says has ended is neither a position of a snapshot nor a
+held instrument.
 `Source` is a closed set of data sources, so supporting another broker's data means changing the
 library.
 
@@ -79,7 +84,7 @@ Package root `st.btu.trading.pillar`:
 
 | Package | Contents |
 |---|---|
-| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument`, `MarketDataError`, `Prices`), `tg`, `tcs`, `ibkr` (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, `IbkrStatement`), `binance` (`BinanceAccount`, `ApiKey`, `SecretKey`, `BinanceRecord`, `BinanceSource`, `BinancePair`, `BinanceBalances`, `BinanceDailyBar`, `BinanceRecordError`) |
+| `models` | `Account`; `domain` (`Broker`, `AccountOperation` with its kinds and states, commands, Tinkoff operations and `OperationType`), `market` (`Ticker`, `Bar`, `Quote`, `Source`, `SourceSetting`, `BrokerInstrument` with its `FutureTerms`, `MarketDataError`, `Prices`), `tg`, `tcs`, `ibkr` (`IbkrAccount`, `FlexToken`, `IbkrStatementRow`, `IbkrSection`, `IbkrStatement`), `binance` (`BinanceAccount`, `ApiKey`, `SecretKey`, `BinanceRecord`, `BinanceSource`, `BinancePair`, `BinanceBalances`, `BinanceDailyBar`, `BinanceRecordError`) |
 | `gateways` | `TgGateway`, `CapturingTgGateway`, `MarketDataSource`, the `MarketDataSources` router, the `InstrumentDirectory` port, its `RoutingInstrumentDirectory` router and `StoredInstrumentDirectory` for a broker with no lookup, Interactive Brokers and Binance; adapters in `yahoo`, `tcs` (market data by board, instrument directory), `ibkr` (the Flex Web Service client, the statement parser), `binance` (the keyless `BinanceMarket` client and the keyed `BinanceApi` one over a shared transport, with their signing, pacing and errors, and `BinanceMarketDataSource`), `news`, `screener` |
 | `facades` | Tinkoff gRPC client (`TcsFacade`, `TcsGrpc`) |
 | `strategy` | `Strategy`, `ParameterizedStrategy`, `StrategyRegistry`, `BarHistory`, `indicators`; `backtest` (engine, metrics, sweeps, walk-forward); `reference` (example strategies only) |

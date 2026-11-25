@@ -286,23 +286,42 @@ nothing and counts the margin as cash:
   keeps the contracts as `quantity`, the last close as `price`, as the source quotes the contract,
   and the `dayReturn` of that close, with a `value` of zero and so a weight of zero. What the
   contract has gained or lost since the last settlement is left out, an approximation of the daily
-  valuation.
+  valuation. For a future the position's `currency` is the one of the broker's record, whatever
+  metadata is stored for its ticker, since the money value of a point is in it.
 - **Variation margin is cash and a return.** The kind `variation_margin` moves its `amount` into
   cash like any other operation, and is no external flow: `invested` and `cashFlow` do not move, and
   the performance figures count the margin as a return, as they count a dividend. A buy or sell of a
   contract moves no cash for its price, so its `amount` is zero, and the margin carries all of the
   contract's gain or loss.
-- **The day change counts the margin.** `PositionSnapshot.dayChange` adds the executed
-  `variation_margin` operations dated the snapshot's `date`, each converted at the rate on or before
-  that date and left out when its currency has none, to the price moves of the other positions. A
-  future's own position adds no move, since the margin is that move already. The margin counts
-  whether or not it names its contract, and for a contract sold during the day. A margin exists
-  only once the broker has booked it at a clearing, so a snapshot taken before the day's clearing
-  has none of that day's margin, while the day before's is dated the day before: its day change
-  leaves out the futures' move, though it shows the latest price move of every other position. A
-  consumer that keeps one snapshot a day sees the futures' move only in a snapshot taken after the
-  day's last clearing. An operation is dated by its UTC day, so a margin that Tinkoff times after
-  UTC midnight belongs to the next day's change. `dailySeries` has no day change and is unaffected.
+- **Terms and exposure.** A broker's record of a future can carry `FutureTerms`: the underlying,
+  the last trade and expiration dates, and the price step with the money it is worth, which makes
+  `pointValue`, the money one point of the price is worth, in the currency of the record. A
+  position's `PositionValue.future` is `Some` for every future and says what it controls:
+  `FutureExposure.Known(pointValue, amount)` with `amount` the contracts times the last close times
+  the point value, converted to the snapshot's currency at the latest rate on or before `date`;
+  `Unpriced(pointValue)` without a close or a rate for the record's currency; and `TermsUnknown`
+  when the record has no terms. The point value stays in the record's currency, like `price`. A
+  short position has negative contracts and a negative exposure. The exposure is not part of the
+  `value`, `total` or `weight`, which stay zero for a future.
+- **The day change counts a future like a share.** `PositionSnapshot.dayChange` adds, for a future,
+  the contracts times the move of the last close over the previous one times the point value,
+  converted at the rate the exposure used. A future without terms, or without a previous close, a
+  close or a rate, adds nothing. The variation margin is not in the day change: the margin reaches
+  `total` when the broker books it at a clearing, while the close moves all day, so the figures
+  would disagree. While futures are held, `total - dayChange` is therefore not the day before's
+  total. A contract sold during the day is not held at the snapshot, so its move that day is in the
+  cash its margin brought and not in the day change, as for a share sold during the day. On a roll
+  day, with one contract sold and the next bought, only the contract still held counts.
+  `dailySeries` has no day change and is unaffected.
+- **Expiry.** A future that `BrokerInstrument.expiredOn` says is past its expiration date is not a
+  position of a snapshot: `positionsAsOf` leaves it out, whatever operations the broker reported at
+  its end. `dailySeries` is unchanged, a future being worth zero either way. A cash-settled contract
+  that expired with no closing operation stays in [`Holdings`](#holdings), as Tinkoff's expiration
+  carries no quantity, so a reader of the broker's positions that is not `positionsAsOf` must leave
+  out the futures that have expired, as the valuation and the held instruments step do. `expiredOn`
+  is asked on three days that differ only around midnight: the snapshot's date in the valuation,
+  the UTC date in the held instruments step, and today in the exchange zone in the directory's
+  refresh.
 - **Allocation.** A weight of zero adds nothing to the [allocation](#positions-and-allocation), so a
   future's type, currency and exchange are keys only when another position has them, and allocation
   targets and rebalancing give futures no part.
@@ -323,7 +342,11 @@ Its variation margin is `OPERATION_TYPE_ACCRUING_VARMARGIN` when credited and
   own.
 - An expiration is kind `other` with a quantity and an `amount` of zero, so it closes no position.
   An open future is valued at zero and has no lots, so an expired contract still on the books
-  changes no figure and only shows among the positions.
+  changes no figure. The valuation leaves it out of the positions once its terms say it has expired
+  (see "Expiry" above).
+
+The terms come from `FutureBy`, fetched with the contract's record and asked again once a day (see
+[`market-data.md`](market-data.md#instrument-directory-instrumentdirectory)).
 
 The first sync of a real account confirms the points the translation rests on without having seen
 them:
@@ -334,16 +357,22 @@ them:
   reports the contract's value there;
 - that a broker fee charged on a contract names the contract's FIGI, which is how the
   [futures result](tax.md#futures) tells it from a fee on a share;
-- that a variation margin names its contract's FIGI. The day change and the futures result count a
-  margin either way, and only a breakdown per contract needs the FIGI;
+- that a variation margin names its contract's FIGI. The futures result counts a margin either way,
+  and only a breakdown per contract needs the FIGI;
 - the shape of an expiration, its quantity, price and payment, and whether it tells the direction of
   the position it ends;
-- the unit of a futures trade's price, points as expected, which reaches displays only.
+- the unit of a futures trade's price, points as expected, which the exposure and the day change
+  multiply by the point value;
+- that Tinkoff's contract dates read as the exchange's days in Moscow: the last trade and expiration
+  dates are timestamps, expected at the midnight of the day in UTC or in Moscow;
+- whether `FutureBy` answers for every contract `GetInstrumentBy` knows, an expired one included,
+  and whether `basic_asset` is ever empty.
 
 A fix to the translation after that sync needs no migration: the sync process translates every
-stored raw record again when it starts. The ticker of a contract the account no longer holds stays
-on the watchlist, and `/positions` lists an open future with its contracts, its price and a value
-of zero.
+stored raw record again when it starts. The ticker of a contract that was sold stays on the
+watchlist like any sold holding's, and the entry the held instruments step added for a contract that
+has expired is removed. `/positions` lists an open future with its contracts, its last close and its
+exposure.
 
 ### Storage, process and commands
 
@@ -439,7 +468,9 @@ day-by-day fold would produce for that date.
 final case class PositionValue(instrument: InstrumentKey, ticker: Option[Ticker], name: Option[String],
                                instrumentType: Option[String], currency: Option[Currency], exchange: Option[String],
                                source: Option[Source], quantity: BigDecimal, price: Option[BigDecimal],
-                               value: Option[BigDecimal], weight: Option[BigDecimal], dayReturn: Option[BigDecimal])
+                               value: Option[BigDecimal], weight: Option[BigDecimal], dayReturn: Option[BigDecimal],
+                               future: Option[FutureExposure])
+enum FutureExposure { case TermsUnknown; case Unpriced(pointValue: BigDecimal); case Known(pointValue: BigDecimal, amount: BigDecimal) }
 final case class PositionSnapshot(date: LocalDate, currency: Currency, positions: Vector[PositionValue],
                                   cash: BigDecimal, total: BigDecimal, dayChange: BigDecimal, unpriced: Int)
 ```
@@ -450,7 +481,8 @@ Rules, sharing a `valueOnePosition` per-instrument helper that `valuePositions` 
 1. **Positions**: every instrument with a nonzero net quantity as of `date` (the same accumulation
    `dailySeries` uses) gets one `PositionValue`, ordered by instrument: the `value` of its broker,
    then its id. A fully closed position (net quantity `0`) is omitted entirely, same as
-   `dailySeries` silently skips it. `quantity` is a decimal, so a fraction of a unit is a position.
+   `dailySeries` silently skips it, and so is a future that has expired by `date` (see
+   ["Futures"](#futures)). `quantity` is a decimal, so a fraction of a unit is a position.
 2. **Unmapped** (the directory does not know the instrument): `ticker`, `name`, `instrumentType`,
    `currency`, `exchange` and `source` are all `None`, and so are `price`/`value`/`weight`/
    `dayReturn`.
@@ -470,7 +502,7 @@ Rules, sharing a `valueOnePosition` per-instrument helper that `valuePositions` 
    base-currency instrument's `price` and per-share contribution to `value` coincide; a foreign
    one's don't - `value` is never simply `price * quantity` for those. A futures contract is the
    exception, with a `value` of zero whether or not a close or a rate is known, and so never
-   unpriced (see ["Futures"](#futures)).
+   unpriced, and with a `future` that says what it controls (see ["Futures"](#futures)).
 4. **Cash**: `cash` is `dailySeries`'s own per-date cash figure - the running sum of every executed
    operation's `amount`, per currency, converted to the base currency (`convertBucket`; an
    inconvertible non-base balance is silently dropped from the sum, same as `dailySeries.value`).
@@ -486,11 +518,9 @@ Rules, sharing a `valueOnePosition` per-instrument helper that `valuePositions` 
    `PositionSnapshot.dayChange` is the sum, over every position that has both a `value` and a
    `dayReturn`, of `quantity * (last close - previous close)`, converted to the base currency at
    the rate `value` used, the latest on or before `date`, so a currency move is not counted as a
-   price move, plus the executed `variation_margin` operations dated `date`, each converted at the
-   rate on or before `date` and left out when its currency has none. A futures contract adds no
-   move of its own: the margin is that move settled in cash (see ["Futures"](#futures)). It is `0`
-   when no position qualifies and no margin is dated `date`, and a position with a `dayReturn` but
-   no `value` (no exchange rate) adds nothing.
+   price move. A futures contract counts the same way with the money of a point in the factor, and
+   the variation margin is not in it (see ["Futures"](#futures)). It is `0` when no position
+   qualifies, and a position with a `dayReturn` but no `value` (no exchange rate) adds nothing.
 
 `analytics/portfolio/Allocation.scala` is a pure grouping of one snapshot's position weights:
 

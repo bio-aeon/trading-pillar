@@ -13,6 +13,10 @@ object Holdings {
     * of the executed operations that name the instrument. An instrument whose position nets to zero
     * is left out, so every quantity in the result is nonzero, and negative for a short position.
     * Operations that are not executed, and operations that name no instrument, change nothing.
+    *
+    * A cash-settled futures contract that expired with no closing operation stays in the result, as
+    * the broker's expiration carries no quantity. A reader of positions that must not show it
+    * leaves out the futures that `BrokerInstrument.expiredOn` says have expired.
     */
   def of(operations: Iterable[AccountOperation]): Map[InstrumentKey, BigDecimal] =
     after(Map.empty, operations)

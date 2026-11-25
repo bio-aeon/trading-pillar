@@ -11,7 +11,8 @@ import st.btu.trading.pillar.models.market.{Source, Ticker}
   * @param instrument
   *   the instrument as the account's broker knows it
   * @param currency
-  *   the currency the position is priced in
+  *   the currency the position is priced in; for a futures contract, the currency of the broker's
+  *   record, the one a point's value is in
   * @param source
   *   the source the position's ticker is configured to use, whose bars priced it
   * @param quantity
@@ -31,6 +32,8 @@ import st.btu.trading.pillar.models.market.{Source, Ticker}
   *   the last close over the close of the bar before it, minus 1, as a fraction (`0.02` is +2%), in
   *   the position's own `currency`; both closes are on or before the snapshot date, and the field
   *   is `None` without two of them or when the earlier one is not positive
+  * @param future
+  *   the exposure of a futures contract, `Some` for every future and `None` for any other position
   */
 final case class PositionValue(
   instrument: InstrumentKey,
@@ -44,5 +47,6 @@ final case class PositionValue(
   price: Option[BigDecimal],
   value: Option[BigDecimal],
   weight: Option[BigDecimal],
-  dayReturn: Option[BigDecimal]
+  dayReturn: Option[BigDecimal],
+  future: Option[FutureExposure]
 )

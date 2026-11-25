@@ -3,7 +3,7 @@ package st.btu.trading.pillar.services.commands
 import cats.effect.IO
 import cats.effect.testing.specs2.CatsEffect
 import org.specs2.mutable.Specification
-import st.btu.trading.pillar.analytics.portfolio.{PositionSnapshot, PositionValue}
+import st.btu.trading.pillar.analytics.portfolio.{FutureExposure, PositionSnapshot, PositionValue}
 import st.btu.trading.pillar.models.domain.{AccountId, Currency}
 import st.btu.trading.pillar.models.market.Ticker
 import st.btu.trading.pillar.models.tg.ChatId
@@ -39,8 +39,34 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
       price = price,
       value = value,
       weight = weight,
-      dayReturn = None
+      dayReturn = None,
+      future = None
     )
+
+  // A futures contract, worth zero whatever it controls.
+  private def contract(quantity: BigDecimal, exposure: FutureExposure): PositionValue =
+    position("FUT1", Some("SFH7"), quantity, Some(BigDecimal(95000)), Some(BigDecimal(0)), None)
+      .copy(instrumentType = Some("futures"), future = Some(exposure))
+
+  private def replyFor(positions: PositionValue*): IO[String] = {
+    val snapshot = PositionSnapshot(
+      today,
+      rub,
+      positions.toVector,
+      cash = BigDecimal(0),
+      total = BigDecimal(0),
+      dayChange = BigDecimal(0),
+      unpriced = 0
+    )
+    for {
+      tgGateway <- Fakes.tgGateway()
+      valuations <- AnalyticsFakes.portfolioValuationService(positionSnapshots =
+        Map(accountId -> IO.pure(snapshot))
+      )
+      _ <- new PositionsHandler[IO](tgGateway, valuations, accountId).handle(chatId, Nil)
+      messages <- tgGateway.sentMessages
+    } yield messages.head.message
+  }
 
   "PositionsHandler" >> {
     "handle" >> {
@@ -194,6 +220,34 @@ class PositionsHandlerSpec extends Specification with CatsEffect {
           _ <- handler.handle(chatId, Nil)
           messages <- tgGateway.sentMessages
         } yield messages.head.message must contain("No positions.")
+      }
+
+      "futures" >> {
+
+        "shows the contracts, the last close and the exposure of a priced one" >> {
+          replyFor(contract(2, FutureExposure.Known(79, BigDecimal(190000))))
+            .map(_ must contain("SFH7 2 contracts @ 95000, exposure 190000.00"))
+        }
+
+        "says contract for a single one" >> {
+          replyFor(contract(1, FutureExposure.Known(79, BigDecimal(95000))))
+            .map(_ must contain("SFH7 1 contract @ 95000, exposure 95000.00"))
+        }
+
+        "shows a short position with negative contracts and exposure" >> {
+          replyFor(contract(-2, FutureExposure.Known(79, BigDecimal(-190000))))
+            .map(_ must contain("SFH7 -2 contracts @ 95000, exposure -190000.00"))
+        }
+
+        "says the exposure is unknown when there is no close or rate" >> {
+          replyFor(contract(2, FutureExposure.Unpriced(79)))
+            .map(_ must contain("SFH7 2 contracts (exposure unknown)"))
+        }
+
+        "says the terms are unknown for a contract without them" >> {
+          replyFor(contract(2, FutureExposure.TermsUnknown))
+            .map(_ must contain("SFH7 2 contracts (terms unknown)"))
+        }
       }
     }
   }

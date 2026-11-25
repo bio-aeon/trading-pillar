@@ -59,7 +59,8 @@ class IbkrInstrumentsSpec extends Specification {
       "VODAFONE GROUP PLC",
       "STK",
       Currency(currency),
-      updatedAt
+      updatedAt,
+      futureTerms = None
     )
 
   "IbkrInstruments" >> {

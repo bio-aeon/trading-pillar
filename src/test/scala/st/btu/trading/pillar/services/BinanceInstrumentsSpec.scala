@@ -67,7 +67,8 @@ class BinanceInstrumentsSpec extends Specification {
             "Bitcoin",
             "crypto",
             Currency("USDC"),
-            updatedAt
+            updatedAt,
+            futureTerms = None
           )
         )
       }

@@ -22,9 +22,46 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
   private val usdOnMoex = Ticker("USD000UTSTOM")
   private val sfh7 = Ticker("SFH7")
 
-  // A futures contract as Tinkoff's directory records it.
-  private val contract =
-    brokerInstrument("FUT1", sfh7, classCode = "SPBFUT", instrumentType = "futures")
+  private val sfm7 = Ticker("SFM7")
+  private val expirationDay = LocalDate.of(2027, 3, 18)
+
+  // A price step of 0.01 worth 0.79 roubles, so a point is worth 79.
+  private val pointOf79 =
+    FutureTerms(
+      Underlying("SBER"),
+      expirationDay,
+      expirationDay,
+      BigDecimal("0.01"),
+      BigDecimal("0.79")
+    )
+
+  // A step of 10 worth 16.9, so a point is worth 1.69.
+  private val pointOf1p69 =
+    FutureTerms(
+      Underlying("SBER"),
+      expirationDay,
+      expirationDay,
+      BigDecimal(10),
+      BigDecimal("16.9")
+    )
+
+  // A futures contract as Tinkoff's directory records it, with the terms it was fetched with.
+  private def future(
+    id: String,
+    ticker: Ticker,
+    terms: Option[FutureTerms] = Some(pointOf79),
+    currency: String = "RUB"
+  ): BrokerInstrument =
+    brokerInstrument(
+      id,
+      ticker,
+      currency = currency,
+      classCode = "SPBFUT",
+      instrumentType = "futures",
+      futureTerms = terms
+    )
+
+  private val contract = future("FUT1", sfh7)
 
   private def at(date: LocalDate): Instant = date.atStartOfDay(ZoneOffset.UTC).toInstant
 
@@ -1208,7 +1245,7 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
 
         "variation margin" >> {
 
-          "adds the margin dated the day, and neither the margin of the day before nor the contracts' own move" >> {
+          "adds nothing, while the contracts' own move counts like a share's" >> {
             val ops = List(
               deposit(d1, 100000),
               buy(d1, "FUT1", quantity = 2, cost = 0),
@@ -1217,19 +1254,17 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
               margin(d0, 1500),
               margin(d0, -400)
             )
-            // The share moves from 50 to 80 and the contracts from 90000 to 99000, which would add
-            // 2 * 9000 if their own move counted.
             val bars =
-              List(bar(aaa, d1, 50), bar(aaa, d0, 80), bar(sfh7, d1, 90000), bar(sfh7, d0, 99000))
+              List(bar(aaa, d1, 50), bar(aaa, d0, 80), bar(sfh7, d1, 640), bar(sfh7, d0, 650))
             for {
               service <- buildService(ops, List(brokerInstrument("F1", aaa), contract), bars = bars)
               snapshot <- service.positionsAsOf(accountId, d0)
             } yield
-            // 10 * (80 - 50) = 300 for the share, and 1500 - 400 = 1100 of margin
-            snapshot.dayChange must_== BigDecimal(1400)
+            // 10 * (80 - 50) = 300 for the share and 2 * (650 - 640) * 79 = 1580 for the contracts
+            snapshot.dayChange must_== BigDecimal(1880)
           }
 
-          "adds the margin of a contract sold during the day" >> {
+          "adds nothing for a contract sold during the day" >> {
             val ops = List(
               deposit(d1, 100000),
               buy(d1, "FUT1", quantity = 2, cost = 0),
@@ -1241,33 +1276,217 @@ class PortfolioValuationServiceImplSpec extends Specification with CatsEffect {
               snapshot <- service.positionsAsOf(accountId, d0)
             } yield {
               snapshot.positions must beEmpty
-              snapshot.dayChange must_== BigDecimal(700)
+              snapshot.dayChange must_== BigDecimal(0)
             }
           }
 
-          "adds a margin that names no contract" >> {
+          "adds nothing when it names no contract" >> {
             val ops = List(deposit(d1, 100000), margin(d0, 250, instrument = None))
-            for {
-              service <- buildService(ops)
-              snapshot <- service.positionsAsOf(accountId, d0)
-            } yield snapshot.dayChange must_== BigDecimal(250)
-          }
-
-          "converts a margin in another currency at the rate of the day" >> {
-            val ops = List(deposit(d1, 100000), margin(d0, 10, currency = "USD"))
-            for {
-              service <- buildService(ops, bars = List(bar(usdRub, d1, 80), bar(usdRub, d0, 90)))
-              snapshot <- service.positionsAsOf(accountId, d0)
-            } yield snapshot.dayChange must_== BigDecimal(900) // 10 dollars at 90, not at 80
-          }
-
-          "leaves out a margin whose currency has no exchange rate" >> {
-            val ops = List(deposit(d1, 100000), margin(d0, 10, currency = "USD"))
             for {
               service <- buildService(ops)
               snapshot <- service.positionsAsOf(accountId, d0)
             } yield snapshot.dayChange must_== BigDecimal(0)
           }
+
+          "adds nothing in another currency either" >> {
+            val ops = List(deposit(d1, 100000), margin(d0, 10, currency = "USD"))
+            for {
+              service <- buildService(ops, bars = List(bar(usdRub, d1, 80), bar(usdRub, d0, 90)))
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield snapshot.dayChange must_== BigDecimal(0)
+          }
+        }
+
+        "a future" >> {
+
+          // Two contracts bought at no cash for their price, quoted 640 and then 650.
+          val held = List(deposit(d1, 100000), buy(d1, "FUT1", quantity = 2, cost = 0))
+          val closes = List(bar(sfh7, d1, 640), bar(sfh7, d0, 650))
+
+          def dayChangeOf(
+            ops: List[AccountOperation],
+            directory: List[BrokerInstrument],
+            bars: List[Bar]
+          ): IO[BigDecimal] =
+            for {
+              service <- buildService(ops, directory, bars = bars)
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield snapshot.dayChange
+
+          "is the contracts times the move of the close times the money of a point" >> {
+            dayChangeOf(held, List(contract), closes).map(_ must_== BigDecimal(1580)) // 2 * 10 * 79
+          }
+
+          "is negative for a short position" >> {
+            val short = List(deposit(d1, 100000), sell(d1, "FUT1", quantity = 2, proceeds = 0))
+            // A step of 10 worth 16.9 makes a point worth 1.69.
+            dayChangeOf(short, List(future("FUT1", sfh7, Some(pointOf1p69))), closes)
+              .map(_ must_== BigDecimal("-33.80")) // -2 * 10 * 1.69
+          }
+
+          "is converted at the rate of the exposure, for a contract priced in dollars" >> {
+            val rates = List(bar(usdRub, d1, 80), bar(usdRub, d0, 90))
+            dayChangeOf(
+              held,
+              List(future("FUT1", sfh7, Some(pointOf1p69), currency = "USD")),
+              closes ++ rates
+            ).map(_ must_== BigDecimal(3042)) // 2 * 10 * 1.69 dollars at 90
+          }
+
+          "is not counted without a previous close, while the exposure is known" >> {
+            for {
+              service <- buildService(held, List(contract), bars = List(bar(sfh7, d0, 650)))
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield {
+              snapshot.dayChange must_== BigDecimal(0)
+              snapshot.positions.map(_.future) must_==
+                Vector(Some(FutureExposure.Known(79, BigDecimal(102700))))
+            }
+          }
+
+          "is not counted for a contract without terms" >> {
+            dayChangeOf(held, List(future("FUT1", sfh7, terms = None)), closes)
+              .map(_ must_== BigDecimal(0))
+          }
+
+          "is not counted for a contract in a currency with no rate" >> {
+            dayChangeOf(
+              held,
+              List(future("FUT1", sfh7, Some(pointOf1p69), currency = "USD")),
+              closes
+            ).map(_ must_== BigDecimal(0))
+          }
+
+          "counts only the new contract on the day a contract is rolled" >> {
+            val rolled = List(
+              deposit(d1, 100000),
+              buy(d1, "FUT1", quantity = 2, cost = 0),
+              sell(d0, "FUT1", quantity = 2, proceeds = 0),
+              buy(d0, "FUT2", quantity = 2, cost = 0)
+            )
+            val bars = closes ++ List(bar(sfm7, d1, 640), bar(sfm7, d0, 650))
+            for {
+              service <- buildService(rolled, List(contract, future("FUT2", sfm7)), bars = bars)
+              snapshot <- service.positionsAsOf(accountId, d0)
+            } yield {
+              snapshot.positions.map(_.ticker) must_== Vector(Some(sfm7))
+              snapshot.dayChange must_== BigDecimal(1580)
+            }
+          }
+        }
+      }
+
+      "future exposure" >> {
+
+        val d0 = LocalDate.of(2026, 11, 4)
+        val d1 = d0.minusDays(1)
+
+        def exposureOf(
+          ops: List[AccountOperation],
+          directory: List[BrokerInstrument],
+          bars: List[Bar],
+          instruments: Map[Ticker, InstrumentInfo] = Map.empty
+        ): IO[PositionValue] =
+          for {
+            service <- buildService(ops, directory, instruments, bars)
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield snapshot.positions.head
+
+        val held = List(deposit(d1, 100000), buy(d1, "FUT1", quantity = 2, cost = 0))
+        val closes = List(bar(sfh7, d1, 640), bar(sfh7, d0, 650))
+
+        "is the contracts times the last close times the money of a point" >> {
+          exposureOf(held, List(contract), closes).map(
+            _.future must beSome[FutureExposure](FutureExposure.Known(79, BigDecimal(102700)))
+          ) // 2 * 650 * 79
+        }
+
+        "is converted at the latest rate for a contract priced in dollars" >> {
+          val usdContract = future("FUT1", sfh7, Some(pointOf1p69), currency = "USD")
+          val rates = List(bar(usdRub, d1, 80), bar(usdRub, d0, 90))
+          exposureOf(held, List(usdContract), closes ++ rates).map { position =>
+            // 2 * 650 * 1.69 dollars, at 90 roubles each; a point stays in dollars
+            position.future must beSome[FutureExposure](
+              FutureExposure.Known(BigDecimal("1.69"), BigDecimal(197730))
+            )
+            position.currency must beSome(usd)
+          }
+        }
+
+        "takes the currency of a contract from the broker's record, not from stored metadata" >> {
+          val usdContract = future("FUT1", sfh7, Some(pointOf1p69), currency = "USD")
+          val rates = List(bar(usdRub, d1, 80), bar(usdRub, d0, 90))
+          exposureOf(held, List(usdContract), closes ++ rates, Map(sfh7 -> info(sfh7, "RUB")))
+            .map(_.currency must beSome(usd))
+        }
+
+        "is negative for a short position" >> {
+          val short = List(deposit(d1, 100000), sell(d1, "FUT1", quantity = 2, proceeds = 0))
+          exposureOf(short, List(future("FUT1", sfh7, Some(pointOf1p69))), closes).map(position =>
+            position.future must beSome[FutureExposure](
+              FutureExposure.Known(BigDecimal("1.69"), BigDecimal(-2197))
+            ) // -2 * 650 * 1.69
+          )
+        }
+
+        "is unpriced without a close, keeping the point value" >> {
+          exposureOf(held, List(contract), Nil).map(
+            _.future must beSome[FutureExposure](FutureExposure.Unpriced(79))
+          )
+        }
+
+        "is unpriced without a rate for the currency of the contract" >> {
+          exposureOf(held, List(future("FUT1", sfh7, Some(pointOf1p69), currency = "USD")), closes)
+            .map(_.future must beSome[FutureExposure](FutureExposure.Unpriced(BigDecimal("1.69"))))
+        }
+
+        "is unknown for a contract without terms, which is worth zero and has no day change" >> {
+          for {
+            service <- buildService(held, List(future("FUT1", sfh7, terms = None)), bars = closes)
+            snapshot <- service.positionsAsOf(accountId, d0)
+          } yield {
+            snapshot.positions.map(_.future) must_== Vector(Some(FutureExposure.TermsUnknown))
+            snapshot.positions.map(_.value) must_== Vector(Some(BigDecimal(0)))
+            snapshot.dayChange must_== BigDecimal(0)
+          }
+        }
+
+        "is absent for a share" >> {
+          val aaa = Ticker("AAA")
+          exposureOf(
+            List(deposit(d1, 1000), buy(d1, "F1", quantity = 1, cost = 50)),
+            List(brokerInstrument("F1", aaa)),
+            List(bar(aaa, d0, 50))
+          ).map(_.future must beNone)
+        }
+      }
+
+      "future expiry" >> {
+
+        val held = List(
+          deposit(expirationDay.minusDays(5), 1000),
+          buy(expirationDay.minusDays(5), "FUT1", quantity = 2, cost = 0)
+        )
+
+        "keeps a contract on its expiration date" >> {
+          for {
+            service <- buildService(held, List(contract))
+            snapshot <- service.positionsAsOf(accountId, expirationDay)
+          } yield snapshot.positions.map(_.instrument) must_== Vector(instrumentKey("FUT1"))
+        }
+
+        "leaves out a contract the day after its expiration date, whatever was reported" >> {
+          for {
+            service <- buildService(held, List(contract))
+            snapshot <- service.positionsAsOf(accountId, expirationDay.plusDays(1))
+          } yield snapshot.positions must beEmpty
+        }
+
+        "keeps a contract without terms, which cannot be known to have expired" >> {
+          for {
+            service <- buildService(held, List(future("FUT1", sfh7, terms = None)))
+            snapshot <- service.positionsAsOf(accountId, expirationDay.plusDays(1))
+          } yield snapshot.positions.map(_.future) must_== Vector(Some(FutureExposure.TermsUnknown))
         }
       }
     }

@@ -58,7 +58,8 @@ private[services] object IbkrInstruments {
       declared.flatMap(_.description).orElse(fromTrade(Name.Description)).getOrElse(ticker.value),
       instrumentType,
       currency,
-      updatedAt
+      updatedAt,
+      futureTerms = None
     )
   }
 }

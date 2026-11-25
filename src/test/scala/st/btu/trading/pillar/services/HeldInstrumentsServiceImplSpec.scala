@@ -19,7 +19,7 @@ import st.btu.trading.pillar.testkit.MarketDataFakes.{
 import st.btu.trading.pillar.testkit.*
 import tofu.logging.{Logging, Logs}
 
-import java.time.{Instant, ZoneOffset, ZonedDateTime}
+import java.time.{Instant, LocalDate, ZoneOffset, ZonedDateTime}
 
 class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
 
@@ -38,6 +38,39 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
   private val vodafone = ibkrInstrument("12345", "VOD", "LSE")
   private val bitcoin = binanceInstrument("BTC", "BTCUSDC")
 
+  // Contracts that ended the day before `now` and that end a month after it.
+  private def future(figi: String, ticker: String, expirationDate: LocalDate): BrokerInstrument =
+    brokerInstrument(
+      figi,
+      Ticker(ticker),
+      classCode = "SPBFUT",
+      instrumentType = "futures",
+      futureTerms = Some(
+        FutureTerms(
+          Underlying("SBER"),
+          expirationDate,
+          expirationDate,
+          BigDecimal("0.01"),
+          BigDecimal("0.79")
+        )
+      )
+    )
+
+  private val expired = future("FUT1", "SFH7", LocalDate.of(2026, 11, 9))
+  private val live = future("FUT2", "SFZ6", LocalDate.of(2026, 12, 18))
+
+  // A directory that also records every key it was asked for.
+  private def recording(
+    known: List[BrokerInstrument]
+  ): IO[(InstrumentDirectory[IO], IO[List[InstrumentKey]])] =
+    Ref.of[IO, List[InstrumentKey]](Nil).map { asked =>
+      val directory = new InstrumentDirectory[IO] {
+        def byKey(key: InstrumentKey): IO[Option[BrokerInstrument]] =
+          asked.update(_ :+ key).as(known.find(_.instrument == key))
+      }
+      (directory, asked.get)
+    }
+
   private def ibkrInstrument(conid: String, symbol: String, exchange: String): BrokerInstrument =
     BrokerInstrument(
       IbkrFakes.instrumentKey(conid),
@@ -46,7 +79,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
       symbol,
       "STK",
       Currency("GBP"),
-      created
+      created,
+      futureTerms = None
     )
 
   private def binanceInstrument(asset: String, ticker: String): BrokerInstrument =
@@ -57,7 +91,8 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
       asset,
       "crypto",
       Currency("USDC"),
-      created
+      created,
+      futureTerms = None
     )
 
   // The same at Binance, for the coin with this asset code.
@@ -305,6 +340,153 @@ class HeldInstrumentsServiceImplSpec extends Specification with CatsEffect {
             _ <- f.service.addToWatchlists
             items <- f.watchlist.items
           } yield items must_== existing
+        }
+      }
+
+      "futures" >> {
+        "that have expired are not watched, and are given no source setting" >> {
+          for {
+            f <- fixture(
+              operations = List(moved(tinkoff, "FUT1", 2)),
+              directory = directoryOf(List(expired))
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+            settings <- f.settings.all
+          } yield {
+            items must beEmpty
+            settings must beEmpty
+          }
+        }
+
+        "that have not expired are watched like any held instrument" >> {
+          for {
+            f <- fixture(
+              operations = List(moved(tinkoff, "FUT2", 2)),
+              directory = directoryOf(List(live))
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(held(tinkoff, "SFZ6"))
+        }
+
+        "that have expired lose the entry the step added, which is not added again on the next cycle" >> {
+          for {
+            f <- fixture(
+              operations = List(moved(tinkoff, "FUT1", 2)),
+              directory = directoryOf(List(expired)),
+              watchlist = List(held(tinkoff, "SFH7"))
+            )
+            _ <- f.service.addToWatchlists
+            afterFirst <- f.watchlist.items
+            _ <- f.service.addToWatchlists
+            afterSecond <- f.watchlist.items
+          } yield {
+            afterFirst must beEmpty
+            afterSecond must beEmpty
+          }
+        }
+
+        "that were sold and then expired lose the entry the step added" >> {
+          val operations = List(moved(tinkoff, "FUT1", 2), moved(tinkoff, "FUT1", -2))
+          for {
+            f <- fixture(
+              operations = operations,
+              directory = directoryOf(List(expired)),
+              watchlist = List(held(tinkoff, "SFH7"))
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must beEmpty
+        }
+
+        "that have expired keep an entry with another note, a rate ticker's included" >> {
+          val owners = entry(tinkoff, "SFH7", note = Some("mine"))
+          val rateEntry = rate(tinkoff, "SFH7", "RUB")
+          for {
+            ownersCase <- fixture(
+              operations = List(moved(tinkoff, "FUT1", 2)),
+              directory = directoryOf(List(expired)),
+              watchlist = List(owners)
+            )
+            _ <- ownersCase.service.addToWatchlists
+            ownersItems <- ownersCase.watchlist.items
+            rateCase <- fixture(
+              operations = List(moved(tinkoff, "FUT1", 2)),
+              directory = directoryOf(List(expired)),
+              watchlist = List(rateEntry)
+            )
+            _ <- rateCase.service.addToWatchlists
+            rateItems <- rateCase.watchlist.items
+          } yield {
+            ownersItems must_== List(owners)
+            rateItems must_== List(rateEntry)
+          }
+        }
+
+        "that were sold before they expired keep their entry, as any sold holding does" >> {
+          val operations = List(moved(tinkoff, "FUT2", 2), moved(tinkoff, "FUT2", -2))
+          for {
+            f <- fixture(
+              operations = operations,
+              directory = directoryOf(List(live)),
+              watchlist = List(held(tinkoff, "SFZ6"))
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(held(tinkoff, "SFZ6"))
+        }
+
+        "that were traded are left as they are when their lookup fails" >> {
+          val operations = List(moved(tinkoff, "FUT1", 2), moved(tinkoff, "FUT1", -2))
+          for {
+            f <- fixture(
+              operations = operations,
+              directory = directoryOf(List(expired), failing = Set(expired.instrument)),
+              watchlist = List(held(tinkoff, "SFH7"))
+            )
+            _ <- f.service.addToWatchlists
+            items <- f.watchlist.items
+          } yield items must_== List(held(tinkoff, "SFH7"))
+        }
+
+        "that were traded are not looked up while every entry the step added names a watched instrument" >> {
+          val operations =
+            List(moved(tinkoff, "F1", 10), moved(tinkoff, "F2", 4), moved(tinkoff, "F2", -4))
+          for {
+            looking <- recording(List(sber, gazprom))
+            (directory, asked) = looking
+            f <- fixture(
+              operations = operations,
+              directory = directory,
+              watchlist = List(held(tinkoff, "SBER"))
+            )
+            _ <- f.service.addToWatchlists
+            keys <- asked
+          } yield keys must_== List(MarketDataFakes.instrumentKey("F1"))
+        }
+
+        "that were traded are looked up when an entry the step added names no watched instrument" >> {
+          val operations =
+            List(moved(tinkoff, "F1", 10), moved(tinkoff, "F2", 4), moved(tinkoff, "F2", -4))
+          for {
+            looking <- recording(List(sber, gazprom))
+            (directory, asked) = looking
+            f <- fixture(
+              operations = operations,
+              directory = directory,
+              watchlist = List(held(tinkoff, "GAZP"))
+            )
+            _ <- f.service.addToWatchlists
+            keys <- asked
+            items <- f.watchlist.items
+          } yield {
+            keys.toSet must_== Set(
+              MarketDataFakes.instrumentKey("F1"),
+              MarketDataFakes.instrumentKey("F2")
+            )
+            items must contain(held(tinkoff, "GAZP"))
+          }
         }
       }
 

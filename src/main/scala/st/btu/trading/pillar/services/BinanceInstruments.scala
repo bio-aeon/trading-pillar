@@ -51,7 +51,8 @@ private[services] object BinanceInstruments {
         names.getOrElse(coin, coin.value),
         BinanceMarketDataSource.CoinType,
         Currency(quote.value),
-        updatedAt
+        updatedAt,
+        futureTerms = None
       )
     }
 }

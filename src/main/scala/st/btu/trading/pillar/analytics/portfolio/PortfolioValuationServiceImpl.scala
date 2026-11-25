@@ -39,9 +39,14 @@ import java.time.{LocalDate, ZoneOffset}
 //    read from the ticker's configured source, else the broker's currency for the instrument.
 //  - A position's day return compares its last close on or before the date with the close of the
 //    bar before it. A snapshot's day change sums quantity * (last close - previous close) over the
-//    positions with both a value and a day return, converted at the rate their value used, and
-//    adds the variation margin dated the snapshot's date. A future's own price move adds nothing,
-//    since the margin is that move already.
+//    positions with both a value and a day return, converted at the rate their value used. A
+//    future counts like a share, with its contracts and the money one point is worth in place of
+//    the quantity and 1, at the rate its exposure used; the variation margin is not in it, since
+//    it reaches the total at the clearings while the close moves all day. A future without terms
+//    adds nothing.
+//  - A future's exposure is its contracts * last close * the money of a point, converted to the
+//    base currency; its position currency is the one of the broker's record. A future that has
+//    expired by the snapshot's date is not one of its positions.
 //  - A non-base cash currency or position with no FX rate is excluded from `value` and the
 //    currency/ticker is recorded in `unpricedInstruments`; an instrument the directory does not
 //    know is excluded and recorded in `unmappedInstruments`.
@@ -84,9 +89,10 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       ctx = PricingContext(held, tickerBars, fxBars, config.baseCurrency)
       state = applyOps(CashState.empty, ops.map(_._2))
       (cashBase, _) = convertBucket(state.cashByCurrency, date, ctx)
-      priced = state.positions.iterator.map { case (instrument, qty) =>
-        valueOnePosition(instrument, qty, date, ctx)
-      }.toVector
+      priced = state.positions.iterator
+        .filterNot { case (instrument, _) => ctx.held.get(instrument).exists(_.expiredOn(date)) }
+        .map { case (instrument, qty) => valueOnePosition(instrument, qty, date, ctx) }
+        .toVector
       total = cashBase + priced.iterator.flatMap(_.position.value).sum
       positions = priced.map(_.position).map { p =>
         p.copy(weight = p.value.flatMap(weightOf(_, total)))
@@ -97,7 +103,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
       positions.sortBy(_.instrument),
       cashBase,
       total,
-      priced.iterator.flatMap(_.dayChange).sum + marginOn(date, ops, ctx),
+      priced.iterator.flatMap(_.dayChange).sum,
       positions.count(_.value.isEmpty)
     )
 
@@ -285,8 +291,10 @@ final class PortfolioValuationServiceImpl[F[_]] private (
   // that close with the one before it, still in the instrument's own currency. `dayChange` is what
   // that move adds to `value`, converted at the rate `value` used, so it is set exactly when
   // `value` and `dayReturn` both are. A future is the exception: its `value` is zero whether or not
-  // a close or a rate is known, and it has no `dayChange`. `weight` is always None here; it
-  // depends on a snapshot-wide total only positionsAsOf computes.
+  // a close or a rate is known, and its `future` says what it controls. Its `dayChange` is the
+  // move of the price over the previous close times the contracts and the money of a point, at the
+  // rate the exposure used, and is unset without terms. `weight` is always None here; it depends
+  // on a snapshot-wide total only positionsAsOf computes.
   private def valueOnePosition(
     instrument: InstrumentKey,
     qty: BigDecimal,
@@ -308,6 +316,7 @@ final class PortfolioValuationServiceImpl[F[_]] private (
             None,
             None,
             None,
+            None,
             None
           ),
           None
@@ -316,11 +325,9 @@ final class PortfolioValuationServiceImpl[F[_]] private (
         val closes = ctx.tickerBars.get(held.ticker).flatMap(latestCloses(_, date))
         def inBase(amount: BigDecimal): Option[BigDecimal] =
           toBase(amount, held.currency, date, ctx)
-        val value =
-          if (held.isFuture) Some(Zero) else closes.flatMap(c => inBase(c.last * qty))
-        val dayChange =
-          if (held.isFuture) None
-          else closes.flatMap(_.priceChange).flatMap(change => inBase(change * qty))
+        val figures =
+          if (held.isFuture) futureFigures(held.futureTerms, qty, closes, inBase)
+          else shareFigures(qty, closes, inBase)
         PricedPosition(
           PositionValue(
             instrument,
@@ -332,28 +339,51 @@ final class PortfolioValuationServiceImpl[F[_]] private (
             Some(held.source),
             qty,
             closes.map(_.last),
-            value,
+            figures.value,
             None,
-            closes.flatMap(_.dayReturn)
+            closes.flatMap(_.dayReturn),
+            figures.future
           ),
-          dayChange
+          figures.dayChange
+        )
+    }
+
+  private def shareFigures(
+    qty: BigDecimal,
+    closes: Option[LatestCloses],
+    inBase: BigDecimal => Option[BigDecimal]
+  ): Figures =
+    Figures(
+      closes.flatMap(c => inBase(c.last * qty)),
+      closes.flatMap(_.priceChange).flatMap(change => inBase(change * qty)),
+      None
+    )
+
+  // A future is worth zero, its exposure and its day change going through the money of a point.
+  private def futureFigures(
+    terms: Option[FutureTerms],
+    qty: BigDecimal,
+    closes: Option[LatestCloses],
+    inBase: BigDecimal => Option[BigDecimal]
+  ): Figures =
+    terms match {
+      case None => Figures(Some(Zero), None, Some(FutureExposure.TermsUnknown))
+      case Some(known) =>
+        val pointValue = known.pointValue
+        val amount = closes.flatMap(c => inBase(c.last * qty * pointValue))
+        Figures(
+          Some(Zero),
+          closes.flatMap(_.priceChange).flatMap(change => inBase(change * qty * pointValue)),
+          Some(
+            amount.fold[FutureExposure](FutureExposure.Unpriced(pointValue))(
+              FutureExposure.Known(pointValue, _)
+            )
+          )
         )
     }
 
   private def weightOf(value: BigDecimal, total: BigDecimal): Option[BigDecimal] =
     if (total == Zero) None else Some(value / total)
-
-  // The variation margin dated `date`, credits and debits together, in the base currency at the
-  // rate of that day; an amount in a currency with no rate adds nothing.
-  private def marginOn(
-    date: LocalDate,
-    ops: Vector[(LocalDate, AccountOperation)],
-    ctx: PricingContext
-  ): BigDecimal =
-    ops.iterator
-      .collect { case (day, op) if day == date && op.kind == OperationKind.VariationMargin => op }
-      .flatMap(op => toBase(op.amount, op.currency, date, ctx))
-      .sum
 
   // `amount` of `currency` in ctx.baseCurrency, at the latest rate on or before `date`; None when
   // `currency` has no rate.
@@ -409,11 +439,14 @@ object PortfolioValuationServiceImpl {
     info: Option[InstrumentInfo]
   ) {
     def ticker: Ticker = broker.ticker
-    def currency: Currency = info.fold(broker.currency)(_.currency)
+    def currency: Currency =
+      if (broker.isFuture) broker.currency else info.fold(broker.currency)(_.currency)
     def name: String = info.flatMap(_.name).getOrElse(broker.name)
     def instrumentType: String = info.fold(broker.instrumentType)(_.instrumentType)
     def exchange: Option[String] = info.map(_.exchange)
     def isFuture: Boolean = broker.isFuture
+    def futureTerms: Option[FutureTerms] = broker.futureTerms
+    def expiredOn(date: LocalDate): Boolean = broker.expiredOn(date)
   }
 
   private object HeldInstrument {
@@ -433,6 +466,13 @@ object PortfolioValuationServiceImpl {
     tickerBars: Map[Ticker, Vector[Bar]],
     fxBars: Map[Currency, Vector[Bar]],
     baseCurrency: Currency
+  )
+
+  // What a position's closes make of its value, its day change and, for a future, its exposure.
+  private final case class Figures(
+    value: Option[BigDecimal],
+    dayChange: Option[BigDecimal],
+    future: Option[FutureExposure]
   )
 
   // A position priced as of a date, with what its latest price move added to its value in the base

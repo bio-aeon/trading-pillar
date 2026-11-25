@@ -33,7 +33,8 @@ class RebalancerSpec extends Specification {
       price = None,
       value = None,
       weight = weight,
-      dayReturn = None
+      dayReturn = None,
+      future = None
     )
 
   private def snapshot(

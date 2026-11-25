@@ -18,7 +18,8 @@ class StoredInstrumentDirectorySpec extends Specification with CatsEffect {
     "Bitcoin",
     "crypto",
     Currency("USDC"),
-    ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+    ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC),
+    futureTerms = None
   )
 
   "StoredInstrumentDirectory" >> {

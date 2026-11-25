@@ -37,7 +37,8 @@ class AllocationHandlerSpec extends Specification with CatsEffect {
       price = None,
       value = None,
       weight = weight,
-      dayReturn = None
+      dayReturn = None,
+      future = None
     )
 
   "AllocationHandler" >> {

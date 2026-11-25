@@ -4,7 +4,8 @@ import st.btu.trading.pillar.models.domain.InstrumentKey
 import st.btu.trading.pillar.models.market.BrokerInstrument
 
 /** Broker instrument records, keyed by the broker and the id that broker gives the instrument, kept
-  * so that an instrument a broker knows is fetched from it only once.
+  * so that an instrument a broker knows is fetched from it only once. The one exception is the
+  * record of a futures contract, whose terms its directory fetches again and replaces once a day.
   */
 trait BrokerInstrumentStorage[F[_]] {
 

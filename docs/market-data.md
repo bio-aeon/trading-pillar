@@ -26,7 +26,9 @@ All in `st.btu.trading.pillar.models.market`:
 | `SourceSetting` | sealed trait with `def source: Source`: `SourceSetting.Yahoo(symbol: Option[YahooSymbol])`, `SourceSetting.Tinkoff(classCode: Option[ClassCode])`, `SourceSetting.Binance` (a case object) | Where one ticker's data comes from. `Yahoo(None)` looks the ticker up on Yahoo as given and `Yahoo(Some(symbol))` asks Yahoo for `symbol` instead; `Tinkoff(None)` means the Tinkoff adapter's default board; `Binance` reads the ticker as the Binance pair of the same symbol, such as `BTCUSDC`, with no board or Yahoo symbol to choose. |
 | `TickerSource` | `TickerSource(ticker, setting: SourceSetting)` | The setting stored for a ticker. A ticker with none uses the router's default setting. |
 | `SourcedTicker` | `SourcedTicker(ticker, source: Source)` | A ticker paired with the source its stored data is read from; the key `DividendStorage.upcoming` takes. |
-| `BrokerInstrument` | `BrokerInstrument(instrument: InstrumentKey, ticker, classCode: Option[ClassCode], name: String, instrumentType: String, currency: Currency, updatedAt)` | A broker's own record of an instrument, found by its `InstrumentKey`: the broker and the id that broker gives it, a FIGI at Tinkoff. `classCode` is the board, for a broker that names one. `currency` is the currency the instrument settles in. `isFuture` tells whether it is a futures contract, which the valuation and the tax lots treat apart (see [`analytics.md`](analytics.md#futures)): at Tinkoff, a record whose `instrumentType` is `futures`. |
+| `BrokerInstrument` | `BrokerInstrument(instrument: InstrumentKey, ticker, classCode: Option[ClassCode], name: String, instrumentType: String, currency: Currency, updatedAt, futureTerms: Option[FutureTerms])` | A broker's own record of an instrument, found by its `InstrumentKey`: the broker and the id that broker gives it, a FIGI at Tinkoff. `classCode` is the board, for a broker that names one. `currency` is the currency the instrument settles in. `isFuture` tells whether it is a futures contract, which the valuation and the tax lots treat apart (see [`analytics.md`](analytics.md#futures)): at Tinkoff, a record whose `instrumentType` is `futures`. `futureTerms` is set only on a future's record and only when the broker gave the terms, so a future without terms is still a future; `expiredOn(date)` is the one rule for an expired contract. |
+| `FutureTerms` | `FutureTerms(underlying: Underlying, lastTradeDate: LocalDate, expirationDate: LocalDate, priceStep: BigDecimal, priceStepValue: BigDecimal)` | What a point of a contract's price is worth and until when it exists. `pointValue` is `priceStepValue` over `priceStep`, in the currency of the record; `expiredOn(date)` is true once `date` is after `expirationDate`, so false on that day. The dates are exchange days. The settlement type is not kept: a deliverable contract is out of scope. |
+| `Underlying` | `opaque type Underlying = String` | The asset a futures contract is on, as its broker names it. |
 | `Bar` | `Bar(ticker, date: LocalDate, open, high, low, close, adjClose, volume: Long, source)` | One daily OHLCV bar. All prices are `BigDecimal`. |
 | `Quote` | `Quote(ticker, price: BigDecimal, currency: Currency, asOf: ZonedDateTime, source)` | A single live/last price. |
 | `InstrumentInfo` | `InstrumentInfo(ticker, origin: SourceSetting, name: Option[String], instrumentType, currency: Currency, exchange, timezone, figi: Option[String], updatedAt)` | `origin` is the setting the metadata was read under, with Tinkoff's board resolved: a Tinkoff adapter always reports `Tinkoff(Some(board))`, a Yahoo one `Yahoo(None)` or `Yahoo(Some(symbol))`, a Binance one `Binance`. Two origins can describe one ticker differently, in another currency for instance: one source against another, one board against another, one Yahoo symbol against another. `figi` is an optional cross-reference for Tinkoff; Yahoo has no FIGIs. |
@@ -410,22 +412,49 @@ implements the lookup over the Tinkoff Invest API:
   knows is fetched once. Any other gRPC failure maps like the market data source above:
   `RESOURCE_EXHAUSTED` to `RateLimited(None)`, `UNAVAILABLE` and `DEADLINE_EXCEEDED` to
   `Transient`, anything else to `Other`.
-- Stored records are never refreshed. A ticker the broker renames under the same FIGI keeps its old
-  ticker until its stored record is removed.
+- Stored records of any type but futures are never refreshed. A ticker the broker renames under the
+  same FIGI keeps its old ticker until its stored record is removed.
 - A key of another broker gives `None`, with no call and nothing stored.
 
-Construction mirrors `TcsMarketDataSource`; `resource` opens its own gRPC channel:
+A record of type `futures` also gets its `FutureTerms`, from `InstrumentsService.FutureBy` by FIGI,
+fetched with the record. The directory is the only writer of terms:
+
+- `basic_asset` is the underlying, `min_price_increment` the price step and
+  `min_price_increment_amount` the money it is worth. `last_trade_date` and `expiration_date` are
+  read as dates in the exchange zone the directory is created with, which gives the exchange's day
+  whether Tinkoff's timestamp is the UTC or the Moscow midnight of that day.
+- A price step or step value that is not positive, an empty underlying or a missing date gives no
+  terms. `FutureBy` answering that it does not know the contract stores the record without terms.
+  Any other failure fails the lookup, as one of `GetInstrumentBy` does.
+- The exchange sets the money a step is worth at each day's clearing, and for a contract on a
+  foreign underlying it moves with the exchange rate, so a stored future's record is asked of
+  `FutureBy` again once it is a day old, until the contract has expired today in the exchange zone.
+  A record stored without terms is asked on the same rule, so it gains its terms once `FutureBy`
+  gives them.
+- An answer with terms replaces the stored ones. An answer without terms, whether not found or
+  unusable, is logged and keeps the stored terms. Either answer renews `updatedAt`, so the record is
+  asked again a day later.
+- A failed call, or one that takes over 10 seconds, is logged with its cause and keeps the stored
+  record without renewing `updatedAt`, so the next lookup tries again. The lookup answers with the
+  stored record either way. The refresh is the only Tinkoff call here with a deadline.
+
+Construction mirrors `TcsMarketDataSource`: `zone` is the exchange's time zone,
+`TcsMarketDataConfig.DefaultZone` (`Europe/Moscow`) unless the consumer's exchange differs, and
+`resource` opens its own gRPC channel:
 
 ```scala
 object TcsInstrumentDirectory {
-  def create[F[_]: MonadThrow: Clock](
+  def create[I[_]: Functor, F[_]: Temporal](
     instruments: InstrumentsServiceFs2Grpc[F, Unit],
-    storage: BrokerInstrumentStorage[F]
-  ): TcsInstrumentDirectory[F]
+    storage: BrokerInstrumentStorage[F],
+    zone: ZoneId
+  )(implicit logs: Logs[I, F]): I[TcsInstrumentDirectory[F]]
 
-  def resource[I[_]: Sync, F[_]: Async](token: tcs.Token, storage: BrokerInstrumentStorage[F])(
-    implicit liftFI: Lift[F, I]
-  ): Resource[I, TcsInstrumentDirectory[F]]
+  def resource[I[_]: Sync, F[_]: Async](
+    token: tcs.Token,
+    storage: BrokerInstrumentStorage[F],
+    zone: ZoneId
+  )(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TcsInstrumentDirectory[F]]
 }
 ```
 
@@ -602,7 +631,8 @@ every stored account, in turn:
 2. **Resolving**: each held instrument, in the order of its `InstrumentKey`, is resolved through the
    `InstrumentDirectory`. One the directory does not know is skipped. A lookup that fails is logged,
    naming the instrument and the account, and that instrument is skipped, so one failure does not
-   stop the others.
+   stop the others. A futures contract that has expired, by its terms on today's UTC date, is not
+   held: it is skipped like an unknown one, so it is neither watched nor given a source setting.
 3. **Pricing**: a held ticker with no stored `TickerSource`, whether or not it is on the watchlist,
    gets the setting its broker's pricing rule gives (below). A stored setting is never changed. The
    setting is written before the ticker is added, so that a ticker is never synced from the default
@@ -611,12 +641,22 @@ every stored account, in turn:
 4. **Adding**: a ticker the account's watchlist lacks, in any state (`WatchlistStorage.byAccount`
    lists disabled entries too), is added enabled, with the note `Added because the account holds it`.
    An entry that exists is left as it is, a disabled one included: `add` can re-enable an existing
-   entry, so it is called only for a ticker the account lacks. Nothing is ever removed, so the entry
-   of a sold holding stays. Two instruments of one ticker, such as one listed on two boards, add it
+   entry, so it is called only for a ticker the account lacks. Nothing is removed but the entry of an
+   expired contract (step 6), so the entry of a sold holding stays. Two instruments of one ticker, such as one listed on two boards, add it
    once, and the first of them in key order sets its source. A ticker that has no setting and whose
    rule leaves it unwatched is not added.
 5. **Rate tickers**: the watchlist is read again, and the rate tickers the account's currencies
    need are added to it (below).
+6. **Expired contracts**: the entries this step added itself, those with the note above, whose
+   ticker is a futures contract that the account traded and that has expired, held or not, are
+   removed, so the price-history sync stops asking for bars that no longer come. The traded
+   instruments are looked up only when the watchlist has an entry with that note whose ticker no
+   instrument watched this cycle has, an expired contract being none of them. An entry with another
+   note, the owner's or a rate ticker's, stays, and so does the entry of a contract sold before it
+   expired, as any sold holding's does. A contract whose lookup fails is left as it is. The removal
+   comes on the first cycle after the expiry, so the contract's last daily bar may be partial: the
+   valuation does not need it, and a backtest of an expired contract takes its history from a source
+   of its own.
 
 The pricing rule is an exhaustive match on the instrument's `Broker`:
 
