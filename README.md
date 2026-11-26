@@ -12,8 +12,9 @@ and configuration; nothing account- or credential-specific lives here.
 
 trading-pillar gives you:
 
-- **Telegram bot plumbing** - long-polling updates, a command router, and a small set of built-in
-  commands, extensible with your own `CommandHandler`s.
+- **Telegram bot plumbing** - long-polling updates, a command router that runs the commands of the
+  chats you allow and no others, and a small set of built-in commands, extensible with your own
+  `CommandHandler`s.
 - **Market data** - a `MarketDataSource` gateway abstraction with Yahoo Finance
   (via [yfinance4s](https://github.com/coinductive/yfinance4s)), Tinkoff Invest and Binance
   implementations, plus a price-history sync process that backfills and incrementally updates OHLCV

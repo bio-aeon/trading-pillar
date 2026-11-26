@@ -168,7 +168,8 @@ for {
 
 `CommandHandlers.standard(tgGateway, extraHandlers)` is also what `TgUpdatesProcessImpl.resource`
 uses: `/ping`, the extra handlers, then `/help` listing their usages. Building the extra handlers a second time over the capturing gateway gives the MCP
-server its own handlers without touching the chat's.
+server its own handlers without touching the chat's. The chats `TgUpdatesProcessImpl` allows do
+not limit these handlers: the server's bearer token decides who reaches them.
 
 ### Ports, tools and the tool server
 

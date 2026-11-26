@@ -2,6 +2,7 @@ package st.btu.trading.pillar.models
 
 import cats.Show
 import io.circe.{Decoder, Encoder}
+import tofu.logging.Loggable
 
 /** Telegram identifier types: `X(value)` wraps a value unchecked and `x.value` unwraps it. */
 package object tg {
@@ -22,6 +23,7 @@ package object tg {
     def apply(value: Long): ChatId = value
     extension (chatId: ChatId) def value: Long = chatId
     implicit val show: Show[ChatId] = Show.catsShowForLong
+    implicit val loggable: Loggable[ChatId] = Loggable.longLoggable
     implicit val encoder: Encoder[ChatId] = Encoder.encodeLong
     implicit val decoder: Decoder[ChatId] = Decoder.decodeLong
   }

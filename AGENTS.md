@@ -133,6 +133,9 @@ Tests mirror this tree under `src/test/scala`. In-memory fakes for every port li
   sanitizes and caps the text; alert notifications pass through the same sanitizer. A price in a
   reply goes through `Replies.price`, which keeps the digits of a coin priced below a cent; a
   value, cash or total through `Replies.scaled`.
+- **Telegram input** comes from the allowed chats only. `TgUpdatesProcessImpl` turns an update into
+  a command for its chat and runs it only for a chat in `allowedChats`, answering nothing else; a
+  new kind of update goes through the same check.
 - **Persisted values are contracts.** Consumers store the circe encodings of backtest results, of
   `Proximity` and `QuietHours`, and of `Allocation` and `PortfolioMetrics`, the string values of
   enumeratum enums such as `Source`, `Broker`, `OperationKind`, `OperationState`, `IbkrSection`,

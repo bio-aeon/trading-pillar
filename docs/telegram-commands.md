@@ -12,11 +12,16 @@ Package `st.btu.trading.pillar.services.commands` (parsing, router, handlers) an
    the rest is whitespace-split into `args`. Text **not** starting with `/` is not a command and is
    silently ignored - the bot never replies to plain chat messages. An unrecognized command name
    parses to `Command.Unknown` rather than failing.
-3. `CommandHandleService` looks up a registered `CommandHandler` by `Command`; `Command.Unknown` or
+3. Only a command from one of the chats the loop was given as `allowedChats` goes on. A command
+   from any other chat, typed or tapped, is ignored: no reply, and a warning in the log names the
+   chat, so a chat of your own that is missing from the set shows its id there. With no allowed
+   chat, no command runs. A private chat's id is its user's id; in an allowed group, every member
+   may run commands.
+4. `CommandHandleService` looks up a registered `CommandHandler` by `Command`; `Command.Unknown` or
    any command with no registered handler gets `"Unknown command. Try /help"`. If a handler raises,
    the error is logged and the chat gets `"Command failed: <exception message>"` - one bad command
    never kills the update loop.
-4. Every reply is passed through `CommandReply.prepare` before sending: underscores become spaces
+5. Every reply is passed through `CommandReply.prepare` before sending: underscores become spaces
    (they show up in our own identifiers, e.g. `strategy_buy`) and `*`, `` ` ``, `[`, `]` are
    stripped (Telegram's legacy `parse_mode=Markdown` would otherwise silently reformat the message
    or reject it with "can't parse entities"), then the text is capped at 4000 characters.
@@ -39,6 +44,7 @@ in as `extraHandlers`:
 def resource[I[_]: Sync, F[_]: Async: Throws](
   tgToken: tg.Token,
   backend: SttpBackend[F, Any],
+  allowedChats: Set[tg.ChatId],
   extraHandlers: List[CommandHandler[F]] = Nil
 )(implicit logs: Logs[I, F]): Resource[I, TgUpdatesProcessImpl[F]]
 ```
@@ -87,11 +93,12 @@ requests both (`allowed_updates=["message","callback_query"]`), and `tg.Update` 
 `tg.Update.callback_query: Option[CallbackQuery(id, from: Option[tg.User], message: Option[Message],
 data: Option[String])]`. `TgUpdatesProcessImpl` routes it:
 
-- A `callback_query` whose `data` starts with `/` is answered first
+- A `callback_query` whose `data` starts with `/` is a command for the chat of
+  `callbackQuery.message` (the message the keyboard was attached to) - not whatever chat the bot
+  might otherwise associate with the tap. In an allowed chat it is answered first
   (`TgGateway.answerCallbackQuery(callbackQuery.id)` - Telegram requires this or the tapped button
   stays in its "loading" state on the user's client) and then `data` is parsed and dispatched
-  exactly like a typed message, for the chat of `callbackQuery.message` (the message the keyboard
-  was attached to) - not whatever chat the bot might otherwise associate with the tap.
+  exactly like a typed message. In any other chat it is neither answered nor dispatched.
 - A `callback_query` with no message (deleted, or too old for Telegram to retain), or whose `data`
   doesn't start with `/` (or is absent), is ignored - not answered, not routed.
 

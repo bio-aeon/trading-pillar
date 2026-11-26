@@ -5,6 +5,7 @@ import cats.effect.kernel.Ref
 import cats.effect.{Async, Resource, Sync, Temporal}
 import cats.syntax.apply.*
 import cats.syntax.flatMap.*
+import cats.syntax.foldable.*
 import cats.syntax.functor.*
 import cats.syntax.traverse.*
 import fs2.Stream
@@ -19,11 +20,18 @@ import tofu.syntax.logging.*
 
 import scala.concurrent.duration.*
 
+/** Polls Telegram for updates and runs each command typed or tapped in one of `allowedChats`. A
+  * command from any other chat is ignored: it is neither answered nor run, and a warning in the log
+  * names its chat. With no allowed chat, no command runs.
+  */
 final class TgUpdatesProcessImpl[F[_]: Logging](
   tgGateway: TgGateway[F],
-  commandHandleService: CommandHandleService[F]
+  commandHandleService: CommandHandleService[F],
+  allowedChats: Set[tg.ChatId]
 )(implicit F: Temporal[F])
     extends TgUpdatesProcess[F] {
+  import TgUpdatesProcessImpl.ChatCommand
+
   def run: Stream[F, Unit] = Stream.eval(Ref[F].of(0L)).flatMap(processUpdatesLoop)
 
   private def processUpdatesLoop(offsetRef: Ref[F, Long]): Stream[F, Unit] =
@@ -50,40 +58,48 @@ final class TgUpdatesProcessImpl[F[_]: Logging](
       case nonEmpty => Some(nonEmpty.maxBy(_.update_id).update_id)
     }
 
-  // A plain message is routed by its own chat/text. A callback_query has no message/text of its
-  // own - when its data looks like a command, the callback is answered first (so the tapped
-  // button's loading state clears even if the command itself is slow or fails), then the data is
-  // routed as command text for the chat the keyboard was attached to. A callback with no message
-  // (deleted/expired) or with data that isn't a command is otherwise ignored.
   private def processOneUpdate(update: tg.Update): F[Unit] =
+    commandOf(update).traverse_(runCommand)
+
+  // A tapped button's command is for the chat of the message its keyboard is attached to. A
+  // callback that names its button by inline_message_id instead carries no chat, so it is ignored.
+  private def commandOf(update: tg.Update): Option[ChatCommand] =
     update.message.flatMap(m => m.text.map(m.chat.id -> _)) match {
-      case Some((chatId, text)) => processUpdate(chatId, text)
-      case None => update.callback_query.fold(F.unit)(processCallback)
+      case Some((chatId, text)) =>
+        CommandParser.parse(text).map(ChatCommand(chatId, _, callbackQueryId = None))
+      case None =>
+        for {
+          callback <- update.callback_query
+          message <- callback.message
+          parsed <- callback.data.flatMap(CommandParser.parse)
+        } yield ChatCommand(message.chat.id, parsed, Some(callback.id))
     }
 
-  private def processCallback(callbackQuery: tg.CallbackQuery): F[Unit] =
-    callbackQuery.data.filter(CommandParser.isCommand) match {
-      case Some(text) =>
-        tgGateway.answerCallbackQuery(callbackQuery.id) >>
-          callbackQuery.message.traverse(m => processUpdate(m.chat.id, text)).void
-      case None => F.unit
-    }
-
-  private def processUpdate(chatId: tg.ChatId, msg: String): F[Unit] =
-    CommandParser.parse(msg) match {
-      case Some(parsed) => commandHandleService.handleCommand(chatId, parsed)
-      case None => F.unit
-    }
+  // The callback is answered first, so the tapped button's loading state clears even if the
+  // command is slow or fails.
+  private def runCommand(command: ChatCommand): F[Unit] =
+    if (allowedChats.contains(command.chatId))
+      command.callbackQueryId.traverse_(tgGateway.answerCallbackQuery) >>
+        commandHandleService.handleCommand(command.chatId, command.parsed)
+    else warn"Ignored a command from chat ${command.chatId}, which may not run commands"
 }
 
 object TgUpdatesProcessImpl {
 
+  private final case class ChatCommand(
+    chatId: tg.ChatId,
+    parsed: ParsedCommand,
+    callbackQueryId: Option[String]
+  )
+
   /** Wires the Telegram updates process: a gateway for `tgToken`, the built-in ping and help
-    * handlers plus `extraHandlers`, and the command router.
+    * handlers plus `extraHandlers`, and the command router, running the commands of `allowedChats`
+    * only.
     */
   def resource[I[_]: Sync, F[_]: Async: Throws](
     tgToken: tg.Token,
     backend: SttpBackend[F, Any],
+    allowedChats: Set[tg.ChatId],
     extraHandlers: List[CommandHandler[F]] = Nil
   )(implicit logs: Logs[I, F]): Resource[I, TgUpdatesProcessImpl[F]] =
     for {
@@ -93,16 +109,21 @@ object TgUpdatesProcessImpl {
           .create[I, F](tgGateway, CommandHandlers.standard(tgGateway, extraHandlers))
       )
       tgUpdatesProcess <- Resource.eval(
-        TgUpdatesProcessImpl.create[I, F](tgGateway, commandHandleService)
+        TgUpdatesProcessImpl.create[I, F](tgGateway, commandHandleService, allowedChats)
       )
     } yield tgUpdatesProcess
 
-  /** Wires the Telegram updates process backed by `tgGateway` and `commandHandleService`. */
+  /** Wires the Telegram updates process backed by `tgGateway` and `commandHandleService`, running
+    * the commands of `allowedChats` only.
+    */
   def create[I[_]: Functor, F[_]: Temporal](
     tgGateway: TgGateway[F],
-    commandHandleService: CommandHandleService[F]
+    commandHandleService: CommandHandleService[F],
+    allowedChats: Set[tg.ChatId]
   )(implicit logs: Logs[I, F]): I[TgUpdatesProcessImpl[F]] =
     logs
       .forService[TgUpdatesProcess[F]]
-      .map(implicit log => new TgUpdatesProcessImpl[F](tgGateway, commandHandleService))
+      .map(implicit log =>
+        new TgUpdatesProcessImpl[F](tgGateway, commandHandleService, allowedChats)
+      )
 }
