@@ -12,7 +12,7 @@ import ru.tinkoff.piapi.contract.v1.operations.{
   OperationItem,
   OperationsServiceFs2Grpc
 }
-import st.btu.trading.pillar.models.tcs
+import st.btu.trading.pillar.models.{HttpProxy, tcs}
 import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
 
@@ -70,14 +70,15 @@ object TcsFacadeImpl {
     }
 
   /** Wires a `TcsFacade` authenticated as `brokerAccountId`, holding the gRPC channel open for the
-    * resource's lifetime.
+    * resource's lifetime. The channel goes through `proxy` when one is given, directly otherwise.
     */
   def resource[I[_]: Sync, F[_]: Async](
     brokerAccountId: tcs.BrokerAccountId,
-    token: tcs.Token
+    token: tcs.Token,
+    proxy: Option[HttpProxy]
   )(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TcsFacadeImpl[F]] =
     for {
-      channel <- TcsGrpc.channel[I]
+      channel <- TcsGrpc.channel[I](proxy)
       operationsGrpc <- OperationsServiceFs2Grpc.stubResource[F](channel).mapK(liftFI.liftF)
       facade <- Resource.eval(
         logs

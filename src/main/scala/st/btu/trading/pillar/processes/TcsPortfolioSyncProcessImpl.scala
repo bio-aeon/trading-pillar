@@ -10,7 +10,7 @@ import st.btu.trading.pillar.alerts.SystemAlerts
 import st.btu.trading.pillar.data.ProcessContext
 import st.btu.trading.pillar.facades.TcsFacadeImpl
 import st.btu.trading.pillar.models.domain.AccountId
-import st.btu.trading.pillar.models.tcs
+import st.btu.trading.pillar.models.{HttpProxy, tcs}
 import st.btu.trading.pillar.services.{
   TcsPortfolioService,
   TcsPortfolioServiceImpl,
@@ -79,6 +79,7 @@ object TcsPortfolioSyncProcessImpl {
   def resource[I[_]: Sync, F[_]: Async: GenUUID](
     accounts: List[tcs.TcsAccount],
     tcsToken: tcs.Token,
+    proxy: Option[HttpProxy],
     config: TcsPortfolioSyncConfig,
     tcsPortfolioOperationStorage: TcsPortfolioOperationStorage[F]
   )(implicit
@@ -86,14 +87,23 @@ object TcsPortfolioSyncProcessImpl {
     liftFI: Lift[F, I],
     WL: WithLocal[F, ProcessContext]
   ): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
-    resource[I, F](accounts, tcsToken, config, tcsPortfolioOperationStorage, SystemAlerts.noop[F])
+    resource[I, F](
+      accounts,
+      tcsToken,
+      proxy,
+      config,
+      tcsPortfolioOperationStorage,
+      SystemAlerts.noop[F]
+    )
 
   /** Wires the Tinkoff portfolio sync process for `accounts`, each reading its own Tinkoff account
     * with `tcsToken` over a gRPC channel of its own, which stays open for the resource's lifetime.
+    * Each channel goes through `proxy` when one is given, directly otherwise.
     */
   def resource[I[_]: Sync, F[_]: Async: GenUUID](
     accounts: List[tcs.TcsAccount],
     tcsToken: tcs.Token,
+    proxy: Option[HttpProxy],
     config: TcsPortfolioSyncConfig,
     tcsPortfolioOperationStorage: TcsPortfolioOperationStorage[F],
     systemAlerts: SystemAlerts[F]
@@ -104,7 +114,7 @@ object TcsPortfolioSyncProcessImpl {
   ): Resource[I, TcsPortfolioSyncProcessImpl[F]] =
     for {
       syncs <- accounts.traverse(
-        accountSync[I, F](_, tcsToken, config, tcsPortfolioOperationStorage)
+        accountSync[I, F](_, tcsToken, proxy, config, tcsPortfolioOperationStorage)
       )
       tcsPortfolioSyncProcess <- Resource.eval(create[I, F](syncs, systemAlerts))
     } yield tcsPortfolioSyncProcess
@@ -112,6 +122,7 @@ object TcsPortfolioSyncProcessImpl {
   private def accountSync[I[_]: Sync, F[_]: Async: GenUUID](
     account: tcs.TcsAccount,
     tcsToken: tcs.Token,
+    proxy: Option[HttpProxy],
     config: TcsPortfolioSyncConfig,
     tcsPortfolioOperationStorage: TcsPortfolioOperationStorage[F]
   )(implicit
@@ -120,7 +131,7 @@ object TcsPortfolioSyncProcessImpl {
     WL: WithLocal[F, ProcessContext]
   ): Resource[I, AccountSync[F]] =
     for {
-      tcsFacade <- TcsFacadeImpl.resource[I, F](account.brokerAccountId, tcsToken)
+      tcsFacade <- TcsFacadeImpl.resource[I, F](account.brokerAccountId, tcsToken, proxy)
       tcsPortfolioService <- Resource.eval(
         TcsPortfolioServiceImpl.create[I, F](config, tcsPortfolioOperationStorage, tcsFacade)
       )

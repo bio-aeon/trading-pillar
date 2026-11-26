@@ -14,7 +14,7 @@ import st.btu.trading.pillar.facades.TcsGrpc
 import st.btu.trading.pillar.gateways.InstrumentDirectory
 import st.btu.trading.pillar.models.domain.{Broker, BrokerInstrumentId, Currency, InstrumentKey}
 import st.btu.trading.pillar.models.market.*
-import st.btu.trading.pillar.models.tcs
+import st.btu.trading.pillar.models.{HttpProxy, tcs}
 import st.btu.trading.pillar.storages.BrokerInstrumentStorage
 import tofu.lift.Lift
 import tofu.logging.{Logging, Logs}
@@ -197,17 +197,19 @@ object TcsInstrumentDirectory {
       .map(implicit log => new TcsInstrumentDirectory[F](instruments, storage, zone))
 
   /** Wires an [[InstrumentDirectory]] authenticated as `token`, holding its gRPC channel and stub
-    * open for the resource's lifetime.
+    * open for the resource's lifetime. The channel goes through `proxy` when one is given, directly
+    * otherwise.
     */
   def resource[I[_]: Sync, F[_]: Async](
     token: tcs.Token,
+    proxy: Option[HttpProxy],
     storage: BrokerInstrumentStorage[F],
     zone: ZoneId
   )(implicit logs: Logs[I, F], liftFI: Lift[F, I]): Resource[I, TcsInstrumentDirectory[F]] = {
     val metadata = TcsGrpc.bearerMetadata(token)
 
     for {
-      channel <- TcsGrpc.channel[I]
+      channel <- TcsGrpc.channel[I](proxy)
       instrumentsStub <- InstrumentsServiceFs2Grpc
         .clientResource[F, Unit](channel, (_: Unit) => metadata)
         .mapK(liftFI.liftF)

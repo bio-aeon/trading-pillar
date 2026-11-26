@@ -225,6 +225,12 @@ Bearer-token `Metadata` interceptor built from a `tcs.Token`. The API's certific
 Russian Trusted Root CA, which the JDK does not ship, so the channel trusts that root, bundled with
 the library, besides the JDK's own roots. The trust applies to this channel only.
 
+Each Tinkoff resource takes an optional `HttpProxy(host, port)`. With one, the channel tunnels
+through it with `CONNECT` and the proxy resolves the API's host name; the proxy's own host is
+resolved on every connection. Without one, the channel connects directly, whatever the JVM's proxy
+settings or `GRPC_PROXY_EXP` say. Only HTTP proxies are supported, since grpc-java has no SOCKS
+support.
+
 - **`InstrumentsService.GetInstrumentBy`** (`InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER`, keyed by
   `Ticker.value` and the board's class code) resolves a ticker to its FIGI and the rest of the
   `Instrument` (currency, name, exchange, type). The result is cached per `(Ticker, ClassCode)` in
@@ -304,7 +310,11 @@ object TcsMarketDataSource {
     defaultClassCode: ClassCode = ClassCode("TQBR"),
     zone: ZoneId = ZoneId.of("Europe/Moscow")
   )
-  def resource[I[_]: Sync, F[_]: Async](token: tcs.Token, config: TcsMarketDataConfig)(implicit
+  def resource[I[_]: Sync, F[_]: Async](
+    token: tcs.Token,
+    proxy: Option[HttpProxy],
+    config: TcsMarketDataConfig
+  )(implicit
     logs: Logs[I, F],
     liftFI: Lift[F, I]
   ): Resource[I, TcsMarketDataSource[F]]
